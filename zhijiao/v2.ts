@@ -1,0 +1,55 @@
+import {definePlugin, type PluginContext} from "telebox/sdk";
+import {randomInt} from "node:crypto";
+import {setTimeout as delay} from "node:timers/promises";
+type Toss = "胜" | "阳" | "阴";
+const symbols: Record<Toss, string> = {胜:"☾☽", 阳:"☽☽", 阴:"☾☾"};
+const phrases: Record<string, string> = {
+  胜胜胜: "胜胜胜：前程皆如意，得意逢贵人，前程去有缘，利名终有望。元亨利贞。",
+  胜胜阳: "胜胜阳：千里遇知音，求财自称心，占龙得甘雨，失物眼前寻。上上大吉。",
+  胜胜阴: "胜胜阴：明珠失土中，相混土相同，求财应难得，行人信不通。有头无尾。",
+  胜阴阳: "胜阴阳：潮生自有时，帆去如得飞，风与周郎便，无云月正辉。三奇吉卦。",
+  胜阳胜: "胜阳胜：浩浩长江水，舟帆任往还，问君能遂意，求利有何难。上上大吉。",
+  胜阴阴: "胜阴阴：浮云吹散尽，明月正当中，万里一天碧，东西雨便风。求谋如意。",
+  胜阴胜: "胜阴胜：曲中应有直，心事忧叹息。云散月重圆，千里风帆急。静待时机。",
+  胜阳阳: "胜阳阳：皎皎一轮月，清光四海分，将军巡海岱，群贼望风波。从正则吉。",
+  胜阳阴: "胜阳阴：映日隔蛟龙，黑白未分明，什语休凭信，行人正断魂。谋望待时。",
+  阳阳阳: "阳阳阳：晚来风飙急，好事在庐江，阻隔成难事，惺惺且暂停。做事平平。",
+  阳阳胜: "阳阳胜：玉雀出樊笼，翻翻上碧空，何忧眼前事，财宝自然通。大吉之卦。",
+  阳阳阴: "阳阳阴：光辉一处风，恩爱反成仇，闭门且缩头，莫管闲事非。虽吉只迟。",
+  阳胜胜: "阳胜胜：东君得好意，枯木发新枝，富贵从人愿，麻衣换绿衣。本原大吉。",
+  阳阴阳: "阳阴阳：行船莫恨迟，风急又吹回，举棹应难得，扬帆烟雾中。不利于事。",
+  阳胜阳: "阳胜阳：淑女配君子，贤臣遇好君，家和万事顺，国泰万民安。美玉无暇。",
+  阳阴阴: "阳阴阴：良骥用把车，轮车力不加，世间无百乐，终老在农家。先凶后吉。",
+  阳胜阴: "阳胜阴：阳德方亨日，群阴以待时，小心皆险迹，君子际昌期。君子终吉。",
+  阴阴阴: "阴阴阴：六合自然和，求财喜庆多，顺风并顺水，前进莫蹉跎。六合卦也。",
+  阴阴胜: "阴阴胜：东风先解冻，花占洛阳春，玉骨冰肌润，青香隔笼间。先难后易。",
+  阴阴阳: "阴阴阳：草木枯还发，全凭造化功，莫将求去晚，须借一帆风。向前可为。",
+  阴胜胜: "阴胜胜：欲进不能言，进退俱难久，待价与待时，安心俱分守。做事进退。",
+  阴胜阴: "阴胜阴：阴阳多反复，做事恐难成，若强求为者，须防来始终。不宜用事。",
+  阴阳阳: "阴阳阳：风起三层浪，云生万里阴，交情分彼此，顷刻见灾迍。枉老心力。",
+  阴胜阳: "阴胜阳：青云应有路，丹凤羽毛轻，千里人钦仰，提携百事成。亦可用事。",
+  阴阳胜: "阴阳胜：飓风未成急，惊危在眼前，忧心非安妥，始终不安然。大而不利。",
+  阳阴胜: "阳阴胜：劳碌又劳心，劳心终有成。清风来借力，欢笑见前程。先凶后吉。",
+  阴阳阴: "阴阳阴：秋叶无颜色，凋零一夜风。晨鸡醒午梦，心事总成空。梦难成真。",
+};
+const help = `<b>掷筊</b>\n<code>zhijiao</code> 随机投掷三次并查看卦辞`;
+const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
+export default function createZhijiao() {
+  return definePlugin({apiVersion: 1, id: "zhijiao", description: "随机掷筊", commands: {
+    zhijiao: {description: "随机掷筊", async handle(invocation, ctx: PluginContext) {
+      if (invocation.args[0] === "help" || invocation.args[0] === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
+      const options: Toss[] = ["胜", "阳", "阴"];
+      const tosses: Toss[] = [];
+      await ctx.telegram.edit(invocation.message, "🎲 第 1 投：…");
+      for (let i = 0; i < 3; i++) {
+        ctx.signal.throwIfAborted();
+        tosses.push(options[randomInt(options.length)]);
+        await delay(180, undefined, {signal: ctx.signal});
+        ctx.signal.throwIfAborted();
+        await ctx.telegram.edit(invocation.message, `🎲 第 ${i + 1} 投：${tosses[i]} ${symbols[tosses[i]]}`);
+      }
+      const combo = tosses.join(""); const phrase = phrases[combo] ?? "卦象未收录，宜静观其变。";
+      await ctx.telegram.edit(invocation.message, `<b>掷筊结果</b>\n\n${tosses.map((t, i) => `第${i + 1}投：${t} ${symbols[t]}`).join("\n")}\n\n<b>卦象:</b> <code>${esc(combo)}</code>\n<b>卦辞:</b> ${esc(phrase)}`, {parseMode:"html"});
+    }},
+  }});
+}
