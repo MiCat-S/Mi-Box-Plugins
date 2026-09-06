@@ -13,7 +13,8 @@
 npm run package:v2
 ```
 
-默认打包：`ai、da、dc、dme、gt、ids、ip、nodeseek、rate、sum、yvlu、aban、dig、pangu、subinfo`。
+默认打包 `ai、gt`，其余 V2 扩展通过 `.tpm search`、
+`.tpm install 插件名` 按需安装，使用 `.tpm remove 插件名` 卸载并保留数据。
 V2 入口为各插件的 `v2.ts`；其余源码仍待迁移，不代表可以直接安装到 V2。
 
 ## 插件源码目录
