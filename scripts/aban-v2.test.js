@@ -319,3 +319,29 @@ test('50 load/unload cycles retain no tasks or cache files', async t => {
   }
   assert.equal(f.folders.length, 100);
 });
+test('successful result emphasizes counts and omits empty failure sections', async t => {
+  const f = await fixture(t);
+  await f.run();
+  const {text, opts} = f.edits.at(-1);
+  assert.ok(text.includes('<b>成功 1</b>'));
+  assert.ok(text.includes('<a href="tg://user?id=2">&lt;Target&amp;&gt;</a>'));
+  assert.doesNotMatch(text, /失败 0|不支持 0|未完成原因/);
+  assert.equal(opts.parseMode, 'html');
+});
+test('29 successes and four absent users render a compact Chinese summary', async t => {
+  const groups = Array.from({length: 33}, (_, i) => channel(String(100 + i)));
+  const f = await fixture(t, {groups, native: {invoke: async req => {
+    if (req instanceof Api.channels.GetParticipant) return regularPermission(req);
+    if (req instanceof Api.channels.EditBanned && Number(req.channel.channelId.toString()) >= 129) {
+      throw new Error('USER_NOT_PARTICIPANT');
+    }
+    return {offset: 0};
+  }}});
+  await f.run('.sb 2', {chatId: '1'});
+  const {text} = f.edits.at(-1);
+  assert.ok(text.includes('<b>成功 29 · 失败 4</b>'));
+  assert.match(text, /目标不在该群 · 4 个/);
+  assert.match(text, /未清理（当前会话不适用）/);
+  assert.doesNotMatch(text, /USER_NOT_PARTICIPANT|不支持 0/);
+  assert.ok(text.split('\n').length <= 9);
+});

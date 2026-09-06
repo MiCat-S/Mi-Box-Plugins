@@ -9,6 +9,17 @@ const names = { kick: "踢出", ban: "封禁", unban: "解封", mute: "禁言", 
   sb: "批量封禁", unsb: "批量解封" };
 const escape = (value: string) => value.replace(/[&<>"]/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+const failureLabels: Readonly<Record<string, string>> = {
+  USER_NOT_PARTICIPANT: "目标不在该群",
+  CHAT_ADMIN_REQUIRED: "管理权限不足",
+  USER_ADMIN_INVALID: "无法操作该管理员",
+  USER_ID_INVALID: "用户信息无效",
+  CHANNEL_PRIVATE: "无法访问该群",
+  CHANNEL_INVALID: "群组信息无效",
+  PEER_ID_INVALID: "无法解析会话",
+  CHAT_WRITE_FORBIDDEN: "会话禁止写入",
+  FLOOD_WAIT: "触发频率限制，请稍后重试",
+};
 const help = (p: string) => `<b>封禁管理</b>
 <code>${escape(p)}kick</code> 踢出 · <code>${escape(p)}ban</code> 封禁并清理消息
 <code>${escape(p)}unban</code> 解封 · <code>${escape(p)}unmute</code> 解除禁言
@@ -207,6 +218,7 @@ export default function createAban() {
       }
       const action: Action = inv.command === "sb" ? "ban" : inv.command === "unsb" ? "unban" : inv.command as Action;
       let success = 0, cleaned = false, historyFailed = false, moved = 0;
+      let historyNote = "当前会话不适用";
       const applied = new Set<string>();
       const apply = async (g: Group) => {
         if (g.kind === "chat") {
@@ -236,6 +248,8 @@ export default function createAban() {
       }
       if (action === "ban" && inv.message.chatId.startsWith("-")) {
         const item = ready.find(({ group: g }) => (g.kind === "channel" ? "-100" + g.id : "-" + g.id) === inv.message.chatId);
+        historyNote = !item ? "当前群未通过管理检查" : item.group.kind === "chat" ? "基本群不支持批量清理"
+          : !item.deleteMessages ? "缺少删除消息权限" : "当前群封禁未成功";
         if (item?.deleteMessages && item.group.kind === "channel" && applied.has(`channel:${item.group.id}`)) {
           try {
             let result: Api.messages.AffectedHistory;
@@ -248,10 +262,15 @@ export default function createAban() {
         }
       }
       const failed = [...failures.values()].reduce((a, b) => a + b, 0);
-      const reasons = [...failures].slice(0, 5).map(([reason, count]) => `${escape(reason)} × ${count}`).join("\n");
+      const reasonEntries = [...failures].sort((a, b) => b[1] - a[1]);
+      const reasons = reasonEntries.slice(0, 5)
+        .map(([reason, count]) => `${escape(failureLabels[reason] ?? reason)} · ${count} 个`).join("\n");
+      const remaining = reasonEntries.slice(5).reduce((total, [, count]) => total + count, 0);
+      const counts = [`成功 ${success}`, ...(failed ? [`失败 ${failed}`] : []), ...(skipped ? [`不支持 ${skipped}`] : [])];
       await edit(ctx, inv, `<b>${names[inv.command as keyof typeof names]}结果</b>
-目标：${escape(target.label.slice(0, 120))} · <code>${target.id}</code>
-成功 ${success} · 失败 ${failed} · 不支持 ${skipped}${moved ? `\n基本群移出 ${moved}（不阻止再次加入）` : ""}${action === "mute" ? `\n时长：${args!.duration ? args!.duration + " 秒" : "永久"}` : ""}${action === "ban" ? `\n当前群消息：${cleaned ? "已清理" : historyFailed ? "清理失败" : "未清理"}` : ""}${reasons ? "\n" + reasons : ""}`);
+<a href="tg://user?id=${target.id}">${escape(target.label.slice(0, 120))}</a> · <code>${target.id}</code>
+
+<b>${counts.join(" · ")}</b>${moved ? `\n基本群移出 ${moved}（不阻止再次加入）` : ""}${action === "mute" ? `\n时长：${args!.duration ? args!.duration + " 秒" : "永久"}` : ""}${action === "ban" ? `\n消息：${cleaned ? "已清理" : historyFailed ? "清理失败" : `未清理（${historyNote}）`}` : ""}${reasons ? `\n\n<b>未完成原因</b>\n${reasons}${remaining ? `\n其他原因 · ${remaining} 个` : ""}` : ""}`);
     });
   };
   const handle = async (inv: CommandInvocation, ctx: PluginContext) => {
