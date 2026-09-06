@@ -537,3 +537,13 @@ test('50 isolated HTTP lifecycles finish without pending work or signal listener
     } finally { assert.equal((await scope.drain(1000)).completed, true); }
   }
 });
+
+test('restricted models are rejected before credentials or source text reach HTTP', async t => {
+  for (const model of ['gpt-5.6-luna', 'gpt-5.6-luna-fast', 'GPT-5.6-TERRA/preview']) {
+    const snapshot = config({currentChatModel: model});
+    assert.throws(() => provider.buildChatRequest(snapshot, 'private-source'), error => noSecrets(error, 'CONFIG'));
+    const f = fixture(t, async () => assert.fail('HTTP must not be called'));
+    await assert.rejects(provider.chatText(snapshot, f.http, 'private-source'), error => noSecrets(error, 'CONFIG'));
+    assert.equal(f.requests.length, 0);
+  }
+});

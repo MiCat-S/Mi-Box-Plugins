@@ -149,6 +149,10 @@ export function selectChatProvider(config: ChatConfigSnapshot): {providerConfig:
   return {providerConfig: {...config.configs[tag]}, model};
 }
 
+export function assertAllowedModel(model: string): void {
+  if (/^gpt-5\.6-(?:luna|terra)(?:$|[-/])/i.test(model.trim())) throw new ProviderError("CONFIG");
+}
+
 export interface ChatRequest {
   readonly url: string;
   readonly init: RequestInit;
@@ -162,6 +166,7 @@ export function buildChatRequest(config: ChatConfigSnapshot, text: string, syste
   try {
     if (typeof text !== "string" || typeof systemPrompt !== "string") throw new ProviderError("INPUT");
     const {providerConfig: provider, model} = selectChatProvider(config);
+    assertAllowedModel(model);
     const timeoutMs = config.timeout * 1000;
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) throw new ProviderError("CONFIG");
     const parsedUrl = new URL(provider.url);
@@ -309,7 +314,7 @@ export function parseChatText(raw: string, format: ChatRequest["format"], limits
   return text.trim();
 }
 
-async function readBody(response: Response, signal: AbortSignal, maxBytes: number): Promise<string> {
+export async function readBody(response: Response, signal: AbortSignal, maxBytes: number): Promise<string> {
   checkSignal(signal);
   if (!response.body) return "";
   const reader = response.body.getReader();

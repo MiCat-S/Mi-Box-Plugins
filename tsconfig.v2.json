@@ -5,6 +5,7 @@
     "typeRoots": ["../TeleBox-Core/node_modules/@types"],
     "paths": {
       "telebox/sdk": ["../TeleBox-Core/src/v2/sdk.ts"],
+      "sharp": ["../TeleBox-Core/node_modules/sharp/lib/index.d.ts"],
       "teleproto": ["../TeleBox-Core/node_modules/teleproto/index.d.ts"],
       "teleproto/*": ["../TeleBox-Core/node_modules/teleproto/*"]
     }
