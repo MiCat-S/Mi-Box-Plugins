@@ -1,7 +1,7 @@
 # TeleBox-Plugins
 
 ## 简介
-TeleBox-Plugins 是 [MiCat-S/TeleBox](https://github.com/MiCat-S/TeleBox) 使用的插件仓库，提供丰富的功能扩展。
+TeleBox-Plugins 是 [MiCat-S/Mi-Box](https://github.com/MiCat-S/Mi-Box) 使用的插件仓库，提供丰富的功能扩展。
 
 ## 安装方式
 
