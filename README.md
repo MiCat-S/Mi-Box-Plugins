@@ -1,19 +1,22 @@
-# TeleBox-Plugins
+# Mi Box Plugins
 
 ## 简介
-TeleBox-Plugins 是 [MiCat-S/Mi-Box](https://github.com/MiCat-S/Mi-Box) 使用的插件仓库，提供丰富的功能扩展。
+本仓库为 [MiCat-S/Mi-Box](https://github.com/MiCat-S/Mi-Box) 提供 V2 插件及迁移参考源码。
 
 ## 安装方式
 
-在已运行的 TeleBox 中执行：
+核心与插件仓库均使用 `main`。按核心仓库的
+[安装指南](https://github.com/MiCat-S/Mi-Box/blob/main/INSTALL.md)
+将本仓库放到核心仓库同级的 `TeleBox-Plugins` 目录，然后在核心仓库执行：
 
 ```bash
-.tpm i <插件名>
+npm run package:v2
 ```
 
-也支持别名：`.tpm install <插件名>`、批量 `.tpm i a b c`、一键 `.tpm i all`。
+默认打包：`ai、da、dc、dme、gt、ids、ip、nodeseek、rate、sum、yvlu、aban、dig、pangu、subinfo`。
+V2 入口为各插件的 `v2.ts`；其余源码仍待迁移，不代表可以直接安装到 V2。
 
-## 可用插件列表
+## 插件源码目录
 - `aban` - 高级封禁管理  
 - `acron` - 定时发送/转发/复制/置顶/取消置顶/删除消息/执行命令  
 - `admin_board` - 管理员排行榜 末位淘汰  
@@ -67,7 +70,7 @@ TeleBox-Plugins 是 [MiCat-S/Mi-Box](https://github.com/MiCat-S/Mi-Box) 使用�
 - `gif` - GIF与视频转贴纸  
 - `git_PR` - Git PR 管理  
 - `goodnight` - 自动统计晚安/早安  
-- `gt` - 谷歌中英文互译  
+- `gt` - AI 翻译  
 - `his` - 查看被回复者最近消息  
 - `hitokoto` - 获取随机一言  
 - `httpcat` - 发送一张http状态码主题的猫猫图片  
