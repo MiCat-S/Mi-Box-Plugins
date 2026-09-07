@@ -67,7 +67,7 @@ async function writeExecutable(file, source) {
 }
 
 function cliSource(log) {
-  return `#!/bin/sh\nprintf '<%s>\\n' "$@" >> '${log}'\ncase " $* " in\n  *" --version "*) printf '%s\\n' 'Speedtest by Ookla 1.2.0' ;;\n  *" --servers "*) printf '%s\\n' '{"servers":[{"id":123,"name":"Fixture","location":"Shanghai"}]}' ;;\n  *) printf '%s\\n' '${result}' ;;\nesac\n`;
+  return `#!/bin/sh\n[ -n "$HOME" ] && [ -d "$HOME" ] || exit 134\nprintf '<%s>\\n' "$@" >> '${log}'\ncase " $* " in\n  *" --version "*) printf '%s\\n' 'Speedtest by Ookla 1.2.0' ;;\n  *" --servers "*) printf '%s\\n' '{"servers":[{"id":123,"name":"Fixture","location":"Shanghai"}]}' ;;\n  *) printf '%s\\n' '${result}' ;;\nesac\n`;
 }
 
 async function archiveWithCli(root, source) {

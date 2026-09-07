@@ -112,11 +112,15 @@ function processFailure(error: unknown): never {
   throw new SpeedtestError("Speedtest CLI 执行失败；请运行 diagnose 检查安装和网络");
 }
 
+async function cliEnvironment(context: PluginContext): Promise<NodeJS.ProcessEnv> {
+  return {HOME: await context.files.dataDirectory()};
+}
+
 async function runResult(context: PluginContext, executable: string, id: number | undefined, timeoutMs: number): Promise<SpeedtestResult> {
   const args = ["--accept-license", "--accept-gdpr", "--format=json", "--progress=no"];
   if (id !== undefined) args.push("--server-id", String(id));
   try {
-    const result = await context.processes.run(executable, args, {timeoutMs, maxOutputBytes: 2 * 1024 * 1024});
+    const result = await context.processes.run(executable, args, {timeoutMs, maxOutputBytes: 2 * 1024 * 1024, env: await cliEnvironment(context)});
     if (!result.stdout.length) throw new SpeedtestError("Speedtest CLI 返回空结果，测速未完成");
     return parseSpeedtestResult(result.stdout.toString("utf8"));
   } catch (error) {
@@ -167,7 +171,7 @@ async function knownSystemPath(context: PluginContext): Promise<string | undefin
 
 async function version(context: PluginContext, executable: string): Promise<string> {
   try {
-    const result = await context.processes.run(executable, ["--version"], {timeoutMs: 10_000, maxOutputBytes: 64 * 1024});
+    const result = await context.processes.run(executable, ["--version"], {timeoutMs: 10_000, maxOutputBytes: 64 * 1024, env: await cliEnvironment(context)});
     const text = result.stdout.toString("utf8").trim();
     if (!/Speedtest by Ookla/i.test(text)) throw new SpeedtestError("检测到的程序不是官方 Ookla Speedtest CLI");
     return text.slice(0, 160);
@@ -337,7 +341,7 @@ export async function listServers(context: PluginContext, executable: string): P
   try {
     const result = await context.processes.run(executable,
       ["--accept-license", "--accept-gdpr", "--format=json", "--servers"],
-      {timeoutMs: 30_000, maxOutputBytes: 2 * 1024 * 1024});
+      {timeoutMs: 30_000, maxOutputBytes: 2 * 1024 * 1024, env: await cliEnvironment(context)});
     if (!result.stdout.length) throw new SpeedtestError("Speedtest CLI 返回空服务器列表");
     const root = object(JSON.parse(result.stdout.toString("utf8")));
     if (!Array.isArray(root?.servers)) throw new SpeedtestError("Speedtest CLI 服务器列表格式无效");
