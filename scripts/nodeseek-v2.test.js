@@ -199,6 +199,7 @@ test('pure synchronous factory and lazy load use only candidate/helper/SDK sourc
   // the candidate. Keep this exact set so a new eager dependency is reviewed.
   const allowedInputs = [
     '../TeleBox-Core/src/v2/branding.ts',
+    '../TeleBox-Core/src/v2/ip-privacy.ts',
     '../TeleBox-Core/src/v2/sdk.ts',
     '../TeleBox-Core/src/v2/ui/document.ts',
     '../TeleBox-Core/src/v2/ui/feedback.ts',

@@ -81,3 +81,11 @@ test('fixed-host redirects are rejected before contacting another origin', async
   assert.equal(f.requests.every(request=>request.url.hostname!=='attacker.invalid'),true);
   assert.match(f.edits.at(-1).text,/搜索失败/);
 });
+
+test('BGP SVG masks decoded addresses and removes IP hyperlink targets before rasterizing', () => {
+  const built = buildPlugin({id: 'bgp', packageRoot: path.resolve(__dirname, '../bgp'), entry: 'v2.ts'});
+  const {privateGraph} = require(path.join(built.artifactDir, 'index.cjs'));
+  const svg = privateGraph('<svg xmlns="http://www.w3.org/2000/svg"><a href="https://38.59.246.201"><text>38&#46;59.246.201</text></a><text>2001:db8::1</text></svg>');
+  assert.doesNotMatch(svg, /38\.59\.246\.201|2001:db8::1|href=/);
+  assert.match(svg, /38\.59\.\*\.\*/);
+});

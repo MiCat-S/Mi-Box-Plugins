@@ -27,7 +27,7 @@ test.before(async () => {
   createSpeedtest = require(path.join(built.artifactDir, 'index.cjs')).default;
   const reportOutput = path.join(moduleRoot, 'report.cjs');
   esbuild.buildSync({entryPoints: [path.join(plugins, 'speedtest/v2/report.ts')], outfile: reportOutput,
-    bundle: true, packages: 'external', platform: 'node', format: 'cjs', target: 'node24'});
+    bundle: true, packages: 'external', alias: {'telebox/sdk': path.join(core, 'dist/v2/sdk.js')}, platform: 'node', format: 'cjs', target: 'node24'});
   reportTools = require(reportOutput);
   png = await sharp({create: {width: 32, height: 20, channels: 4, background: {r: 25, g: 120, b: 220, alpha: 1}}}).png().toBuffer();
 });
@@ -84,7 +84,7 @@ function fetchForResult(image = png) {
     if ((init.method || 'GET') === 'HEAD' && url.hostname === 'www.speedtest.net') return new Response(null, {status: 204});
     if (url.hostname === 'ip-api.com') return Response.json({as: 'AS64500 Example', country: 'China', countryCode: 'CN'});
     if (url.hostname === 'www.speedtest.net' && url.pathname.endsWith('.png')) {
-      return new Response(image, {status: 200, headers: {'content-type': 'image/png'}});
+      assert.fail('official result images must not be requested');
     }
     throw new Error(`unexpected request ${url}`);
   };
@@ -222,4 +222,31 @@ test('media failure falls through to text without exposing transport errors', as
   await f.run('.speedtest');
   assert.match(f.edits.at(-1).text, /SPEEDTEST/);
   assert.doesNotMatch(JSON.stringify({texts: f.edits.map(edit => edit.text), logs: f.logs}), /private-send-token/);
+});
+
+for (const externalIp of ['203.0.113.9', '2001:db8::1234']) {
+  test(`report omits client address and interface (${externalIp})`, async t => {
+    const signal = new AbortController().signal;
+    const context = {signal, http: {json: async () => ({})}, tasks: {run: async (_name, operation) => operation(signal)}};
+    const sample = JSON.parse(result);
+    sample.interface = {externalIp, name: 'private_nic'};
+    const html = await reportTools.buildReport(context, sample);
+    assert.ok(!html.includes(externalIp));
+    assert.doesNotMatch(html, /private_nic|<code>IP<\/code>|IPv4|IPv6/);
+    assert.match(html, /服务器/);
+    assert.match(html, /下行/);
+  });
+}
+
+test('local result card masks IP fields and delivery never fetches official result images', async t => {
+  const sample = JSON.parse(result); sample.server.name = '38.59.246.201'; sample.isp = '2001:db8::1234';
+  const svg = reportTools.resultCardSvg(sample);
+  assert.doesNotMatch(svg, /38\.59\.246\.201|2001:db8::1234/);
+  assert.match(svg, /38\.59\.\*\.\*/);
+  assert.equal((await sharp(Buffer.from(svg)).metadata()).format, 'svg');
+  // Text-only context avoids any real network or account access.
+  const signal = new AbortController().signal;
+  const context = {signal, http: {json: async () => ({})}, tasks: {run: async (_name, op) => op(signal)}};
+  const report = await reportTools.buildReport(context, sample);
+  assert.doesNotMatch(report, /speedtest\.net\/result|38\.59\.246\.201|2001:db8::1234/);
 });

@@ -1,11 +1,10 @@
 import {isIP} from "node:net";
-import {open, readFile, stat} from "node:fs/promises";
+import {readFile, stat} from "node:fs/promises";
 import path from "node:path";
-import type {PluginContext, CommandInvocation} from "telebox/sdk";
+import {maskIpText, type PluginContext, type CommandInvocation} from "telebox/sdk";
 import type {SpeedtestResult} from "./cli";
 import {messageOrder, type MessageType} from "./config";
 
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const CAPTION_UTF16_LIMIT = 1024;
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, character =>
   ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;"})[character]!);
@@ -24,7 +23,7 @@ export function reportParts(report: string, result: SpeedtestResult): {body: str
     "<b>⚡ SPEEDTEST by OOKLA</b>",
     `<code>服务器</code> <code>${result.server.id} / ${escape(clipped(result.server.name, 80))}</code>`,
   ].join("\n");
-  return {body: report, caption, separateBody: true};
+  return {body: report, caption: maskIpText(caption), separateBody: true};
 }
 
 function amount(value: number | undefined, bytes: boolean): string {
@@ -103,15 +102,11 @@ export async function buildReport(context: PluginContext, result: SpeedtestResul
     ipInfo(context, result.interface.externalIp),
     interfaceTraffic(context, result.interface.name),
   ]);
-  const resultUrl = officialResultUrl(result.result?.url)?.toString();
   const titleSuffix = network.code ? ` @${network.code}${network.flag}` : "";
   const isp = [clipped(result.isp, 48), network.as].filter(Boolean).join(" ") || "不可用";
-  const connection = [isIP(result.interface.externalIp) === 6 ? "IPv6" : isIP(result.interface.externalIp) === 4 ? "IPv4" : "IP",
-    clipped(result.interface.externalIp, 48) || "不可用", clipped(result.interface.name, 32) || "不可用"].join(" / ");
   const lines = [
     `<blockquote><b>⚡ SPEEDTEST by OOKLA${escape(titleSuffix)}</b></blockquote>`,
     `<code>运营商</code> <code>${escape(isp)}</code>`,
-    `<code>IP</code> <code>${escape(connection)}</code>`,
     `<code>服务器</code> <code>${result.server.id} / ${escape(clipped(result.server.name, 40))} / ${escape(clipped(result.server.location, 40))}</code>`,
     `<code>延迟</code> <code>${escape(number(result.ping?.latency, "ms"))}</code> <code>抖动 ${escape(number(result.ping?.jitter, "ms"))}</code>`,
     `<code>下行</code> <code>${escape(amount(result.download?.bandwidth, false))}</code> <code>${escape(amount(result.download?.bytes, true))}</code>`,
@@ -119,36 +114,25 @@ export async function buildReport(context: PluginContext, result: SpeedtestResul
     `<code>流量</code> <code>RX ${escape(traffic.rx === null ? "不可用" : amount(traffic.rx, true))}</code> <code>TX ${escape(traffic.tx === null ? "不可用" : amount(traffic.tx, true))}</code>`,
     `<code>MTU</code> <code>${escape(number(traffic.mtu))}</code>`,
     `<code>时间</code> <code>${escape(clipped(result.timestamp?.replace("T", " ").replace(/\.\d+Z$/, "Z") || "不可用", 40))}</code>`,
-    `<code>结果</code> <code>${escape(clipped(resultUrl || "不可用", 180))}</code>`,
   ];
   if (!result.download || !result.upload) lines.push(`<code>说明</code> <code>${!result.download ? "下载" : "上传"}阶段失败，以上仅展示 CLI 返回的真实部分结果</code>`);
-  return lines.join("\n");
+  return maskIpText(lines.join("\n"));
 }
 
-async function downloadImage(context: PluginContext, source: URL, destination: string): Promise<void> {
-  const image = new URL(source);
-  image.pathname += ".png";
-  await context.http.withResponse(image, {method: "GET"}, async (response, signal) => {
-    if (response.status !== 200 || !response.body || !/^image\/png(?:;|$)/i.test(response.headers.get("content-type") ?? "")) throw new Error("invalid image");
-    const reader = response.body.getReader();
-    const output = await open(destination, "wx", 0o600);
-    let total = 0;
-    try {
-      for (;;) {
-        signal.throwIfAborted();
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        total += chunk.value.byteLength;
-        if (total > MAX_IMAGE_BYTES) throw new Error("image too large");
-        await output.write(chunk.value);
-      }
-      if (!total) throw new Error("empty image");
-    } finally {
-      await output.close();
-      await reader.cancel().catch(() => undefined);
-      reader.releaseLock();
-    }
-  }, {timeoutMs: 20_000, redirects: {allowedHosts: ["www.speedtest.net"], maxRedirects: 0}});
+export function resultCardSvg(result: SpeedtestResult): string {
+  const rows = [
+    "SPEEDTEST",
+    `Download: ${amount(result.download?.bandwidth, false)}`,
+    `Upload: ${amount(result.upload?.bandwidth, false)}`,
+    `Ping: ${number(result.ping?.latency, "ms")}   Jitter: ${number(result.ping?.jitter, "ms")}`,
+    `Server: ${result.server.id} / ${clipped(result.server.name, 40)}`,
+    `ISP: ${clipped(result.isp, 48)}`,
+  ].map(value => maskIpText(value));
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="480"><rect width="960" height="480" rx="24" fill="#101d32"/>${rows.map((row, i) => `<text x="40" y="${65 + i * 68}" fill="${i === 0 ? "#5eead4" : "#f8fafc"}" font-family="sans-serif" font-size="${i === 0 ? 34 : 25}">${escape(row)}</text>`).join("")}</svg>`;
+}
+async function renderImage(result: SpeedtestResult, destination: string): Promise<void> {
+  const sharp = (await import("sharp")).default;
+  await sharp(Buffer.from(resultCardSvg(result))).png().toFile(destination);
 }
 
 async function sticker(context: PluginContext, source: string, destination: string): Promise<void> {
@@ -216,12 +200,11 @@ export async function deliverResult(
     await context.telegram.edit(invocation.message, parts.body, {parseMode: "html", linkPreview: false});
     return;
   }
-  const source = officialResultUrl(result.result?.url);
-  if (source) {
+  {
     try {
       const delivered = await context.files.withTemp(async (directory, signal) => {
         const image = path.join(directory, "speedtest.png");
-        await downloadImage(context, source, image);
+        await renderImage(result, image);
         for (const type of order) {
           signal.throwIfAborted();
           if (type === "txt") break;
