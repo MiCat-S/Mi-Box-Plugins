@@ -1,0 +1,47 @@
+name: V2 validation
+
+on:
+  push:
+    branches: [main, codex/telebox-runtime-v2]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out plugins
+        uses: actions/checkout@v4
+        with:
+          path: TeleBox-Plugins
+      - name: Check out V2 core
+        uses: actions/checkout@v4
+        with:
+          repository: MiCat-S/Mi-Box
+          ref: main
+          path: TeleBox-Core
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: TeleBox-Core/package-lock.json
+      - name: Install core dependencies
+        run: npm ci
+        working-directory: TeleBox-Core
+      - name: Build and type-check core
+        run: npm run build:v2 && npm run typecheck:v2 && npm run check:v2
+        working-directory: TeleBox-Core
+      - name: Type-check plugins
+        run: ../TeleBox-Core/node_modules/.bin/tsc -p tsconfig.v2.json --noEmit
+        working-directory: TeleBox-Plugins
+      - name: Load every plugin artifact
+        run: npm run test:plugins:v2
+        working-directory: TeleBox-Core
+      - name: Run plugin behavior tests
+        run: node --test scripts/*-v2.test.js
+        working-directory: TeleBox-Plugins
