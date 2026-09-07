@@ -7,6 +7,7 @@ const os = require('node:os');
 const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
+const {definePlugin} = require(path.join(core, 'dist/v2/sdk.js'));
 const {artifactDir} = buildPlugin({id: 'annualreport', packageRoot: path.resolve(__dirname, '../annualreport'), entry: 'v2.ts'});
 const createPlugin = require(path.join(artifactDir, 'index.cjs')).default;
 
@@ -30,9 +31,14 @@ async function fixture(t, options = {}) {
       async reply() { assert.fail('unexpected reply'); }, async invoke() { assert.fail('unexpected invoke'); },
       async getReply() {}, async withClient(operation, signal) { return operation(client, signal); },
     }});
+  if (options.initialStats) {
+    const directory = path.join(root, 'annualreport');
+    await fs.mkdir(directory, {recursive: true});
+    await fs.writeFile(path.join(directory, 'stats.json'), JSON.stringify(options.initialStats));
+  }
   await host.load(createPlugin());
   t.after(async () => { await host.shutdown(1000); await fs.rm(root, {recursive: true, force: true}); });
-  return {host, edits, run: () => host.dispatchPrimary({id: 1, chatId: '1', senderId: '1', outgoing: true, text: '.annualreport'})};
+  return {host, root, edits, run: () => host.dispatchPrimary({id: 1, chatId: '1', senderId: '1', outgoing: true, text: '.annualreport'})};
 }
 
 test('annualreport aggregates dialogs, escapes content, and persists report count', async t => {
@@ -54,4 +60,26 @@ test('annualreport falls back safely when quote service fails', async t => {
   await f.run();
   assert.match(f.edits.at(-1).text, /一言开发者中心/);
   assert.doesNotMatch(f.edits.at(-1).text, /bad/);
+});
+
+test('annualreport reports live ready plugin count and preserves historical stats', async t => {
+  const startTime = Date.now() - 3 * 86_400_000;
+  const f = await fixture(t, {initialStats: {
+    schemaVersion: 1, startTime, reportCount: 4, legacyMetric: {kept: true},
+  }});
+  await f.host.load(definePlugin({apiVersion: 1, id: 'extra', description: 'fixture', commands: {}}));
+
+  await f.run();
+  assert.match(f.edits.at(-1).text, /已激活插件 2 个/);
+  assert.match(f.edits.at(-1).text, /已记录 3 天 · 生成报告 5 次/);
+  assert.match(f.edits.at(-1).text, new RegExp(`#${new Date().getMonth() === 0 ? new Date().getFullYear() - 1 : new Date().getFullYear()}年度报告`));
+
+  await f.host.unload('extra');
+  await f.run();
+  assert.match(f.edits.at(-1).text, /已激活插件 1 个/);
+  assert.match(f.edits.at(-1).text, /生成报告 6 次/);
+  const persisted = JSON.parse(await fs.readFile(path.join(f.root, 'annualreport', 'stats.json'), 'utf8'));
+  assert.equal(persisted.startTime, startTime);
+  assert.equal(persisted.reportCount, 6);
+  assert.deepEqual(persisted.legacyMetric, {kept: true});
 });

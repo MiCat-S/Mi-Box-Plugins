@@ -7,7 +7,10 @@ const HEADERS = {Accept: "text/html,application/xhtml+xml", "Accept-Language": "
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
-const short = (value: unknown, length: number): string => String(value ?? "").slice(0, length);
+const short = (value: unknown, length: number): string => {
+  const result = String(value ?? "").slice(0, length);
+  return /[\uD800-\uDBFF]$/u.test(result) ? result.slice(0, -1) : result;
+};
 
 function safeUrl(value: string, base: string, hosts: readonly string[]): URL | undefined {
   try {
@@ -74,15 +77,29 @@ async function image(context: PluginContext, url: URL, referer: string): Promise
   }, {timeoutMs: 20_000, signal: context.signal, redirects: {allowedHosts: [url.hostname], maxRedirects: 2}});
 }
 
-function scheduleDelete(context: PluginContext, client: any, peer: unknown, id: number): void {
+function scheduleDelete(context: PluginContext, peer: Api.TypePeer, id: number): void {
   void context.tasks.run("javdb:delete-cover", signal => new Promise<void>(resolve => {
     const timer = setTimeout(() => {
       signal.removeEventListener("abort", abort);
-      void client.deleteMessages(peer, [id], {revoke: true}).catch(() => undefined).finally(resolve);
+      if (signal.aborted) { resolve(); return; }
+      void context.telegram.withClient(async (client, clientSignal) => {
+        clientSignal.throwIfAborted();
+        await client.deleteMessages(peer, [id], {revoke: true});
+      }).catch(error => {
+        if (!signal.aborted) context.log.error("javdb_delete_cover_failed",
+          {kind: error instanceof Error ? error.name : "unknown"});
+      }).finally(resolve);
     }, 60_000);
     const abort = () => { clearTimeout(timer); signal.removeEventListener("abort", abort); resolve(); };
     signal.addEventListener("abort", abort, {once: true});
+    if (signal.aborted) abort();
   })).catch(() => undefined);
+}
+
+function coverCaption(code: string, title: string): string {
+  const separator = "\n";
+  const boundedTitle = short(title, Math.max(0, 1024 - code.length - separator.length));
+  return `<b>${escape(code)}</b>${separator}${escape(boundedTitle)}`;
 }
 
 export default function createJavdb() {
@@ -100,28 +117,35 @@ export default function createJavdb() {
       const item = items.find(value => value.code === code) ?? items[0];
       if (!item) { await context.telegram.edit(invocation.message, "未找到相关番号"); return; }
       const info = await detail(context, item.link);
-      const fields = [info.director && `导演：${escape(short(info.director, 200))}`, info.series && `系列：${escape(short(info.series, 200))}`,
-        info.date && `日期：${escape(short(info.date, 100))}`, info.duration && `时长：${escape(short(info.duration, 100))}`,
-        info.actors.length && `演员：${escape(short(info.actors.join("、"), 700))}`,
-        info.tags.length && `标签：${escape(short(info.tags.join("、"), 900))}`].filter(Boolean);
+      const title = short(item.title, 500);
+      const plainFields = [info.director && `导演：${short(info.director, 200)}`, info.series && `系列：${short(info.series, 200)}`,
+        info.date && `日期：${short(info.date, 100)}`, info.duration && `时长：${short(info.duration, 100)}`,
+        info.actors.length && `演员：${short(info.actors.join("、"), 700)}`,
+        info.tags.length && `标签：${short(info.tags.join("、"), 900)}`].filter((value): value is string => typeof value === "string");
       const miss = `https://missav.ws/${encodeURIComponent(code)}`;
-      const caption = [`<b>${escape(item.code || code)}</b>`, escape(short(item.title, 500)), ...fields,
-        `评分：${escape(rating(info.score || item.score))}`, `<a href="${escape(item.link.href)}">JavDB</a> · <a href="${escape(miss)}">MissAV</a>`].join("\n");
+      const displayCode = item.code || code;
+      const score = rating(info.score || item.score);
+      const caption = [`<b>${escape(displayCode)}</b>`, escape(title), ...plainFields.map(escape),
+        `评分：${escape(score)}`, `<a href="${escape(item.link.href)}">JavDB</a> · <a href="${escape(miss)}">MissAV</a>`].join("\n");
+      const visibleCaption = [displayCode, title, ...plainFields, `评分：${score}`, "JavDB · MissAV"].join("\n");
       if (!item.thumb) { await context.telegram.edit(invocation.message, caption, {parseMode: "html", linkPreview: false}); return; }
+      const longReport = visibleCaption.length > 1024;
+      if (longReport) await context.telegram.edit(invocation.message, caption, {parseMode: "html", linkPreview: false});
       try {
         const cover = await image(context, item.thumb, item.link.href);
         await context.telegram.withClient(async client => {
           const {CustomFile} = await import("teleproto/client/uploads.js");
           const message = invocation.message.raw as Api.Message | undefined;
           if (!message?.peerId) throw new Error("Missing peer");
-          const sent: any = await client.sendFile(message.peerId, {file: new CustomFile("cover.jpg", cover.length, "", cover), caption,
+          const sent: any = await client.sendFile(message.peerId, {file: new CustomFile("cover.jpg", cover.length, "", cover),
+            caption: longReport ? coverCaption(displayCode, title) : caption,
             parseMode: "html", spoiler: true, replyTo: invocation.message.replyToId});
-          if (typeof message.delete === "function") await message.delete({revoke: true});
-          if (Number.isSafeInteger(Number(sent?.id))) scheduleDelete(context, client, message.peerId, Number(sent.id));
+          if (Number.isSafeInteger(Number(sent?.id))) scheduleDelete(context, message.peerId, Number(sent.id));
+          if (!longReport && typeof message.delete === "function") await message.delete({revoke: true});
         });
       } catch {
         context.signal.throwIfAborted();
-        await context.telegram.edit(invocation.message, caption, {parseMode: "html", linkPreview: false});
+        if (!longReport) await context.telegram.edit(invocation.message, caption, {parseMode: "html", linkPreview: false});
       }
     } catch {
       if (context.signal.aborted) return;

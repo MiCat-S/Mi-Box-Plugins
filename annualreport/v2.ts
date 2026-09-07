@@ -63,13 +63,14 @@ export default function createAnnualReport() {
         const stats = await store.update(value => ({...value, schemaVersion: 1,
           startTime: Number.isFinite(value.startTime) ? value.startTime : Date.now(),
           reportCount: (Number.isSafeInteger(value.reportCount) ? value.reportCount : 0) + 1}));
+        const pluginCount = context.plugins.list().length;
         const [{chats, blocked, user}, quote] = await Promise.all([accountStats(context), hitokoto(context)]);
         const name = user?.username ? `@${user.username}` : [user?.firstName, user?.lastName].filter(Boolean).join(" ") || "Telegram 用户";
         const days = Math.max(0, Math.floor((Date.now() - stats.startTime) / 86_400_000));
         const premium = user?.premium ? "\n⭐ <b>会员状态</b>\nTelegram Premium 已启用\n" : "";
         const clean = blocked < 20 ? "账户黑名单保持得很干净" : "愿新一年少遇到一些打扰";
         await context.telegram.edit(invocation.message, `<b>${escape(name)} 的 ${reportYear()} 年度报告</b>\n\n` +
-          `📅 <b>陪伴时光</b>\nMiBot 已记录 ${days} 天 · 生成报告 ${stats.reportCount} 次\n\n` +
+          `📅 <b>陪伴时光</b>\nMiBot 已记录 ${days} 天 · 生成报告 ${stats.reportCount} 次\n已激活插件 ${pluginCount} 个\n\n` +
           `👥 <b>社交网络</b>\n频道 ${chats.channel} · 群组 ${chats.group}\n联系人 ${chats.private} · 机器人 ${chats.bots}\n\n` +
           `🛡️ <b>安全守护</b>\n黑名单 ${blocked} 人 · ${clean}\n${premium}\n` +
           `💫 <b>年度寄语</b>\n${quote}\n\n<code>#${reportYear()}年度报告</code>`, {parseMode: "html"});

@@ -7,25 +7,95 @@ import type {Api as ApiTypes} from "teleproto";
 type Flip = "h" | "v" | undefined;
 const FFMPEG = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"] as const;
 const segmenter = new Intl.Segmenter(undefined, {granularity: "grapheme"});
+const FORMAT_ENTITIES = new Set(["MessageEntityBold", "MessageEntityItalic", "MessageEntityUnderline",
+  "MessageEntityStrike", "MessageEntitySpoiler"]);
+const CODE_ENTITIES = new Set(["MessageEntityCode", "MessageEntityPre"]);
 
-function reverse(text: string): string {
-  return text.split("\n").map(line => [...segmenter.segment(line)].map(value => value.segment).reverse().join("")).join("\n");
+type TextUnit = {sourceStart: number; sourceEnd: number; outputStart: number; outputEnd: number; text: string};
+type TextLayout = {text: string; units: TextUnit[]};
+type EntityRange = {entity: any; offset: number; length: number; sourceIndex: number; pieceIndex: number;
+  format: boolean; code: boolean};
+
+function reverseLayout(text: string): TextLayout {
+  const units: TextUnit[] = [];
+  const output: string[] = [];
+  let lineStart = 0;
+  while (lineStart <= text.length) {
+    const lineFeed = text.indexOf("\n", lineStart);
+    const hasLineFeed = lineFeed >= 0;
+    const lineEnd = hasLineFeed ? lineFeed > lineStart && text[lineFeed - 1] === "\r" ? lineFeed - 1 : lineFeed : text.length;
+    const line = text.slice(lineStart, lineEnd);
+    const graphemes = [...segmenter.segment(line)];
+    output.push(graphemes.map(value => value.segment).reverse().join(""));
+    for (const value of graphemes) {
+      const sourceStart = lineStart + value.index;
+      units.push({sourceStart, sourceEnd: sourceStart + value.segment.length,
+        outputStart: lineStart + line.length - value.index - value.segment.length,
+        outputEnd: lineStart + line.length - value.index, text: value.segment});
+    }
+    if (!hasLineFeed) break;
+    const newlineEnd = lineFeed + 1;
+    const newline = text.slice(lineEnd, newlineEnd);
+    units.push({sourceStart: lineEnd, sourceEnd: newlineEnd, outputStart: lineEnd, outputEnd: newlineEnd, text: newline});
+    output.push(newline);
+    lineStart = newlineEnd;
+  }
+  return {text: output.join(""), units};
 }
 
-function reversedEntities(text: string, entities: readonly any[]): any[] {
-  const lineStarts: number[] = [];
-  let start = 0;
-  for (const line of text.split("\n")) { lineStarts.push(start); start += line.length + 1; }
-  return entities.flatMap(entity => {
+function reverse(text: string): string {
+  return reverseLayout(text).text;
+}
+
+function entityName(entity: any): string {
+  return typeof entity?.className === "string" ? entity.className : String(entity?.constructor?.name ?? "");
+}
+
+function conflicts(left: EntityRange, right: EntityRange): boolean {
+  const leftEnd = left.offset + left.length;
+  const rightEnd = right.offset + right.length;
+  if (left.offset >= rightEnd || right.offset >= leftEnd) return false;
+  const nested = left.offset <= right.offset && leftEnd >= rightEnd
+    || right.offset <= left.offset && rightEnd >= leftEnd;
+  if (!nested || left.code || right.code) return true;
+  return !left.format && !right.format;
+}
+
+function reversedEntities(layout: TextLayout, sourceText: string, entities: readonly any[]): any[] {
+  const accepted: EntityRange[] = [];
+  const outputUnitByEnd = new Map(layout.units.map(unit => [unit.outputEnd, unit]));
+  entities.forEach((entity, sourceIndex) => {
     const offset = Number(entity?.offset); const length = Number(entity?.length);
-    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || offset + length > text.length) return [];
-    const lineStart = [...lineStarts].reverse().find(value => value <= offset) ?? 0;
-    const lineEnd = text.indexOf("\n", lineStart); const limit = lineEnd < 0 ? text.length : lineEnd;
-    if (offset + length > limit) return [];
-    const clone = Object.assign(Object.create(Object.getPrototypeOf(entity)), entity);
-    clone.offset = lineStart + (limit - lineStart) - (offset - lineStart) - length;
-    return [clone];
+    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length <= 0
+      || offset > sourceText.length || length > sourceText.length - offset) return;
+    const end = offset + length;
+    const name = entityName(entity);
+    const format = FORMAT_ENTITIES.has(name);
+    const code = CODE_ENTITIES.has(name);
+    const ranges = layout.units.filter(value => format
+      ? value.sourceStart < end && value.sourceEnd > offset
+      : value.sourceStart >= offset && value.sourceEnd <= end)
+      .map(value => ({start: value.outputStart, end: value.outputEnd})).sort((a, b) => a.start - b.start);
+    const merged: Array<{start: number; end: number}> = [];
+    for (const range of ranges) {
+      const previous = merged.at(-1);
+      if (previous && range.start <= previous.end) previous.end = Math.max(previous.end, range.end);
+      else merged.push({...range});
+    }
+    const candidates = merged.flatMap((range, pieceIndex): EntityRange[] => {
+      let rangeEnd = range.end;
+      for (let tail = outputUnitByEnd.get(rangeEnd); tail && tail.outputStart >= range.start && tail.text.trim().length === 0;
+        tail = outputUnitByEnd.get(rangeEnd)) rangeEnd = tail.outputStart;
+      if (rangeEnd <= range.start) return [];
+      return [{entity: Object.assign(Object.create(Object.getPrototypeOf(entity)), entity,
+        {offset: range.start, length: rangeEnd - range.start}), offset: range.start, length: rangeEnd - range.start,
+      sourceIndex, pieceIndex, format, code}];
+    });
+    if (candidates.some(candidate => accepted.some(previous => conflicts(candidate, previous)))) return;
+    accepted.push(...candidates);
   });
+  return accepted.sort((left, right) => left.offset - right.offset || right.length - left.length
+    || left.sourceIndex - right.sourceIndex || left.pieceIndex - right.pieceIndex).map(value => value.entity);
 }
 
 function parse(args: readonly string[]): {flip: Flip; invert: boolean; text: string} {
@@ -86,12 +156,13 @@ async function editReversedReply(context: PluginContext, invocation: any, reply:
   const raw = invocation.message.raw as ApiTypes.Message | undefined;
   const source = reply.raw as ApiTypes.Message | undefined;
   const text = reply.text as string;
-  const entities = reversedEntities(text, (source as any)?.entities ?? []);
-  if (!entities.length || !raw?.peerId) { await context.telegram.edit(invocation.message, reverse(text)); return; }
+  const layout = reverseLayout(text);
+  const entities = reversedEntities(layout, text, (source as any)?.entities ?? []);
+  if (!entities.length || !raw?.peerId) { await context.telegram.edit(invocation.message, layout.text); return; }
   await context.telegram.withClient(async client => {
     const {Api} = await import("teleproto");
     await client.invoke(new Api.messages.EditMessage({peer: await client.getInputEntity(raw.peerId!), id: invocation.message.id,
-      message: reverse(text), entities}));
+      message: layout.text, entities}));
   });
 }
 
@@ -125,8 +196,9 @@ export default function createRev() {
             if (!raw?.peerId) throw new Error("Missing peer");
             const options: any = {file: output, replyTo: invocation.message.replyToId};
             if (reply?.text) {
-              options.caption = reverse(reply.text);
-              const entities = reversedEntities(reply.text, ((source as any).entities ?? []));
+              const layout = reverseLayout(reply.text);
+              options.caption = layout.text;
+              const entities = reversedEntities(layout, reply.text, ((source as any).entities ?? []));
               if (entities.length) options.entities = entities;
             }
             if (info.webm || info.webp) {
