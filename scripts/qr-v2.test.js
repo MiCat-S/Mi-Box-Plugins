@@ -47,3 +47,7 @@ test('qr validates oversized text and hides process errors', async () => {
   assert.match(f.edits.at(-1).text, /二维码操作失败/);
   assert.doesNotMatch(f.edits.at(-1).text, /private/);
 });
+
+test('qr declares a process budget that covers generated image output', () => {
+  assert.deepEqual(create().resources.processes, {concurrency: 1, queueCapacity: 4, timeoutMs: 30000, maxOutputBytes: 2 * 1024 * 1024});
+});

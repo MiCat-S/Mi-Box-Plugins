@@ -41,8 +41,8 @@ export default function createDbdj() {
           const ids = new Map<string, unknown>();
           for (const message of messages) {
             signal.throwIfAborted();
-            const id = (message as Api.Message).fromId && "userId" in (message as Api.Message).fromId!
-              ? (message as Api.Message).fromId!.userId : undefined;
+            const fromId = (message as Api.Message).fromId;
+            const id = fromId && "userId" in fromId ? fromId.userId : undefined;
             if (id !== undefined) ids.set(String(id), id);
           }
           const candidates: Array<{id: string; name: string}> = [];

@@ -18,8 +18,8 @@ function safeUrl(value: string, base: string, hosts: readonly string[]): URL | u
 }
 
 async function page(context: PluginContext, url: URL): Promise<string> {
-  return context.http.text(url, {method: "GET", redirect: "follow", credentials: "omit", headers: HEADERS},
-    {timeoutMs: 15_000, signal: context.signal});
+  return context.http.text(url, {method: "GET", credentials: "omit", headers: HEADERS},
+    {timeoutMs: 15_000, signal: context.signal, redirects: {allowedHosts: [url.hostname], maxRedirects: 3}});
 }
 
 async function search(context: PluginContext, code: string): Promise<Item[]> {
@@ -60,7 +60,7 @@ function rating(value: string): string {
 }
 
 async function image(context: PluginContext, url: URL, referer: string): Promise<Buffer> {
-  return context.http.withResponse(url, {method: "GET", redirect: "follow", credentials: "omit",
+  return context.http.withResponse(url, {method: "GET", credentials: "omit",
     headers: {Accept: "image/*", Referer: referer, "User-Agent": HEADERS["User-Agent"]}}, async (response, signal) => {
     if (response.status !== 200 || !response.body || !(response.headers.get("content-type") ?? "").toLowerCase().startsWith("image/")) throw new Error("Invalid image");
     const reader = response.body.getReader(); const parts: Uint8Array[] = []; let total = 0;
@@ -71,7 +71,18 @@ async function image(context: PluginContext, url: URL, referer: string): Promise
       }
       return Buffer.concat(parts, total);
     } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
-  }, {timeoutMs: 20_000, signal: context.signal});
+  }, {timeoutMs: 20_000, signal: context.signal, redirects: {allowedHosts: [url.hostname], maxRedirects: 2}});
+}
+
+function scheduleDelete(context: PluginContext, client: any, peer: unknown, id: number): void {
+  void context.tasks.run("javdb:delete-cover", signal => new Promise<void>(resolve => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      void client.deleteMessages(peer, [id], {revoke: true}).catch(() => undefined).finally(resolve);
+    }, 60_000);
+    const abort = () => { clearTimeout(timer); signal.removeEventListener("abort", abort); resolve(); };
+    signal.addEventListener("abort", abort, {once: true});
+  })).catch(() => undefined);
 }
 
 export default function createJavdb() {
@@ -103,9 +114,10 @@ export default function createJavdb() {
           const {CustomFile} = await import("teleproto/client/uploads.js");
           const message = invocation.message.raw as Api.Message | undefined;
           if (!message?.peerId) throw new Error("Missing peer");
-          await client.sendFile(message.peerId, {file: new CustomFile("cover.jpg", cover.length, "", cover), caption,
+          const sent: any = await client.sendFile(message.peerId, {file: new CustomFile("cover.jpg", cover.length, "", cover), caption,
             parseMode: "html", spoiler: true, replyTo: invocation.message.replyToId});
           if (typeof message.delete === "function") await message.delete({revoke: true});
+          if (Number.isSafeInteger(Number(sent?.id))) scheduleDelete(context, client, message.peerId, Number(sent.id));
         });
       } catch {
         context.signal.throwIfAborted();

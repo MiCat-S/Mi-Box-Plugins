@@ -50,3 +50,7 @@ test('sticker_to_pic rejects unknown options before media access', async () => {
   assert.equal(f.calls.length, 0);
   assert.match(f.edits.at(-1).text, /贴纸转图片/);
 });
+
+test('sticker_to_pic declares its conversion process budget', () => {
+  assert.deepEqual(create().resources.processes, {concurrency: 1, queueCapacity: 2, timeoutMs: 60000, maxOutputBytes: 256 * 1024});
+});

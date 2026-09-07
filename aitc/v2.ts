@@ -187,7 +187,7 @@ export default function createAitc() {
         {key: "prompts", label: "Prompt 预设", type: "prompt-map"},
       ],
       getValues: () => store(context).read(),
-      setValues: patch => store(context).update(current => validateConfig(current, patch)),
+      setValues: async patch => { await store(context).update(current => validateConfig(current, patch)); },
     }),
   });
 }

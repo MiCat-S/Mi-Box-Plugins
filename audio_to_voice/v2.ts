@@ -29,6 +29,7 @@ function isAudio(raw: ApiTypes.Message | undefined): raw is ApiTypes.Message {
 
 export default function createAudioToVoice() {
   return definePlugin({apiVersion: 1, id: "audio_to_voice", description: "使用 FFmpeg 将回复音频转换为 Telegram 语音",
+    resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 180_000, maxOutputBytes: 256 * 1024}},
     commands: {audio_to_voice: {description: "将回复音频转换为 Telegram 语音", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "") || invocation.message.replyToId === undefined) {
         await context.telegram.edit(invocation.message,

@@ -4,6 +4,21 @@ import type {Api as ApiTypes, TelegramClient} from "teleproto";
 const BOTS = {default: "@music_v1bot", vk: "@vkmusic_bot", ym: "@ttaudiobot"} as const;
 const ACTIONS = new Set(["search", "kugou", "kuwo", "qq", "netease", "vk", "ym"]);
 const ready = new Set<string>();
+const botTails = new Map<string, Promise<void>>();
+const botCursors = new Map<string, number>();
+
+async function serial<T>(bot: string, operation: () => Promise<T>): Promise<T> {
+  const previous = botTails.get(bot) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>(resolve => { release = resolve; });
+  botTails.set(bot, current);
+  await previous.catch(() => undefined);
+  try { return await operation(); }
+  finally {
+    release();
+    if (botTails.get(bot) === current) botTails.delete(bot);
+  }
+}
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -24,8 +39,16 @@ async function waitFor(client: TelegramClient, bot: string, signal: AbortSignal,
   attempts: number, accept: (message: any) => boolean): Promise<any | undefined> {
   for (let index = 0; index < attempts; index++) {
     signal.throwIfAborted();
-    const found = (await messages(client, bot, 8)).slice().reverse().find(accept);
-    if (found) return found;
+    const cursor = botCursors.get(bot) ?? 0;
+    const found = (await messages(client, bot, 8)).slice().reverse().find(message => {
+      const id = Number(message?.id ?? 0);
+      return (!Number.isSafeInteger(id) || id <= 0 || id > cursor) && accept(message);
+    });
+    if (found) {
+      const id = Number(found.id ?? 0);
+      if (Number.isSafeInteger(id) && id > cursor) botCursors.set(bot, id);
+      return found;
+    }
     if (index + 1 < attempts) await sleep(700, signal);
   }
 }
@@ -46,15 +69,16 @@ async function search(context: PluginContext, invocation: any, action: string, q
   }
   await context.telegram.edit(invocation.message, `正在搜索：${query}`);
   try {
-    await context.telegram.withClient(async (client, signal) => {
+    await context.telegram.withClient(async (client, signal) => serial(bot, async () => {
+      signal.throwIfAborted();
       const {Api} = await import("teleproto");
       try { await client.invoke(new Api.contacts.Unblock({id: bot})); } catch {}
       try {
         const peer = await client.getInputEntity(bot);
-        await client.invoke(new Api.account.UpdateNotifySettings({peer: new Api.InputNotifyPeer({peer}),
+        await client.invoke(new Api.account.UpdateNotifySettings({peer,
           settings: new Api.InputPeerNotifySettings({silent: true, muteUntil: 2_147_483_647})}));
       } catch {}
-      const started = Math.floor(Date.now() / 1000);
+      const started = Math.floor(Date.now() / 1000) - 1;
       const request = action === "vk" || action === "ym" ? query : `/${action} ${query}`;
       try { await client.sendMessage(bot, {message: request}); }
       catch { await initialize(client, bot); await sleep(500, signal); await client.sendMessage(bot, {message: request}); }
@@ -74,7 +98,7 @@ async function search(context: PluginContext, invocation: any, action: string, q
       await client.sendFile(raw.peerId, {file: media.media, replyTo: invocation.message.replyToId,
         ...(action === "ym" ? {} : {caption: `🎵 ${query}`})});
       if (typeof raw.delete === "function") await raw.delete({revoke: true});
-    });
+    }));
   } catch {
     if (context.signal.aborted) return;
     context.log.error("music_bot_failed");
@@ -100,5 +124,5 @@ export default function createMusicBot() {
     },
   }]));
   return definePlugin({apiVersion: 1, id: "music_bot", description: "通过多个 Telegram 音乐机器人搜索歌曲",
-    commands, cleanup() { ready.clear(); }});
+    commands, cleanup() { ready.clear(); botTails.clear(); botCursors.clear(); }});
 }

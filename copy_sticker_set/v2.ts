@@ -47,7 +47,7 @@ export default function createCopyStickerSet() {
       await context.telegram.withClient(async client => {
         const {Api} = await import("teleproto");
         const source: any = await client.invoke(new Api.messages.GetStickerSet({
-          stickerset: new Api.InputStickerSetShortName({shortName: input.name}), hash: 0n,
+          stickerset: new Api.InputStickerSetShortName({shortName: input.name}), hash: 0,
         }));
         if (!source?.set || !Array.isArray(source.documents) || !source.documents.length) throw new Error("Invalid set");
         const selected = source.documents.slice(0, input.limit);

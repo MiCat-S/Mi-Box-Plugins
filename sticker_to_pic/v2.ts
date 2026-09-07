@@ -1,4 +1,5 @@
-import {stat} from "node:fs/promises";
+import {access, stat} from "node:fs/promises";
+import {constants} from "node:fs";
 import path from "node:path";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
@@ -11,7 +12,12 @@ const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']
 async function imageMagick(context: PluginContext, args: readonly string[]) {
   for (const command of COMMANDS) {
     try { return {command, result: await context.processes.run(command, args, {timeoutMs: 60_000, maxOutputBytes: 256 * 1024})}; }
-    catch { context.signal.throwIfAborted(); }
+    catch (error) {
+      context.signal.throwIfAborted();
+      if ((error as {code?: unknown})?.code !== "SPAWN_FAILED") throw error;
+      try { await access(command, constants.F_OK); } catch { continue; }
+      throw error;
+    }
   }
   throw new Error("ImageMagick unavailable");
 }
@@ -49,6 +55,7 @@ export default function createStickerToPic() {
     try {
       const reply = await context.telegram.getReply(invocation.message);
       const source = reply?.raw as ApiTypes.Message | undefined;
+      if (!source) { await context.telegram.edit(invocation.message, "请回复一个静态贴纸"); return; }
       const {Api} = await import("teleproto");
       const document: any = source?.document;
       if (!(document instanceof Api.Document) || !(document.attributes ?? []).some((value: any) => value instanceof Api.DocumentAttributeSticker)) {
@@ -57,11 +64,12 @@ export default function createStickerToPic() {
       if (document.mimeType && document.mimeType !== "image/webp") {
         await context.telegram.edit(invocation.message, "目前仅支持 WebP 静态贴纸"); return;
       }
+      const sourceMessage = source;
       await context.telegram.edit(invocation.message, "正在转换贴纸…");
       await context.files.withTemp(async (directory, signal) => {
         const input = path.join(directory, "sticker.webp");
         const output = path.join(directory, `sticker.${selected.format}`);
-        await context.telegram.withClient(async client => { await client.downloadMedia(source.media!, {outputFile: input}); });
+        await context.telegram.withClient(async client => { await client.downloadMedia(sourceMessage.media!, {outputFile: input}); });
         signal.throwIfAborted();
         const flatten = selected.transparent ? [] : ["-background", "white", "-alpha", "remove", "-alpha", "off"];
         await imageMagick(context, [input, ...flatten, output]);
@@ -82,5 +90,6 @@ export default function createStickerToPic() {
     }
   }};
   return definePlugin({apiVersion: 1, id: "sticker_to_pic", description: "将静态贴纸转换为 JPG 或 PNG",
+    resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 60_000, maxOutputBytes: 256 * 1024}},
     commands: {sticker_to_pic: command, stp: command}});
 }

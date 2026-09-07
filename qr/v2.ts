@@ -1,4 +1,5 @@
-import {writeFile} from "node:fs/promises";
+import {access, writeFile} from "node:fs/promises";
+import {constants} from "node:fs";
 import path from "node:path";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api} from "teleproto";
@@ -14,7 +15,12 @@ const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']
 async function runFirst(context: PluginContext, commands: readonly string[], args: readonly string[], options: Record<string, unknown>) {
   for (const command of commands) {
     try { return await context.processes.run(command, args, options); }
-    catch { context.signal.throwIfAborted(); }
+    catch (error) {
+      context.signal.throwIfAborted();
+      if ((error as {code?: unknown})?.code !== "SPAWN_FAILED") throw error;
+      try { await access(command, constants.F_OK); } catch { continue; }
+      throw error;
+    }
   }
   throw new Error("Helper unavailable");
 }
@@ -58,7 +64,8 @@ async function sendQr(context: PluginContext, invocation: any, input: string): P
 }
 
 export default function createQr() {
-  return definePlugin({apiVersion: 1, id: "qr", description: "生成或识别二维码", commands: {
+  return definePlugin({apiVersion: 1, id: "qr", description: "生成或识别二维码",
+    resources: {processes: {concurrency: 1, queueCapacity: 4, timeoutMs: 30_000, maxOutputBytes: 2 * 1024 * 1024}}, commands: {
     qr: {description: "生成或识别二维码", async handle(invocation, context) {
       const input = invocation.args.join(" ").trim();
       try {

@@ -1,6 +1,6 @@
 import {definePlugin, type PluginContext} from "telebox/sdk";
 
-type Stats = {startTime: number; reportCount: number};
+type Stats = {schemaVersion: number; startTime: number; reportCount: number};
 type ChatStats = {private: number; group: number; bots: number; channel: number};
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
@@ -27,7 +27,7 @@ function classify(dialogs: readonly any[]): ChatStats {
 async function accountStats(context: PluginContext): Promise<{chats: ChatStats; blocked: number; user: any}> {
   return context.telegram.withClient(async client => {
     const dialogs: any[] = [];
-    for (const params of [{}, {folderId: 1}]) {
+    for (const params of [undefined, {folder: 1}]) {
       const page = await client.getDialogs(params);
       if (Array.isArray(page)) dialogs.push(...page);
     }
@@ -42,8 +42,9 @@ async function accountStats(context: PluginContext): Promise<{chats: ChatStats; 
 async function hitokoto(context: PluginContext): Promise<string> {
   try {
     const data = await context.http.json<unknown>("https://v1.hitokoto.cn/?charset=utf-8", {
-      method: "GET", redirect: "manual", credentials: "omit", headers: {Accept: "application/json"},
-    }, {timeoutMs: 10_000, signal: context.signal}) as {hitokoto?: unknown; from_who?: unknown; from?: unknown};
+      method: "GET", credentials: "omit", headers: {Accept: "application/json"},
+    }, {timeoutMs: 10_000, signal: context.signal,
+      redirects: {allowedHosts: ["v1.hitokoto.cn"], maxRedirects: 2}}) as {hitokoto?: unknown; from_who?: unknown; from?: unknown};
     if (typeof data.hitokoto !== "string" || !data.hitokoto.trim()) throw new Error("Invalid response");
     const source = [data.from_who, data.from].filter(value => typeof value === "string" && value.trim()).join("《");
     return `“${escape(data.hitokoto.trim())}”${source ? ` — ${escape(source)}${data.from_who && data.from ? "》" : ""}` : ""}`;
@@ -58,12 +59,13 @@ export default function createAnnualReport() {
     annualreport: {description: "生成 Telegram 年度使用报告", async handle(invocation, context) {
       await context.telegram.edit(invocation.message, "正在生成年度报告…");
       try {
-        const store = context.storage.json<Stats>("stats.json", {startTime: Date.now(), reportCount: 0});
-        const previous = await store.read();
-        const stats = await store.update(value => ({...value, reportCount: value.reportCount + 1}));
+        const store = context.storage.json<Stats>("stats.json", {schemaVersion: 1, startTime: Date.now(), reportCount: 0});
+        const stats = await store.update(value => ({...value, schemaVersion: 1,
+          startTime: Number.isFinite(value.startTime) ? value.startTime : Date.now(),
+          reportCount: (Number.isSafeInteger(value.reportCount) ? value.reportCount : 0) + 1}));
         const [{chats, blocked, user}, quote] = await Promise.all([accountStats(context), hitokoto(context)]);
         const name = user?.username ? `@${user.username}` : [user?.firstName, user?.lastName].filter(Boolean).join(" ") || "Telegram 用户";
-        const days = Math.max(0, Math.floor((Date.now() - previous.startTime) / 86_400_000));
+        const days = Math.max(0, Math.floor((Date.now() - stats.startTime) / 86_400_000));
         const premium = user?.premium ? "\n⭐ <b>会员状态</b>\nTelegram Premium 已启用\n" : "";
         const clean = blocked < 20 ? "账户黑名单保持得很干净" : "愿新一年少遇到一些打扰";
         await context.telegram.edit(invocation.message, `<b>${escape(name)} 的 ${reportYear()} 年度报告</b>\n\n` +

@@ -43,3 +43,31 @@ test('music_bot keeps YouTube music media caption-free', async () => {
   assert.equal(f.sent[0].peer, '@ttaudiobot');
   assert.equal(f.files[0].value.caption, undefined);
 });
+
+test('music_bot serializes requests to the same bot so replies cannot cross-associate', async () => {
+  let active = 0, maximum = 0, sequence = 0, reads = 0;
+  const files = [];
+  const client = {
+    async invoke() {}, async getInputEntity(value) {return value;},
+    async sendMessage(peer, value) {
+      if (value.message === '/start' || value.message === '1') return;
+      active += 1; maximum = Math.max(maximum, active); sequence += 1; reads = 0;
+    },
+    async getMessages() {
+      reads += 1;
+      return reads === 1
+        ? [{id: sequence * 10 + 1, out: false, date: Math.floor(Date.now() / 1000), buttonCount: 1, async click() {}}]
+        : [{id: sequence * 10 + 2, out: false, date: Math.floor(Date.now() / 1000), media: {request: sequence}}];
+    },
+    async sendFile(peer, value) {files.push({peer, value}); active -= 1;},
+  };
+  const context = {signal: new AbortController().signal, log: {info() {}, error() {}}, telegram: {
+    async edit() {}, async withClient(operation) {return operation(client, context.signal);},
+  }};
+  const command = create().commands.mbvk;
+  const invoke = (id, query) => command.handle({command: 'mbvk', prefix: '.', args: [query],
+    message: {id, chatId: String(id), outgoing: true, text: `.mbvk ${query}`, raw: {peerId: id, async delete() {}}}}, context);
+  await Promise.all([invoke(1, 'first'), invoke(2, 'second')]);
+  assert.equal(maximum, 1);
+  assert.deepEqual(files.map(value => value.value.file.request), [1, 2]);
+});

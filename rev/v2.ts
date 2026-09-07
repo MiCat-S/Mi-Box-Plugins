@@ -1,4 +1,5 @@
-import {stat} from "node:fs/promises";
+import {access, stat} from "node:fs/promises";
+import {constants} from "node:fs";
 import path from "node:path";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
@@ -9,6 +10,22 @@ const segmenter = new Intl.Segmenter(undefined, {granularity: "grapheme"});
 
 function reverse(text: string): string {
   return text.split("\n").map(line => [...segmenter.segment(line)].map(value => value.segment).reverse().join("")).join("\n");
+}
+
+function reversedEntities(text: string, entities: readonly any[]): any[] {
+  const lineStarts: number[] = [];
+  let start = 0;
+  for (const line of text.split("\n")) { lineStarts.push(start); start += line.length + 1; }
+  return entities.flatMap(entity => {
+    const offset = Number(entity?.offset); const length = Number(entity?.length);
+    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || offset + length > text.length) return [];
+    const lineStart = [...lineStarts].reverse().find(value => value <= offset) ?? 0;
+    const lineEnd = text.indexOf("\n", lineStart); const limit = lineEnd < 0 ? text.length : lineEnd;
+    if (offset + length > limit) return [];
+    const clone = Object.assign(Object.create(Object.getPrototypeOf(entity)), entity);
+    clone.offset = lineStart + (limit - lineStart) - (offset - lineStart) - length;
+    return [clone];
+  });
 }
 
 function parse(args: readonly string[]): {flip: Flip; invert: boolean; text: string} {
@@ -55,19 +72,38 @@ function ffmpegArgs(input: string, output: string, flip: Flip, invert: boolean, 
 async function runFfmpeg(context: PluginContext, args: readonly string[]): Promise<void> {
   for (const command of FFMPEG) {
     try { await context.processes.run(command, args, {timeoutMs: 180_000, maxOutputBytes: 512 * 1024}); return; }
-    catch { context.signal.throwIfAborted(); }
+    catch (error) {
+      context.signal.throwIfAborted();
+      if ((error as {code?: unknown})?.code !== "SPAWN_FAILED") throw error;
+      try { await access(command, constants.F_OK); } catch { continue; }
+      throw error;
+    }
   }
   throw new Error("FFmpeg unavailable");
 }
 
+async function editReversedReply(context: PluginContext, invocation: any, reply: any): Promise<void> {
+  const raw = invocation.message.raw as ApiTypes.Message | undefined;
+  const source = reply.raw as ApiTypes.Message | undefined;
+  const text = reply.text as string;
+  const entities = reversedEntities(text, (source as any)?.entities ?? []);
+  if (!entities.length || !raw?.peerId) { await context.telegram.edit(invocation.message, reverse(text)); return; }
+  await context.telegram.withClient(async client => {
+    const {Api} = await import("teleproto");
+    await client.invoke(new Api.messages.EditMessage({peer: await client.getInputEntity(raw.peerId!), id: invocation.message.id,
+      message: reverse(text), entities}));
+  });
+}
+
 export default function createRev() {
-  return definePlugin({apiVersion: 1, id: "rev", description: "反转文字或翻转回复的媒体", commands: {
+  return definePlugin({apiVersion: 1, id: "rev", description: "反转文字或翻转回复的媒体",
+    resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 180_000, maxOutputBytes: 512 * 1024}}, commands: {
     rev: {description: "反转文字或翻转回复的媒体", async handle(invocation, context) {
       const selected = parse(invocation.args);
       if (selected.text) { await context.telegram.edit(invocation.message, reverse(selected.text)); return; }
       const reply = invocation.message.replyToId === undefined ? undefined : await context.telegram.getReply(invocation.message);
       const info = mediaInfo(reply?.raw as ApiTypes.Message | undefined);
-      if (!info && reply?.text) { await context.telegram.edit(invocation.message, reverse(reply.text)); return; }
+      if (!info && reply?.text) { await editReversedReply(context, invocation, reply); return; }
       if (!info) {
         await context.telegram.edit(invocation.message,
           `<b>内容反转</b>\n<code>${invocation.prefix}rev 文字</code>\n回复媒体可使用 <code>${invocation.prefix}rev [h|v] [c]</code>。`, {parseMode: "html"});
@@ -88,7 +124,11 @@ export default function createRev() {
             const raw = invocation.message.raw as ApiTypes.Message | undefined;
             if (!raw?.peerId) throw new Error("Missing peer");
             const options: any = {file: output, replyTo: invocation.message.replyToId};
-            if (reply?.text) options.caption = reverse(reply.text);
+            if (reply?.text) {
+              options.caption = reverse(reply.text);
+              const entities = reversedEntities(reply.text, ((source as any).entities ?? []));
+              if (entities.length) options.entities = entities;
+            }
             if (info.webm || info.webp) {
               const {Api} = await import("teleproto");
               options.attributes = [new Api.DocumentAttributeSticker({alt: "rev", stickerset: new Api.InputStickerSetEmpty()})];
