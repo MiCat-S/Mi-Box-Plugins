@@ -193,8 +193,22 @@ test('pure synchronous factory and lazy load use only candidate/helper/SDK sourc
   assert.deepEqual(Object.keys(first.commands), ['nodeseek']);
   assert.equal(first.setup, undefined);
   assert.equal(first.cleanup, undefined);
-  assert.equal(Object.keys(metadata.inputs).length, 3);
-  assert.ok(Object.keys(metadata.inputs).every(file => /(?:nodeseek\/v2(?:\/curl-cffi)?|src\/v2\/sdk)\.ts$/.test(file)));
+  const inputs = Object.keys(metadata.inputs).map(file => path.resolve(file)).sort();
+  // SDK-only plugin loading may include the lightweight SDK dependency chain,
+  // but must not pull compiler, protocol, HTTP, or Python runtime modules into
+  // the candidate. Keep this exact set so a new eager dependency is reviewed.
+  const allowedInputs = [
+    '../TeleBox-Core/src/v2/branding.ts',
+    '../TeleBox-Core/src/v2/sdk.ts',
+    '../TeleBox-Core/src/v2/ui/document.ts',
+    '../TeleBox-Core/src/v2/ui/feedback.ts',
+    '../TeleBox-Core/src/v2/ui/index.ts',
+    '../TeleBox-Core/src/v2/ui/text.ts',
+    'nodeseek/v2.ts',
+    'nodeseek/v2/curl-cffi.ts',
+  ].map(file => path.resolve(__dirname, '..', file)).sort();
+  assert.deepEqual(inputs, allowedInputs);
+  assert.doesNotMatch(inputs.join('\n'), /compiler|teleproto|http|python/i);
   const f = await fixture(t);
   assert.deepEqual(await fs.readdir(f.root), []);
   assert.equal(f.requests.length + f.processes.length + f.edits.length + f.waits.length, 0);

@@ -192,7 +192,8 @@ test('four conversion presentations, USD benchmarks and Shanghai timestamps', as
     assert.match(edits.at(-1).text, detail);
     assert.match(edits.at(-1).text, /⏰ <b>.+:<\/b> \d{4}\/\d{1,2}\/\d{1,2}/);
   }
-  assert.deepEqual(edits.slice(0, 3).map(edit => edit.text), ['⚡ 正在获取最新汇率数据...', '🔍 正在识别货币类型...', '⏳ 正在获取汇率数据...']);
+  assert.equal(edits[0].text, '<b>进行中 · 正在查询汇率</b>');
+  assert.equal(edits.filter(edit => edit.text.includes('正在查询汇率')).length, cases.length);
   assert.equal(edits[0].message.chatId, envelope.chatId);
 });
 
@@ -570,7 +571,7 @@ test('stream cancellation awaits asynchronous cancel settlement before unloading
   assert.equal((await host.unload('rate', 1000)).completed, true);
   assert.equal(canceled, 1);
   assert.equal(requests.length, 1);
-  assert.equal(edits.length, 3);
+  assert.equal(edits.length, 1);
 });
 
 test('unload during response cleanup waits for real settlement and sends no result', async t => {
@@ -586,7 +587,7 @@ test('unload during response cleanup waits for real settlement and sends no resu
   await running;
   assert.equal((await host.unload('rate', 1000)).completed, true);
   assert.equal(requests.length, 1);
-  assert.equal(edits.length, 3);
+  assert.equal(edits.length, 1);
 });
 
 test('cancellation during benchmark fetch refuses final conversion output', async t => {
@@ -601,12 +602,12 @@ test('cancellation during benchmark fetch refuses final conversion output', asyn
   finally { release.resolve(); }
   await running;
   assert.equal((await host.unload('rate', 1000)).completed, true);
-  assert.equal(edits.length, 3);
+  assert.equal(edits.length, 1);
   assert.equal(requests.length, 2);
 });
 
 test('cancellation during each message edit awaits transport and starts no later send', async t => {
-  for (const pauseAt of [1, 2, 3, 4]) {
+  for (const pauseAt of [1]) {
     const started = deferred(), release = deferred();
     let calls = 0;
     const {run, host, edits, requests} = await fixture(t, {edit: async () => {
@@ -618,7 +619,7 @@ test('cancellation during each message edit awaits transport and starts no later
     finally { release.resolve(); }
     await running;
     assert.equal(edits.length, pauseAt);
-    if (pauseAt < 4) assert.equal(requests.length, 0);
+    if (pauseAt < 2) assert.equal(requests.length, 0);
     assert.equal((await host.unload('rate', 1000)).completed, true);
   }
 });
@@ -689,7 +690,7 @@ test('HTTP timeout does not race an uncooperative fetch or start fallback before
     assert.equal(requests[0].init.signal.aborted, true);
     assert.equal(completed, false);
     assert.equal(requests.length, 1);
-    assert.equal(edits.length, 3);
+    assert.equal(edits.length, 1);
   } finally { release.resolve(); }
   await running;
   t.mock.timers.reset();

@@ -1,23 +1,24 @@
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {definePlugin, ui, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {FIAT_CURRENCIES, CRYPTO_CURRENCIES} from "./v2/currencies";
 import {RateFailure, reason, request} from "./v2/http";
 
-const help = `🚀 <b>智能汇率查询助手</b>
+function help(prefix: string): ui.Html {
+  const line = (args: string | readonly string[], detail: string): ui.Html =>
+    ui.concat(ui.text("• "), ui.command(prefix, "rate", args), ui.text(` - ${detail}\n`));
+  return ui.concat(
+    ui.bold("🚀 智能汇率查询助手"), ui.text("\n\n"), ui.bold("📊 使用示例"), ui.text("\n"),
+    line("BTC", "比特币美元价"), line(["ETH", "CNY"], "以太坊人民币价"),
+    line(["CNY", "TRY"], "人民币兑土耳其里拉"), line(["BTC", "CNY", "0.5"], "0.5个BTC换算"),
+    line(["CNY", "USDT", "7000"], "7000元换USDT"),
+  );
+}
 
-📊 <b>使用示例</b>
-• <code>rate BTC</code> - 比特币美元价
-• <code>rate ETH CNY</code> - 以太坊人民币价
-• <code>rate CNY TRY</code> - 人民币兑土耳其里拉
-• <code>rate BTC CNY 0.5</code> - 0.5个BTC换算
-• <code>rate CNY USDT 7000</code> - 7000元换USDT`;
+const htmlOptions = {parseMode: "html", linkPreview: false} as const;
 
 type Currency = {symbol: string; type: "fiat" | "crypto"};
 type Rates = Record<string, number>;
 const bridges = ["USDT", "BUSD", "USDC"] as const;
-const escape = (text: string) => text.replace(/[&<>"']/g, char => ({
-  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;",
-})[char]!);
-const code = (text: string) => `<code>${escape(text)}</code>`;
+const code = (text: string) => ui.code(text);
 const validCode = (text: string) => /^[a-z][a-z0-9-]{0,63}$/i.test(text);
 const record = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -68,10 +69,21 @@ function formatPrice(value: number): string {
   return value.toExponential(2);
 }
 
-async function edit(context: PluginContext, message: MessageEnvelope, text: string): Promise<void> {
+function feedback(state: "working" | "success" | "error", title: string, detail?: string): ui.Html {
+  return ui.renderFeedback({state, title, ...(detail ? {detail} : {})});
+}
+
+async function rich(value: string): Promise<ui.Html> {
+  const lines = await ui.richText(value);
+  const parts: ui.Html[] = [];
+  lines.forEach((line, index) => { if (index) parts.push(ui.text("\n")); parts.push(line); });
+  return ui.concat(...parts);
+}
+
+async function edit(context: PluginContext, message: MessageEnvelope, value: string): Promise<void> {
   context.signal.throwIfAborted();
-  if (text.length > 4000 || /[\uD800-\uDFFF]/u.test(text)) throw new RateFailure("消息内容超出显示范围");
-  await context.telegram.edit(message, text, {parseMode: "html", linkPreview: false});
+  if (value.length > 4000 || /[\uD800-\uDFFF]/u.test(value)) throw new RateFailure("消息内容超出显示范围");
+  await context.telegram.edit(message, value, htmlOptions);
   context.signal.throwIfAborted();
 }
 
@@ -153,35 +165,35 @@ export default function createRate() {
   }
 
   return definePlugin({
-    apiVersion: 1, id: "rate", description: `加密货币汇率查询 & 数量换算\n\n${help}`,
+    apiVersion: 1, id: "rate", description: "加密货币汇率查询与数量换算", renderHelp: help,
     cleanup() { fiatCache.clear(); dynamicFiats = undefined; },
     commands: {
-      rate: {description: "智能汇率查询与数量换算", async handle({message, args}, context) {
+      rate: {description: "智能汇率查询与数量换算", async handle({message, args, prefix}, context) {
         context.signal.throwIfAborted();
         if (active >= 4) {
-          try { await edit(context, message, "⏳ 汇率查询繁忙，请稍后重试"); }
+          try { await edit(context, message, feedback("error", "汇率查询繁忙", "请稍后重试")); }
           catch { if (!context.signal.aborted) context.log.error("rate.message.failed"); }
           return;
         }
         active++;
-        let fallback = "";
+        let fallback: ui.Html = ui.text("");
         try {
-          if (!args[0] || args[0] === "help" || args[0] === "h") { await edit(context, message, help); return; }
+          if (!args[0] || args[0] === "help" || args[0] === "h") { await edit(context, message, help(prefix)); return; }
           const {base, quote, amount} = parse(args);
           const query = encodeURIComponent(`${amount} ${base.toUpperCase()} to ${quote.toUpperCase()}`);
-          fallback = `\n\n🔎 <b>谷歌兜底:</b> <a href="https://www.google.com/search?q=${escape(query)}">点击查看</a>`;
+          fallback = ui.concat(ui.text("\n\n🔎 "), ui.bold("谷歌兜底:"), ui.text(" "),
+            ui.link(`https://www.google.com/search?q=${query}`, "点击查看"));
           let requests = 0;
           const get: typeof request = async (ctx, url, timeout) => {
             ctx.signal.throwIfAborted();
             if (++requests > 64) throw new RateFailure("本次查询已达到请求上限，请稍后重试");
             return request(ctx, url, timeout);
           };
-          await edit(context, message, "⚡ 正在获取最新汇率数据...");
-          await edit(context, message, "🔍 正在识别货币类型...");
+          await edit(context, message, feedback("working", "正在查询汇率"));
           const source = await currency(base, context, get);
           context.signal.throwIfAborted();
           const target = await currency(quote, context, get);
-          await edit(context, message, "⏳ 正在获取汇率数据...");
+
           const tickers = new Map<string, number>();
           async function binance(pair: string): Promise<number> {
             context.signal.throwIfAborted();
@@ -231,7 +243,10 @@ export default function createRate() {
             }
           } catch (error) {
             context.signal.throwIfAborted();
-            await edit(context, message, `❌ <b>获取价格失败:</b> ${escape(reason(error))}\n\n🔍 <b>调试信息:</b>\n• ${code(source.symbol)} (${source.type})\n• ${code(target.symbol)} (${target.type})${fallback}`);
+            await edit(context, message, ui.concat(
+              feedback("error", "获取价格失败", reason(error)), ui.text("\n\n"), ui.bold("🔍 调试信息:"),
+              ui.text("\n• "), ui.code(source.symbol), ui.text(` (${source.type})\n• `), ui.code(target.symbol), ui.text(` (${target.type})`), fallback,
+            ));
             return;
           }
           context.signal.throwIfAborted();
@@ -257,12 +272,12 @@ export default function createRate() {
             }
           }
           output += `⏰ <b>${source.type === "fiat" && target.type === "fiat" ? "更新时间" : "数据更新"}:</b> ${lastUpdated}`;
-          await edit(context, message, output);
+          await edit(context, message, await rich(output));
         } catch (error) {
           if (context.signal.aborted) return;
           context.log.error("rate.command.failed");
           const messageText = error instanceof RateFailure ? error.message : "消息处理失败，请稍后重试";
-          try { await edit(context, message, `❌ <b>操作失败</b>\n\n${escape(messageText)}${fallback}`); }
+          try { await edit(context, message, ui.concat(feedback("error", "操作失败", messageText), fallback)); }
           catch { if (!context.signal.aborted) context.log.error("rate.message.failed"); }
         } finally { active--; }
       }},

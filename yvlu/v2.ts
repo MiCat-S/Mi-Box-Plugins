@@ -1,4 +1,4 @@
-import {definePlugin, type PluginContext, type CommandInvocation} from "telebox/sdk";
+import {definePlugin, ui, type PluginContext, type CommandInvocation} from "telebox/sdk";
 import {escape, native, replyMessage, UserError} from "./v2/runtime";
 import {generateQuote, sendQuote} from "./v2/media";
 import {quoteData, type QuoteOptions} from "./v2/quote";
@@ -7,19 +7,26 @@ import {saveSticker} from "./v2/stickers";
 const defaults = {stickerSetShortName: "", _comment: "如果贴纸包不存在，将自动创建。shortName 只能包含字母、数字和下划线"};
 const store = (ctx: PluginContext) => ctx.storage.json("config.json", defaults);
 
-function help(prefix: string): string {
-  const command = escape(`${prefix}yvlu`);
-  return `<b>生成文字语录贴纸</b>\n\n` + [
-    `<code>${command} [消息数]</code> 回复消息生成语录，最多 5 条，支持选择部分引用`,
-    `<code>${command} r [消息数]</code> 包含被引用内容`,
-    `<code>${command} f 文本</code> 伪造文本；<code>fr 文本</code> 同时包含回复`,
-    `<code>${command} u 用户ID/用户名 [消息数]</code> 伪造发送者；<code>ur</code> 同时包含回复`,
-    `<code>${command} webp|image|png|stories [消息数]</code> 静态 WebP、背景 PNG、故事模式 720×1280 PNG`,
-    `<code>${command} r webp|image|png|stories [消息数]</code> 指定格式并包含回复`,
-    `<code>${command} s</code> 保存回复的贴纸或图片到贴纸包`,
-    `<code>${command} config</code> 查看配置`,
-    `<code>${command} config sticker 贴纸包名称</code> 设置贴纸包（别名 stickerset、set）`,
-  ].join("\n");
+function help(prefix: string): ui.Html {
+  const line = (args: string | readonly string[], detail: string): ui.Html =>
+    ui.concat(ui.text("• "), ui.command(prefix, "yvlu", args), ui.text(` ${detail}\n`));
+  return ui.concat(
+    ui.bold("生成文字语录贴纸"), ui.text("\n\n"),
+    line("[消息数]", "回复消息生成语录，最多 5 条，支持选择部分引用"),
+    line(["r", "[消息数]"], "包含被引用内容"),
+    line("f 文本", "伪造文本；fr 文本同时包含回复"),
+    line("u 用户ID/用户名 [消息数]", "伪造发送者；ur 同时包含回复"),
+    line("webp|image|png|stories [消息数]", "静态 WebP、背景 PNG、故事模式 720×1280 PNG"),
+    line("r webp|image|png|stories [消息数]", "指定格式并包含回复"),
+    line("s", "保存回复的贴纸或图片到贴纸包"),
+    line("config", "查看配置"),
+    line("config sticker 贴纸包名称", "设置贴纸包（别名 stickerset、set）"),
+  );
+}
+
+const htmlOptions = {parseMode: "html", linkPreview: false} as const;
+function feedback(state: "working" | "success" | "error", title: string, detail?: string): ui.Html {
+  return ui.renderFeedback({state, title, ...(detail ? {detail} : {})});
 }
 
 export function parseQuote(invocation: CommandInvocation): QuoteOptions | undefined {
@@ -53,7 +60,7 @@ export function parseQuote(invocation: CommandInvocation): QuoteOptions | undefi
 async function handle(invocation: CommandInvocation, ctx: PluginContext): Promise<void> {
   const {message, prefix} = invocation;
   const args = message.text.trim().split(/\s+/).slice(1);
-  const edit = (text: string, html = false) => ctx.telegram.edit(message, text, html ? {parseMode: "html"} : {});
+  const edit = (text: string, html = false) => ctx.telegram.edit(message, text, html ? htmlOptions : {});
   try {
     if (args[0] === "config") {
       if (!args[1]) {
@@ -72,13 +79,13 @@ async function handle(invocation: CommandInvocation, ctx: PluginContext): Promis
       if (!/^[a-zA-Z0-9_]+$/.test(name)) throw new UserError("贴纸包名称只能包含字母、数字和下划线");
       if (name.length > 64) throw new UserError("贴纸包名称长度应在 1-64 个字符之间");
       await store(ctx).update(data => ({...data, stickerSetShortName: name}), ctx.signal);
-      await edit(`已设置贴纸包：${name}\n贴纸包链接：t.me/addstickers/${name}`);
+      await edit(feedback("success", "贴纸包配置已更新", `已设置贴纸包：${name}\n贴纸包链接：t.me/addstickers/${name}`), true);
       return;
     }
     if (args[0] === "s") {
       const config = await store(ctx).read(ctx.signal);
       const created = await saveSticker(ctx, message, config.stickerSetShortName);
-      await edit(`${created ? "已创建贴纸包并添加第一个贴纸" : "已成功添加到贴纸包"}\n贴纸包：t.me/addstickers/${config.stickerSetShortName}`);
+      await edit(feedback("success", created ? "贴纸包已创建" : "贴纸已添加", `贴纸包：t.me/addstickers/${config.stickerSetShortName}`), true);
       return;
     }
     const options = parseQuote(invocation);
@@ -96,7 +103,7 @@ async function handle(invocation: CommandInvocation, ctx: PluginContext): Promis
     const replied = await replyMessage(ctx, message);
     if (!replied) throw new UserError("请回复一条消息");
     if (options.count > 5) throw new UserError("太多了 哒咩");
-    await edit("正在生成语录贴纸...");
+    await edit(feedback("working", "正在生成语录贴纸"), true);
     const data = await quoteData(ctx, message, replied, options);
     const result = await generateQuote(ctx, data);
     await sendQuote(ctx, (message.raw as any)?.peerId || message.chatId, replied.id, result);
@@ -104,12 +111,12 @@ async function handle(invocation: CommandInvocation, ctx: PluginContext): Promis
   } catch (error) {
     ctx.signal.throwIfAborted();
     ctx.log.error("yvlu.command.failed");
-    await edit(error instanceof UserError ? error.message : "语录操作失败，请检查网络、媒体转换依赖或贴纸包权限后重试");
+    await edit(feedback("error", "语录操作失败", error instanceof UserError ? error.message : "请检查网络、媒体转换依赖或贴纸包权限后重试"), true);
   }
 }
 
 export default function createYvlu() {
-  return definePlugin({apiVersion: 1, id: "yvlu", description: "生成文字语录贴纸、图片与故事，管理贴纸包",
+  return definePlugin({apiVersion: 1, id: "yvlu", description: "生成文字语录贴纸、图片与故事，管理贴纸包", renderHelp: help,
     commands: {yvlu: {description: "生成语录、保存贴纸及配置贴纸包", handle}},
   });
 }
