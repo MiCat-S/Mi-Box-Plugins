@@ -40,7 +40,7 @@ async function image(context: PluginContext, url: URL): Promise<Buffer> {
       await reader.cancel().catch(() => undefined);
       reader.releaseLock();
     }
-  }, {timeoutMs: 120_000, signal: context.signal});
+  }, {timeoutMs: 120_000, signal: context.signal, redirects:{allowedHosts:[url.hostname],maxRedirects:2}});
 }
 
 function safeImageUrl(value: unknown, hosts: readonly string[]): URL {
@@ -64,7 +64,7 @@ async function wallhaven(context: PluginContext, category: string): Promise<Down
   if (tag) params.set("q", tag);
   const response = await context.http.json<unknown>(`https://wallhaven.cc/api/v1/search?${params}`, {
     method: "GET", redirect: "manual", credentials: "omit", headers: {Accept: "application/json", "User-Agent": "MiBot-Bizhi/2.0"},
-  }, {timeoutMs: 60_000, signal: context.signal});
+  }, {timeoutMs: 60_000, signal: context.signal, redirects:{allowedHosts:["wallhaven.cc"],maxRedirects:2}});
   const entries = (response as {data?: unknown})?.data;
   if (!Array.isArray(entries)) throw new Error("Invalid Wallhaven response");
   const valid = entries.filter(value => {
@@ -88,7 +88,7 @@ async function fallback(context: PluginContext, category: string): Promise<Downl
   url.searchParams.set("method", "pc");
   url.searchParams.set("format", "json");
   if (category) url.searchParams.set("lx", category);
-  const response = await context.http.json<unknown>(url, {method: "GET", redirect: "manual", credentials: "omit"}, {timeoutMs: 60_000, signal: context.signal});
+  const response = await context.http.json<unknown>(url, {method: "GET", redirect: "manual", credentials: "omit"}, {timeoutMs: 60_000, signal: context.signal, redirects:{allowedHosts:["api.btstu.cn"],maxRedirects:2}});
   const value = response as {code?: unknown; imgurl?: unknown};
   if (String(value.code) !== "200") throw new Error("Fallback unavailable");
   const target = safeImageUrl(value.imgurl, ["btstu.cn"]);

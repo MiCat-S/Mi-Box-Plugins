@@ -162,11 +162,11 @@ export default function createAitc() {
         if (input.length > 50_000) { await edit("输入文本过长", false); return; }
         if (!config.apiKey) { await edit("未配置 API Key，请先在收藏夹中使用 aitc key 设置", false); return; }
         await edit("正在请求…", false);
-        const data = await context.http.withResponse(endpoint(config.apiUrl), {
+        const target=endpoint(config.apiUrl);const data = await context.http.withResponse(target, {
           method: "POST", redirect: "manual", credentials: "omit",
           headers: {Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json"},
           body: JSON.stringify({model: config.model, messages: [{role: "system", content: prompt}, {role: "user", content: input}], temperature: config.temperature}),
-        }, responseJson, {timeoutMs: 30_000, signal: context.signal});
+        }, responseJson, {timeoutMs: 30_000, signal: context.signal, redirects:{allowedHosts:[new URL(target).hostname],maxRedirects:2}});
         const content = (data as any)?.choices?.[0]?.message?.content;
         if (typeof content !== "string" || !content.trim()) throw new Error("Empty output");
         await edit(content.trim(), false);

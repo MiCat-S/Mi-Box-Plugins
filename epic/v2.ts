@@ -51,7 +51,7 @@ async function query(context: PluginContext): Promise<Game[]> {
   const data = await context.http.json<unknown>(ENDPOINT, {
     method: "GET", redirect: "manual", credentials: "omit",
     headers: {Accept: "application/json", "User-Agent": "MiBot-Epic/2.0"},
-  }, {timeoutMs: 15_000, signal: context.signal});
+  }, {timeoutMs: 15_000, signal: context.signal, redirects:{allowedHosts:["store-site-backend-static-ipv4.ak.epicgames.com"],maxRedirects:2}});
   return games(data);
 }
 

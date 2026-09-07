@@ -108,7 +108,7 @@ async function execute(ctx: PluginContext, client: TelegramClient, signal: Abort
           { signal: combined }, async response => {
             if (!response.ok) throw new Error(`Image HTTP ${response.status}`);
             return Buffer.from(await response.arrayBuffer());
-          });
+          }, {redirects:{allowedHosts:["raw.githubusercontent.com"],maxRedirects:2}});
         combined.throwIfAborted();
         // Publish the cache atomically so simultaneous chats never read a partial image.
         const temporary = file + `.${message.id}.${randomUUID()}.tmp`;

@@ -46,7 +46,7 @@ async function fetchHitokoto(ctx: PluginContext, selected: string[] | undefined)
       const data = await ctx.http.json<unknown>(url, {
         method: "GET", redirect: "manual", credentials: "omit",
         headers: {"Accept": "application/json", "User-Agent": "Mi-Box-Hitokoto/1.0"},
-      }, {timeoutMs: 10_000, signal: ctx.signal});
+      }, {timeoutMs: 10_000, signal: ctx.signal, redirects:{allowedHosts:["v1.hitokoto.cn"],maxRedirects:2}});
       return resultText(data);
     } catch (error) {
       last = error;

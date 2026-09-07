@@ -37,7 +37,7 @@ export default function createMoyu() {
       let sent = false;
       try {
         await ctx.telegram.edit(invocation.message, "开摸…");
-        const image = await ctx.http.withResponse(url, {}, body, {timeoutMs: 15000});
+        const image = await ctx.http.withResponse(url, {}, body, {timeoutMs: 15000, redirects:{allowedHosts:["api.52vmy.cn"],maxRedirects:2}});
         ctx.signal.throwIfAborted();
         await ctx.telegram.withClient(async (client, signal) => {
           signal.throwIfAborted();

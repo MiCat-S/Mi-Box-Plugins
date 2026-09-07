@@ -14,7 +14,7 @@ test('bin validates input and formats provider fields safely', async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mi-box-bin-v2-')));
   const edits = [];
   const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}}, http: {
-    fetch: async url => new Response(url.includes('bincheck.io')
+    fetch: async url => new Response(String(url).includes('bincheck.io')
       ? '<meta property="og:description" content="This number: 415042 is a valid BIN number VISA issued by Example Bank in Taiwan">'
       : JSON.stringify({scheme: 'visa', type: 'debit', brand: '<Brand>', number: {length: 16, luhn: true}, prepaid: true, bank: {name: 'Fallback Bank'}, country: {name: 'Taiwan', alpha2: 'TW', currency: 'TWD'}}), {status: 200}),
   }, telegram: {async edit(m, text, options) {edits.push({text, options});}, async reply() {}, async invoke() {}, async getReply() {}, async withClient() {}}});

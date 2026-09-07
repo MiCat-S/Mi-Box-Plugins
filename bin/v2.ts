@@ -15,7 +15,7 @@ async function bincheck(ctx: PluginContext, bin: string) {
       {headers: {"user-agent": "Mi Box"}}, async response => {
         if (response.status !== 200) throw new Error("bincheck");
         return response.text();
-      }, {timeoutMs: 8000});
+      }, {timeoutMs: 8000, redirects:{allowedHosts:["bincheck.io"],maxRedirects:2}});
     const description = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']*)["']/i)?.[1] ?? "";
     const match = description.match(/valid BIN number\s+\d+\s+(?:is\s+)?(?:a\s+)?valid BIN number\s+([A-Z ]+)\s+issued by\s+(.+?)\s+in\s+(.+)/i) ??
       description.match(/valid BIN number\s+([A-Z ]+)\s+issued by\s+(.+?)\s+in\s+(.+)/i);
@@ -31,7 +31,7 @@ export default function createBin() {
       try {
         await ctx.telegram.edit(invocation.message, "正在查询 BIN…");
         const [data, checked] = await Promise.all([
-          ctx.http.json<any>(`https://lookup.binlist.net/${value}`, {"headers": {"accept": "application/json", "user-agent": "Mi Box"}}, {timeoutMs: 10000}),
+          ctx.http.json<any>(`https://lookup.binlist.net/${value}`, {"headers": {"accept": "application/json", "user-agent": "Mi Box"}}, {timeoutMs: 10000, redirects:{allowedHosts:["lookup.binlist.net"],maxRedirects:2}}),
           bincheck(ctx, value),
         ]);
         const brand = field(data?.brand);

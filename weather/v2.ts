@@ -32,7 +32,7 @@ const format = (name: string, geo: any, data: any) => {
 async function get(ctx: PluginContext, url: string, params: Record<string, string | number>): Promise<any> {
   const target = new URL(url);
   for (const [key, value] of Object.entries(params)) target.searchParams.set(key, String(value));
-  return ctx.http.json(target.toString(), {}, {timeoutMs: 10000});
+  return ctx.http.json(target.toString(), {}, {timeoutMs: 10000, redirects:{allowedHosts:[target.hostname],maxRedirects:2}});
 }
 export default function createWeather() {
   return definePlugin({apiVersion: 1, id: "weather", description: "查询城市天气", commands: {

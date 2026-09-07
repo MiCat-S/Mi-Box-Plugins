@@ -181,7 +181,7 @@ export default function createIp() {
             result = await context.http.withResponse(
               `http://ip-api.com/json/${encodeURIComponent(clean)}?lang=zh-CN&fields=${fields}`,
               {method: "GET", redirect: "manual", credentials: "omit", headers: {"User-Agent": "TeleBox-IP-Plugin/1.0"}},
-              consume, {signal: context.signal, timeoutMs: 15000},
+              consume, {signal: context.signal, timeoutMs: 15000, redirects:{allowedHosts:["ip-api.com"],maxRedirects:2}},
             );
           } catch (error) {
             if (context.signal.aborted) return;

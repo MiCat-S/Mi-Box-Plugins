@@ -37,7 +37,7 @@ export default function createHttpcat() {
         const data = await ctx.http.withResponse(`https://http.cat/${code}.jpg`, {
           method: "GET", redirect: "manual", credentials: "omit",
           headers: {"Accept": "image/jpeg", "User-Agent": "Mi-Box-Httpcat/1.0"},
-        }, (response, signal) => readImage(response, signal), {timeoutMs: 15_000, signal: ctx.signal});
+        }, (response, signal) => readImage(response, signal), {timeoutMs: 15_000, signal: ctx.signal, redirects:{allowedHosts:["http.cat"],maxRedirects:2}});
         ctx.signal.throwIfAborted();
         await ctx.telegram.withClient(async client => {
           const {CustomFile} = await import("teleproto/client/uploads.js");

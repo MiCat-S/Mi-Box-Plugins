@@ -9,7 +9,7 @@ type Data = {
   poem?: {content: string[]; title: string; author: string};
 };
 async function load(ctx: PluginContext): Promise<Data> {
-  const result = await ctx.http.json<{data?: Data}>("https://news.topurl.cn/api", {}, {timeoutMs: 15000});
+  const result = await ctx.http.json<{data?: Data}>("https://news.topurl.cn/api", {}, {timeoutMs: 15000, redirects:{allowedHosts:["news.topurl.cn"],maxRedirects:2}});
   if (!result?.data || typeof result.data !== "object") throw new Error("Invalid news data");
   return result.data;
 }

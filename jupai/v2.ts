@@ -39,7 +39,7 @@ export default function createJupai() {
             signal.removeEventListener("abort", abort);
             try { if (!complete) await cancel(); } finally { reader.releaseLock(); }
           }
-        }, {timeoutMs: 60000});
+        }, {timeoutMs: 60000, redirects:{allowedHosts:["api.txqq.pro"],maxRedirects:2}});
         ctx.signal.throwIfAborted();
         await ctx.telegram.withClient(async (client, signal) => {
           signal.throwIfAborted();

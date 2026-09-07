@@ -15,7 +15,7 @@ const help = (prefix: string) => `<b>发电语录</b>\n<code>${escape(prefix)}fa
 async function list(ctx: PluginContext, kind: string, cache: Cache): Promise<string[]> {
   const previous = cache.get(kind);
   if (previous && Date.now() - previous.at < TTL) return previous.values;
-  const data = await ctx.http.json<unknown>(base + files[kind], {method: "GET", redirect: "manual", credentials: "omit"}, {timeoutMs: 10_000, signal: ctx.signal});
+  const data = await ctx.http.json<unknown>(base + files[kind], {method: "GET", redirect: "manual", credentials: "omit"}, {timeoutMs: 10_000, signal: ctx.signal, redirects:{allowedHosts:["raw.githubusercontent.com"],maxRedirects:2}});
   if (!Array.isArray(data)) throw new Error("语录数据格式无效");
   const values = data.filter((value): value is string => typeof value === "string" && value.length <= MAX_ITEM_LENGTH).slice(0, MAX_ITEMS);
   if (!values.length) throw new Error("语录数据为空");

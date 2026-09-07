@@ -141,7 +141,7 @@ async function sign(ctx: PluginContext, cookie: string, random: boolean, signal:
       let response = await ctx.http.withResponse(
         url,
         {method: "POST", body: "{}", redirect: "manual", credentials: "omit", headers: {...headers, Cookie: cookie}},
-        consume, {signal, timeoutMs: 15000},
+        consume, {signal, timeoutMs: 15000, redirects:{allowedHosts:["www.nodeseek.com"],maxRedirects:2}},
       );
       signal.throwIfAborted();
       let transport = "scoped-http", fallbackFailed = false;

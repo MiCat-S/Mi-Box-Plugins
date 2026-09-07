@@ -258,7 +258,8 @@ test('non-200 statuses including redirects and quota failures are explicit witho
       status, headers: {Location: 'https://user:secret@other.invalid/private'},
     })});
     await run('.ip 8.8.8.8');
-    assert.ok(edits.at(-1).text.includes('API请求失败，HTTP状态码: ' + status));
+    if (status === 301 || status === 302) assert.ok(edits.at(-1).text.includes('网络请求失败'));
+    else assert.ok(edits.at(-1).text.includes('API请求失败，HTTP状态码: ' + status));
     assert.equal(requests.length, 1);
     assert.doesNotMatch(edits.at(-1).text, /other\.invalid|secret/);
   }

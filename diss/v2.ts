@@ -41,7 +41,7 @@ export default function createDiss() {
           ctx.signal.throwIfAborted();
           try {
             text = await ctx.http.withResponse("https://api.oddfar.com/yl/q.php?c=1009&encode=text",
-              {headers: {"user-agent": "Mi Box"}}, readQuote, {timeoutMs: 10000});
+              {headers: {"user-agent": "Mi Box"}}, readQuote, {timeoutMs: 10000, redirects:{allowedHosts:["api.oddfar.com"],maxRedirects:2}});
             break;
           } catch {
             ctx.signal.throwIfAborted();

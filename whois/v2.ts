@@ -102,7 +102,7 @@ async function query(name: string, ctx: PluginContext, db: {read(): Promise<Data
   const age = cached ? Date.now() - Date.parse(cached.queryTime) : NaN;
   if (cached && age >= 0 && age < positive(data.settings?.cacheHours, 24) * 3600000) return cached.rawData;
   try {
-    const text = await ctx.http.text(`https://namebeta.com/api/search/check?query=${encodeURIComponent(name)}`, {headers: {"user-agent": "Mi Box"}}, {timeoutMs: 10000});
+    const text = await ctx.http.text(`https://namebeta.com/api/search/check?query=${encodeURIComponent(name)}`, {headers: {"user-agent": "Mi Box"}}, {timeoutMs: 10000, redirects:{allowedHosts:["namebeta.com"],maxRedirects:2}});
     const result = extract(text);
     if (!result) return "";
     const item = {domain: name, rawData: result, queryTime: new Date().toISOString()};

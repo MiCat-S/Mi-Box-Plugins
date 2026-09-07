@@ -61,7 +61,7 @@ export default function createOxost() {
         const response = await context.http.text("https://0x0.st", {
           method: "POST", body: form, redirect: "manual", credentials: "omit",
           headers: {"User-Agent": "MiBot-Oxost/2.0"},
-        }, {timeoutMs: 60_000, signal: context.signal});
+        }, {timeoutMs: 60_000, signal: context.signal, redirects:{allowedHosts:["0x0.st"],maxRedirects:2}});
         await context.telegram.edit(invocation.message, `<code>${escape(resultUrl(response))}</code>`, {parseMode: "html"});
       } catch {
         if (context.signal.aborted) return;

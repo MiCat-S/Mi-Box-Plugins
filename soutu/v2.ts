@@ -42,7 +42,7 @@ export default function createSoutu() {
         const uploaded = await context.http.text("https://0x0.st", {
           method: "POST", body: form, redirect: "manual", credentials: "omit",
           headers: {"User-Agent": "MiBot-Soutu/2.0"},
-        }, {timeoutMs: 60_000, signal: context.signal});
+        }, {timeoutMs: 60_000, signal: context.signal, redirects:{allowedHosts:["0x0.st"],maxRedirects:2}});
         const image = validUploadUrl(uploaded);
         const source = escape(image.href);
         const google = escape(`https://lens.google.com/uploadbyurl?url=${encodeURIComponent(image.href)}`);
