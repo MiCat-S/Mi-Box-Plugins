@@ -167,7 +167,7 @@ export default function createSum() {
       await ctx.telegram.edit(invocation.message, `<b>摘要 AI 配置</b>\n${providers}\n\n提示词：${db.aiConfig.default_prompt === DEFAULT_PROMPT || !db.aiConfig.default_prompt ? "内置" : "自定义"}\n链接预览：${db.aiConfig.link_preview ? "on" : "off"}`, {parseMode: "html"});
       return;
     }
-    if (["add", "del"].includes(action) || action === "set" && property === "key") requireValue(invocation.message.saved, "涉及 API Key 的配置命令只能在收藏夹使用");
+    if (action === "add" || action === "set" && property === "key") requireValue(invocation.message.saved, "涉及 API Key 的配置命令只能在收藏夹使用");
     if (action === "add") {
       const base = property, key = rest[0] ?? "", model = rest[1] ?? "", type = rest[2] ?? "auto";
       requireValue(name && base && key && model, "用法：sum config add 名称 BaseURL API_KEY 模型 [type]");

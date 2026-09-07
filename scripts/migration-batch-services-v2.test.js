@@ -123,7 +123,7 @@ test('cosplay reports provider failure with a stable message', async () => {
   assert.ok(f.edits.every(value => !value.text.includes('private provider detail')));
 });
 
-test('git_PR keeps secrets in saved messages and validates authenticated reads', async () => {
+test('git_PR restricts token setup while allowing authenticated group reads', async () => {
   const storage = memoryStorage(); const requests = [];
   const f = baseContext({storage});
   f.context.http = {async withResponse(url, init, consume, options) {
@@ -134,7 +134,7 @@ test('git_PR keeps secrets in saved messages and validates authenticated reads',
   await definition.commands.git.handle(invocation('git', ['login', 'e', 'u', 'secret'], {saved: false}), f.context);
   assert.equal(storage.documents.get('config.json').git_token, '');
   await definition.commands.git.handle(invocation('git', ['login', 'e', 'u', 'secret'], {saved: true}), f.context);
-  await definition.commands.git.handle(invocation('git', ['repos'], {saved: true}), f.context);
+  await definition.commands.git.handle(invocation('git', ['repos'], {saved: false, chatId: '-10099'}), f.context);
   assert.equal(requests[0].init.headers.Authorization, 'Bearer secret');
   assert.deepEqual(requests[0].options.redirects, {allowedHosts: ['api.github.com'], maxRedirects: 2});
   assert.equal(requests[0].options.signal, f.context.signal);
@@ -162,7 +162,7 @@ test('git_PR returns a stable authentication error and never exposes provider de
   f.context.http = {async withResponse(_url, _init, consume) {
     return consume(new Response(JSON.stringify({message: 'bad secret'}), {status: 401}), f.context.signal);
   }};
-  await plugin('git_PR').commands.git.handle(invocation('git', ['repos'], {saved: true}), f.context);
+  await plugin('git_PR').commands.git.handle(invocation('git', ['repos'], {saved: false, chatId: '-10099'}), f.context);
   assert.match(f.edits.at(-1).text, /认证失败或权限不足/);
   assert.doesNotMatch(f.edits.at(-1).text, /bad secret|secret/);
 });

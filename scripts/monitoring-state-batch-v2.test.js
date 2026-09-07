@@ -43,7 +43,7 @@ test('lottery persists warehouse, activity and participants with string ids',asy
   const state={schemaVersion:1,activities:{},warehouses:{},settings:{minUsers:2,maxUsers:1000,timeout:60},importedLegacy:true};
   let sentId=10;const sent=[];const client={async sendMessage(peer,options){sent.push({peer,options});return{id:sentId++};},async getEntity(){return{id:'9007199254740995',firstName:'Alice'};}};const f=context(state,client),plugin=createLottery();
   const invoke=async(text,saved=false)=>plugin.commands.lottery.handle({command:'lottery',prefix:'.',args:text.split(/\s+/).slice(1),message:{...message(text),saved}},f.ctx);
-  await invoke('.lottery prize create gifts',true);await invoke('.lottery prize add gifts coupon 2',true);await invoke('.lottery create event JOIN 2 1 gifts');
+  await invoke('.lottery prize create gifts',false);await invoke('.lottery prize add gifts coupon 2',false);await invoke('.lottery create event JOIN 2 1 gifts');
   const activity=Object.values(f.json.value().activities)[0];assert.equal(activity.chatId,'-1009007199254740993');assert.equal(activity.creatorId,'9007199254740995');
   await plugin.listeners[0].handle({...message('JOIN'),outgoing:false},f.ctx);assert.equal(Object.values(f.json.value().activities)[0].participants[0].userId,'9007199254740995');
 });

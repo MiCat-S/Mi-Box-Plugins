@@ -64,9 +64,9 @@ export default function createGitPr() {
     commands: {git: {description: "列出和合并 Git Pull Request", async handle(invocation: any, context: PluginContext) {
       const sub = (invocation.args[0] ?? "help").toLowerCase();
       if (["help", "h"].includes(sub)) { await output(invocation, context, help(invocation.prefix)); return; }
-      if (!invocation.message.saved) { await context.telegram.edit(invocation.message, "Git Token 配置及 API 操作仅限在收藏夹中使用"); return; }
       try {
         if (sub === "login") {
+          if (!invocation.message.saved) { await context.telegram.edit(invocation.message, "Git Token 仅限在收藏夹中设置"); return; }
           const [email, username, token] = invocation.args.slice(1);
           if (!email || !username || !token || token.length > 500) throw new Error("格式：git login 邮箱 用户名 Token");
           await store(context).update(source => ({...normalize(source), git_email: email, git_username: username, git_token: token}));
