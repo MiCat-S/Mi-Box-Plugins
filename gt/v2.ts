@@ -1,16 +1,15 @@
 import {definePlugin} from "telebox/sdk";
 
 const escape = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-const help = `📘 <b>AI 翻译</b>
+const help = `📘 <b>Google 翻译</b>
 
 • <code>gt [文本]</code> - 翻译为简体中文
 • <code>gt en [文本]</code> - 翻译为英文
 • 回复消息后使用 <code>gt</code> 或 <code>gt en</code>
 • <code>gt help</code> - 查看帮助
 
-使用 ai 插件当前聊天 API、模型及超时设置。
-请先安装配套 ai 插件，并通过 <code>ai config add</code> 和 <code>ai model chat</code> 配置。
-待翻译文本会发送至该 API，可能产生模型调用费用。`;
+使用 Google 自动识别原文语言，无需配置 API Key。
+待翻译文本会发送至 Google 翻译服务。`;
 
 function* chunks(text: string): Generator<string> {
   let chunk = "";
@@ -25,7 +24,7 @@ export default function createGt() {
   return definePlugin({
     apiVersion: 1, id: "gt", description: help,
     commands: {
-      gt: {description: "AI 翻译", async handle({message}, context) {
+      gt: {description: "Google 翻译", async handle({message}, context) {
         try {
           let text = message.text.replace(/^\S+\s*/, "");
           const first = text.match(/^\S+/)?.[0].toLowerCase();
@@ -44,12 +43,47 @@ export default function createGt() {
             await context.telegram.edit(message, "❌ 文本过长，请保持在5000字符以内");
             return;
           }
-          if (!context.services.available("ai", "translate")) {
-            await context.telegram.edit(message, "❌ 请先安装或更新配套 ai 插件，并配置 ai model chat");
-            return;
-          }
-          await context.telegram.edit(message, "🔄 <b>AI 翻译中...</b>", {parseMode: "html"});
-          const translated = await context.services.call<unknown>("ai", "translate", {text, target}, context.signal);
+          await context.telegram.edit(message, "🔄 <b>Google 翻译中...</b>", {parseMode: "html"});
+          const translated = await context.http.withResponse(
+            "https://translate.google.com/translate_a/single?client=at&dt=t&dt=rm&dj=1",
+            {
+              method: "POST",
+              headers: {"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"},
+              body: new URLSearchParams({sl: "auto", tl: target, q: text}).toString(),
+              redirect: "error",
+            },
+            async (response, signal) => {
+              if (!response.ok) throw new Error("Translation request failed");
+              if (!response.body) throw new Error("Empty translation response");
+              const reader = response.body.getReader();
+              const decoder = new TextDecoder();
+              let body = "", bytes = 0;
+              try {
+                while (true) {
+                  signal.throwIfAborted();
+                  const {done, value} = await reader.read();
+                  if (done) break;
+                  bytes += value.byteLength;
+                  if (bytes > 256 * 1024) throw new Error("Translation response too large");
+                  body += decoder.decode(value, {stream: true});
+                }
+                body += decoder.decode();
+              } finally {
+                try { await reader.cancel(); } finally { reader.releaseLock(); }
+              }
+              const data: unknown = JSON.parse(body);
+              if (!data || typeof data !== "object" || !("sentences" in data) || !Array.isArray(data.sentences)) {
+                throw new Error("Invalid translation response");
+              }
+              return data.sentences.map((sentence: unknown) => {
+                if (!sentence || typeof sentence !== "object") throw new Error("Invalid sentence");
+                if (!("trans" in sentence)) return "";
+                if (typeof sentence.trans !== "string") throw new Error("Invalid translation");
+                return sentence.trans;
+              }).join("");
+            },
+            {signal: context.signal, timeoutMs: 15000},
+          );
           context.signal.throwIfAborted();
           if (typeof translated !== "string" || !translated.trim()) throw new Error("Invalid translation result");
           const preview = Array.from(text).slice(0, 50).join("");
@@ -58,7 +92,7 @@ export default function createGt() {
             context.signal.throwIfAborted();
             if (firstChunk) {
               await context.telegram.edit(message,
-                `🌐 <b>AI 翻译结果</b> (→ ${target === "en" ? "英文" : "中文"})\n\n` +
+                `🌐 <b>Google 翻译结果</b> (→ ${target === "en" ? "英文" : "中文"})\n\n` +
                 `<b>原文:</b>\n<code>${escape(preview)}${preview.length < text.length ? "..." : ""}</code>\n\n` +
                 `<b>译文:</b>\n${escape(chunk)}`, {parseMode: "html"});
               firstChunk = false;
@@ -68,7 +102,7 @@ export default function createGt() {
           }
         } catch {
           if (!context.signal.aborted) await context.telegram.edit(message,
-            "❌ AI 翻译失败，请检查 ai 聊天配置、API 可用性及超时设置后重试");
+            "❌ Google 翻译失败，请检查 Google 翻译服务的网络连接，稍后重试");
         }
       }},
     },

@@ -7,27 +7,30 @@ const os = require('node:os');
 const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
-const {definePlugin} = require(path.join(core, 'dist/v2/sdk.js'));
 const {artifactDir} = buildPlugin({id: 'gt', packageRoot: path.resolve(__dirname, '../gt'), entry: 'v2.ts'});
 const createGt = require(path.join(artifactDir, 'index.cjs')).default;
 const envelope = {id: 1, chatId: '9007199254740993', senderId: '123', outgoing: true, text: '.gt Hello'};
 
-async function fixture(t, {translate = async () => 'translated', reply, ai = true} = {}) {
+async function fixture(t, {translate = async () => 'translated', reply, response} = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'telebox-gt-v2-')));
   const edits = [], replies = [], requests = [];
-  const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}}, telegram: {
+  const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}}, http: {fetch: async (url, init) => {
+    assert.equal(String(url), 'https://translate.google.com/translate_a/single?client=at&dt=t&dt=rm&dj=1');
+    assert.equal(init.method, 'POST');
+    assert.equal(init.redirect, 'error');
+    const params = new URLSearchParams(init.body);
+    assert.equal(params.get('sl'), 'auto');
+    const input = {text: params.get('q'), target: params.get('tl')};
+    requests.push({input, signal: init.signal});
+    if (response) return response();
+    return Response.json({sentences: [{trans: await translate(input, init.signal)}]});
+  }}, telegram: {
     async edit(message, text, options, signal) { edits.push({message, text, options, signal}); },
     async reply(message, text, options, signal) { replies.push({message, text, options, signal}); },
     async getReply() { return reply && {...envelope, text: reply, id: 2}; },
     async withClient() { assert.fail('unexpected native call'); },
     async invoke() { assert.fail('unexpected RPC'); },
   }});
-  if (ai) await host.load(definePlugin({apiVersion: 1, id: 'ai', description: 'fixture', commands: {}, services: {
-    translate: {description: 'fixture', handle(input, _context, signal) {
-      requests.push({input, signal});
-      return translate(input, signal);
-    }},
-  }}));
   await host.load(createGt());
   t.after(async () => {
     assert.equal((await host.shutdown(1000)).completed, true);
@@ -36,11 +39,11 @@ async function fixture(t, {translate = async () => 'translated', reply, ai = tru
   return {host, edits, replies, requests, run: text => host.dispatchPrimary({...envelope, text})};
 }
 
-test('v2 gt help needs no provider and discloses model API costs', async t => {
+test('v2 gt help describes Google translation', async t => {
   const {run, edits, requests} = await fixture(t, {ai: false});
   await run('.gt HELP');
-  assert.match(edits[0].text, /AI 翻译/);
-  assert.match(edits[0].text, /调用费用/);
+  assert.match(edits[0].text, /Google 翻译/);
+  assert.match(edits[0].text, /无需配置 API Key/);
   assert.equal(requests.length, 0);
 });
 
@@ -66,10 +69,24 @@ test('v2 gt reply translation retains content and rejects absent or overlong tex
   assert.equal(empty.requests.length, 0);
 });
 
-test('v2 gt reports missing providers without a request', async t => {
-  const {run, edits} = await fixture(t, {ai: false});
+test('v2 gt joins Google segments without an AI plugin', async t => {
+  const {run, edits} = await fixture(t, {response: () => Response.json({sentences: [{trans: '你好'}, {src_translit: 'ignored'}, {trans: '世界'}]})});
   await run('.gt Hello');
-  assert.match(edits.at(-1).text, /安装或更新配套 ai/);
+  assert.match(edits.at(-1).text, /你好世界/);
+});
+
+test('v2 gt rejects HTTP errors, malformed and oversized responses', async t => {
+  for (const response of [
+    () => new Response('secret-ip', {status: 429}),
+    () => new Response('not-json-secret-ip'),
+    () => Response.json({sentences: null}),
+    () => new Response('x'.repeat(256 * 1024 + 1)),
+  ]) {
+    const {run, edits} = await fixture(t, {response});
+    await run('.gt hello');
+    assert.match(edits.at(-1).text, /Google 翻译失败/);
+    assert.doesNotMatch(JSON.stringify(edits), /secret-ip/);
+  }
 });
 
 test('v2 gt streams output chunks without breaking surrogate pairs or losing text', async t => {
@@ -86,7 +103,7 @@ test('v2 gt sanitizes provider failures and invalid output', async t => {
   for (const translate of [async () => { throw new Error('secret-api-key'); }, async () => ' ', async () => ({secret: 'secret-api-key'})]) {
     const {run, edits} = await fixture(t, {translate});
     await run('.gt Hello');
-    assert.match(edits.at(-1).text, /AI 翻译失败/);
+    assert.match(edits.at(-1).text, /Google 翻译失败/);
     assert.doesNotMatch(JSON.stringify(edits), /secret-api-key/);
   }
 });
