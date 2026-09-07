@@ -15,7 +15,7 @@ async function fixture(t, options = {}) {
   const edits = [];
   const client = {
     async getDialogs(params) {
-      return params.folderId ? [{id: '4', isChannel: true}] : [
+      return params?.folder === 1 ? [{id: '4', isChannel: true}] : [
         {id: '1', isUser: true, entity: {}}, {id: '2', isUser: true, entity: {bot: true}},
         {id: '3', isGroup: true}, {id: '4', isChannel: true},
       ];

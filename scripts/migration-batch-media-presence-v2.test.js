@@ -18,7 +18,8 @@ async function fixture(t, id, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), `mibot-${id}-v2-`)));
   const edits = [];
   const client = options.client || {};
-  const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}}, telegram: {
+  const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}},
+    processes: {concurrency: 2, queueCapacity: 16, timeoutMs: 180_000, maxOutputBytes: 2 * 1024 * 1024}, telegram: {
     async edit(message, text, messageOptions) { edits.push({message, text, options: messageOptions}); },
     async reply() { assert.fail('unexpected reply'); },
     async invoke(request) { return client.invoke(request); },
