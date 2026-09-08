@@ -459,3 +459,39 @@ test('basic group reply removal converts the message reference to InputUserFromM
   assert.ok(request.getBytes().length > 0);
   assert.match(f.edits.at(-1).text, /成功 1/);
 });
+
+test('numeric resolution continues after one managed group fails', async t => {
+  const f = await fixture(t, {groups: [channel('100'), channel('200')], native: {
+    getEntity: async () => {throw new Error('cache miss');},
+    getInputEntity: async target => {
+      if (target instanceof Api.User) return peer(target.id.toString());
+      throw new Error('cache miss');
+    },
+    invoke: async req => {
+      if (req instanceof Api.channels.GetParticipant) {
+        if (req.participant instanceof Api.InputPeerUser && req.participant.accessHash.toString() === '0') {
+          if (req.channel.channelId.toString() === '100') throw new Error('private lookup failure');
+          return {participant: new Api.ChannelParticipant({userId: integer(2)}), users: [user()]};
+        }
+        return regularPermission(req);
+      }
+      return {offset: 0};
+    },
+  }});
+  await f.run('.sb 2');
+  assert.match(f.edits.at(-1).text, /成功 2/);
+  assert.doesNotMatch(JSON.stringify({edits: f.edits, logs: f.logs}), /private lookup failure/);
+});
+
+test('exhausted numeric resolution reports canonical RPC codes and checked group count', async t => {
+  const f = await fixture(t, {groups: [channel('100'), channel('200')], native: {
+    getEntity: async () => {throw new Error('cache miss');},
+    getInputEntity: async () => {throw new Error('cache miss');},
+    invoke: async () => {throw Object.assign(new Error('private request contents'), {code: 400, errorMessage: 'PARTICIPANT_ID_INVALID'});},
+  }});
+  await f.run('.sb 2');
+  assert.match(f.edits.at(-1).text, /已检查 2 个/);
+  assert.match(f.edits.at(-1).text, /PARTICIPANT_ID_INVALID/);
+  assert.equal(f.mutations().length, 0);
+  assert.doesNotMatch(JSON.stringify({edits: f.edits, logs: f.logs}), /private request contents/);
+});
