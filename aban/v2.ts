@@ -32,11 +32,20 @@ const help = (p: string) => `<b>封禁管理</b>
 
 class Notice extends Error {}
 function errorCode(error: unknown): string {
-  const value = error as { errorMessage?: string; message?: string };
-  const text = value?.errorMessage ?? value?.message ?? "";
-  return ["CHAT_ADMIN_REQUIRED", "USER_ADMIN_INVALID", "USER_NOT_PARTICIPANT", "USER_ID_INVALID",
-    "CHANNEL_PRIVATE", "CHANNEL_INVALID", "PEER_ID_INVALID", "CHAT_WRITE_FORBIDDEN"]
-    .find(code => text.includes(code)) ?? (/FLOOD_WAIT|wait of \d+ seconds/i.test(text) ? "FLOOD_WAIT" : "请求失败");
+  const value = error as { errorMessage?: unknown; message?: unknown; code?: unknown; name?: unknown };
+  const message = typeof value?.message === "string" ? value.message : "";
+  const rpc = typeof value?.errorMessage === "string" ? value.errorMessage : "";
+  const detail = rpc || message;
+  if (/FLOOD_WAIT|wait of \d+ seconds/i.test(detail)) return "FLOOD_WAIT";
+  const known = ["CHAT_ADMIN_REQUIRED", "USER_ADMIN_INVALID", "USER_NOT_PARTICIPANT", "USER_ID_INVALID",
+    "CHANNEL_PRIVATE", "CHANNEL_INVALID", "PEER_ID_INVALID", "CHAT_WRITE_FORBIDDEN"].find(code => detail.includes(code));
+  if (known) return known;
+  // Only canonical RPC identifiers are public; request text, paths and entity hashes stay private.
+  if (typeof value?.code === "number" && value.code >= 300 && value.code <= 599 && /^[A-Z][A-Z0-9_]{2,63}$/.test(rpc)) return rpc;
+  if (/Could not find.*input entity|without accessHash|min cannot be input/i.test(message)) return "ENTITY_UNAVAILABLE";
+  if (value?.name === "TypeError") return "CLIENT_TYPE_ERROR";
+  if (value?.name === "RangeError") return "CLIENT_RANGE_ERROR";
+  return "REQUEST_FAILED";
 }
 function parseArgs(invocation: CommandInvocation) {
   const tokens = invocation.args.filter(token => !["true", "false", "confirm"].includes(token.toLowerCase()));
@@ -175,6 +184,7 @@ export default function createAban() {
         // Resolve a numeric ID from current/managed chats without caching member lists.
         const sources = [...selected, ...(batch ? [] : await groups())];
         const seen = new Set<string>();
+        const lookupFailures = new Map<string, number>();
         for (const g of sources) {
           const key = `${g.kind}:${g.id}`;
           if (seen.has(key)) continue;
@@ -188,10 +198,15 @@ export default function createAban() {
             if (user instanceof Api.User) return await asTarget(user);
           } catch (error) {
             signal.throwIfAborted();
-            if (!["USER_NOT_PARTICIPANT", "USER_ID_INVALID", "PEER_ID_INVALID", "CHAT_ADMIN_REQUIRED", "CHANNEL_PRIVATE"].includes(errorCode(error))) throw error;
+            const reason = errorCode(error);
+            if (["FLOOD_WAIT", "AUTH_KEY_UNREGISTERED", "SESSION_REVOKED", "SESSION_EXPIRED", "USER_DEACTIVATED"].includes(reason)) throw error;
+            lookupFailures.set(reason, (lookupFailures.get(reason) ?? 0) + 1);
+            ctx.log.error("aban:resolve-group", {kind: g.kind, reason});
           }
         }
-        throw new Notice("无法解析该用户ID；请回复其消息、使用用户名，或 refresh 后重试");
+        const reasons = [...lookupFailures].sort((a, b) => b[1] - a[1]).slice(0, 3)
+          .map(([code, count]) => `${code} × ${count}`).join("；");
+        throw new Notice(`无法解析该用户ID；已检查 ${seen.size} 个管理群。${reasons ? `\n查询诊断：${reasons}` : ""}\n请回复目标原消息执行命令，或使用 @用户名。`);
       };
       setStage("解析目标用户");
       const target = await resolve();
