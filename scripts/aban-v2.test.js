@@ -75,7 +75,7 @@ async function fixture(t, options = {}) {
   const host = new PluginHost({storageRoot: dir, prefixes: options.prefixes,
     logger: {info() {}, error(event, fields) { logs.push({event, fields}); }},
     telegram: {
-      async edit(message, text, opts, signal) { signal.throwIfAborted(); edits.push({message, text, opts}); },
+      async edit(message, text, opts, signal) { signal.throwIfAborted(); edits.push({message, text, opts}); await options.onEdit?.(message, text); },
       async reply() { assert.fail('No extra messages'); },
       async getReply(_message, signal) { signal.throwIfAborted(); return options.reply; },
       async invoke() { assert.fail('Use scoped client'); },
@@ -235,7 +235,7 @@ test('kick partial completion reports remaining ban', async t => {
 });
 test('unload waits for in-flight mutation and prevents subsequent group operations', async t => {
   const entered = deferred(), finished = deferred();
-  const f = await fixture(t, {groups: [channel(), channel('200')], native: {invoke: async req => {
+  const f = await fixture(t, {groups: Array.from({length: 8}, (_, i) => channel(String(100 + i))), native: {invoke: async req => {
     if (req instanceof Api.channels.GetParticipant) return {participant: req.participant instanceof Api.InputPeerSelf
       ? new Api.ChannelParticipantCreator({userId: integer(1)}) : new Api.ChannelParticipant({userId: integer(2)})};
     if (req instanceof Api.channels.EditBanned) { entered.resolve(); return finished.promise; }
@@ -246,8 +246,8 @@ test('unload waits for in-flight mutation and prevents subsequent group operatio
   assert.equal((await f.host.unload('aban', 5)).completed, false);
   finished.resolve({});
   assert.equal((await f.host.unload('aban', 1000)).completed, true);
-  assert.equal(f.mutations().length, 1);
-  assert.equal(f.edits.length, 1);
+  assert.equal(f.mutations().length, 4);
+  assert.equal(f.edits.length, 3);
 });
 function regularPermission(req) {
   return {participant: req.participant instanceof Api.InputPeerSelf
@@ -293,21 +293,23 @@ test('short flood wait retries once; long waits remain visible failures', async 
     assert.match(f.edits.at(-1).text, seconds === 0 ? /成功 1/ : /失败 1/);
   }
 });
-test('duplicate batch commands are rejected while accepted work is pending', async t => {
+test('a pending batch does not reject a new target with a global busy message', async t => {
   const entered = deferred(), finished = deferred();
+  t.after(() => finished.resolve());
   const f = await fixture(t, {native: {invoke: async req => {
     if (req instanceof Api.channels.GetParticipant) return regularPermission(req);
-    if (req instanceof Api.channels.EditBanned) { entered.resolve(); await finished.promise; }
+    if (req instanceof Api.channels.EditBanned && req.participant.userId.toString() === '2') {
+      entered.resolve(); await finished.promise;
+    }
     return {offset: 0};
   }}});
-  await f.host.dispatchPrimary({...envelope, text: '.unsb 2'});
+  await f.host.dispatchPrimary({...envelope, text: '.sb 2'});
   await entered.promise;
-  await f.run('.sb 2', {id: 10});
-  assert.match(f.edits.at(-1).text, /正在执行/);
+  await f.run('.sb 3', {id: 10});
+  assert.match(f.edits.at(-1).text, /成功 1/);
+  assert.ok(f.mutations().some(req => req instanceof Api.channels.EditBanned && req.participant.userId.toString() === '3'));
+  assert.doesNotMatch(f.edits.at(-1).text, /任务正在执行/);
   finished.resolve();
-  // Drain the tracked operation without starting another command.
-  for (let i = 0; i < 1000 && !f.edits.some(e => /结果/.test(e.text)); i++) await new Promise(setImmediate);
-  assert.equal(f.mutations().length, 1);
 });
 test('50 load/unload cycles retain no tasks or cache files', async t => {
   const f = await fixture(t);
@@ -344,4 +346,55 @@ test('29 successes and four absent users render a compact Chinese summary', asyn
   assert.match(text, /未清理（当前会话不适用）/);
   assert.doesNotMatch(text, /USER_NOT_PARTICIPANT|不支持 0/);
   assert.ok(text.split('\n').length <= 9);
+});
+
+test('batch permissions use managed dialog rights without a self lookup RPC', async t => {
+  const f = await fixture(t, {native: {invoke: async req => {
+    if (req instanceof Api.channels.GetParticipant) {
+      if (req.participant instanceof Api.InputPeerSelf) throw new Error('self lookup unavailable');
+      return regularPermission(req);
+    }
+    return {offset: 0};
+  }}});
+  await f.run('.sb 2');
+  assert.match(f.edits.at(-1).text, /成功 1/);
+  assert.equal(f.calls.filter(c => c.method === 'invoke' && c.args[0] instanceof Api.channels.GetParticipant &&
+    c.args[0].participant instanceof Api.InputPeerSelf).length, 0);
+});
+
+test('batch uses at most four concurrent mutations and completes every managed group', async t => {
+  const barrier = deferred();
+  let active = 0, peak = 0;
+  const f = await fixture(t, {groups: Array.from({length: 9}, (_, i) => channel(String(100 + i))), native: {invoke: async req => {
+    if (req instanceof Api.channels.GetParticipant) return regularPermission(req);
+    if (req instanceof Api.channels.EditBanned) {
+      active++; peak = Math.max(peak, active);
+      if (active === 4) barrier.resolve();
+      await barrier.promise;
+      await new Promise(setImmediate);
+      active--;
+    }
+    return {offset: 0};
+  }}});
+  await f.run('.sb 2');
+  assert.equal(peak, 4);
+  assert.equal(active, 0);
+  assert.equal(f.mutations().filter(req => req instanceof Api.channels.EditBanned).length, 9);
+  assert.match(f.edits.at(-1).text, /成功 9/);
+});
+
+test('a displayed result awaiting Telegram acknowledgement does not block the next sb', async t => {
+  const displayed = deferred(), acknowledged = deferred();
+  t.after(() => acknowledged.resolve());
+  const f = await fixture(t, {onEdit: async (message, text) => {
+    if (message.id === 9 && /批量封禁结果/.test(text)) {
+      displayed.resolve(); await acknowledged.promise;
+    }
+  }});
+  await f.host.dispatchPrimary({...envelope, text: '.sb 2'});
+  await displayed.promise;
+  await f.run('.sb 3', {id: 10});
+  assert.match(f.edits.at(-1).text, /成功 1/);
+  assert.match(f.edits.at(-1).text, /user\?id=3/);
+  acknowledged.resolve();
 });
