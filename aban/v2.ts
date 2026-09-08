@@ -134,9 +134,14 @@ export default function createAban() {
       const resolve = async (): Promise<Target> => {
         let id: string | undefined = args!.target;
         let known: Api.User | undefined;
+        let source: {peer: Api.TypePeer; messageId: number} | undefined;
         if (!id) {
+          setStage("读取回复消息");
           const reply = await ctx.telegram.getReply(inv.message);
           id = reply?.senderId;
+          const sourcePeer = (reply?.raw as {peerId?: Api.TypePeer} | undefined)?.peerId;
+          if (reply && sourcePeer) source = {peer: sourcePeer, messageId: reply.id};
+          setStage("识别回复发送者");
           const sender = (reply?.raw as { sender?: Api.User } | undefined)?.sender;
           if (sender instanceof Api.User && sender.id.toString() === id) known = sender;
         }
@@ -146,6 +151,13 @@ export default function createAban() {
           return { id: user.id.toString(), peer: await call(() => client.getInputEntity(user)),
             label: [user.firstName, user.lastName].filter(Boolean).join(" ") || user.id.toString() };
         };
+        if (source) {
+          setStage("解析回复所在会话");
+          const peer = await call(() => client.getInputEntity(source!.peer));
+          return {id, peer: new Api.InputPeerUserFromMessage({peer, msgId: source.messageId, userId: integer(id)}),
+            label: known ? [known.firstName, known.lastName].filter(Boolean).join(" ") || id : id};
+        }
+        setStage("转换用户实体");
         if (known) {
           try { return await asTarget(known); }
           catch (error) { signal.throwIfAborted(); if (errorCode(error) === "FLOOD_WAIT") throw error; }
@@ -159,6 +171,7 @@ export default function createAban() {
           const peer = await call(() => client.getInputEntity(integer(id!)));
           if (peer instanceof Api.InputPeerUser && peer.userId.toString() === id) return { id, peer, label: id };
         } catch (error) { signal.throwIfAborted(); if (errorCode(error) === "FLOOD_WAIT") throw error; }
+        setStage("从管理群解析用户");
         // Resolve a numeric ID from current/managed chats without caching member lists.
         const sources = [...selected, ...(batch ? [] : await groups())];
         const seen = new Set<string>();
@@ -244,9 +257,11 @@ export default function createAban() {
       const apply = async (g: Group) => {
         if (g.kind === "chat") {
           const peer = target.peer;
-          if (!(peer instanceof Api.InputPeerUser)) throw new Notice("基本群需要可解析的用户实体");
-          await rpc(() => client.invoke(new Api.messages.DeleteChatUser({ chatId: integer(g.id),
-            userId: new Api.InputUser({ userId: peer.userId, accessHash: peer.accessHash }) })));
+          const userId = peer instanceof Api.InputPeerUser ? new Api.InputUser({userId: peer.userId, accessHash: peer.accessHash})
+            : peer instanceof Api.InputPeerUserFromMessage ? new Api.InputUserFromMessage({userId: peer.userId, peer: peer.peer, msgId: peer.msgId})
+            : undefined;
+          if (!userId) throw new Notice("基本群需要可解析的用户实体");
+          await rpc(() => client.invoke(new Api.messages.DeleteChatUser({ chatId: integer(g.id), userId })));
           moved++;
           return;
         }
