@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 import type {Api} from "teleproto";
 
@@ -20,8 +21,8 @@ function sample<T>(values: T[], count: number): T[] {
 }
 
 export default function createDbdj() {
-  return definePlugin({apiVersion: 1, id: "dbdj", description: "从近期发言者中随机抽取用户",
-    commands: {dbdj: {description: "从近期发言者中随机抽取用户", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "dbdj", description: "从近期发言者中随机抽取用户",
+    commands: {dbdj: {helpOnEmpty: true, description: "从近期发言者中随机抽取用户", async handle(invocation, context) {
       const scanCount = positive(invocation.args[0], 1000);
       const pickCount = positive(invocation.args[1], 100);
       if (!scanCount || !pickCount) {

@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 import {CustomFile} from "teleproto/client/uploads";
 
@@ -31,7 +32,7 @@ async function body(response: Response, signal: AbortSignal): Promise<Buffer> {
   }
 }
 export default function createMoyu() {
-  return definePlugin({apiVersion: 1, id: "moyu", description: "获取摸鱼日报", commands: {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "moyu", description: "获取摸鱼日报", commands: {
     moyu: {description: "获取摸鱼日报", async handle(invocation, ctx) {
       if (invocation.args.length) { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
       let sent = false;

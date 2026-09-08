@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import { definePlugin, type MessageEnvelope, type PluginContext } from "telebox/sdk";
 import type { Api } from "teleproto";
 
@@ -108,9 +109,9 @@ async function send(context: PluginContext, message: MessageEnvelope, text: stri
 }
 
 export default function createIds() {
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1, id: "ids", description: `用户信息查询插件\n\n${help("")}`,
-    commands: { ids: { description: "用户信息查询插件", async handle({ message, prefix }, context) {
+    commands: { ids: {helpArgs: ["help","h"],  description: "用户信息查询插件", async handle({ message, prefix }, context) {
       const target = message.text.trim().split(/\r?\n/)[0].split(/\s+/)[1] || "";
       try {
         context.signal.throwIfAborted();

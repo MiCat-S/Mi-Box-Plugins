@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 type Entry = {text: string; webPage?: boolean; web_page?: boolean; created_at?: number};
@@ -25,7 +26,7 @@ async function list(ctx: PluginContext, message: MessageEnvelope, entries: Entry
   await ctx.telegram.edit(message, `<b>Aff 列表</b> · ${page}/${count}\n\n${text || "暂无 Aff 信息"}`, {parseMode: "html", linkPreview: false});
 }
 export default function createAff() {
-  return definePlugin({apiVersion: 1, id: "aff", description: "管理并发送 Aff 信息",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "aff", description: "管理并发送 Aff 信息",
     async setup(ctx) {
       const db = store(ctx);
       if ((await db.read()).aff) await db.update(current => {
@@ -35,7 +36,7 @@ export default function createAff() {
       });
     },
     commands: {
-    aff: {description: "管理并发送 Aff 信息", async handle(invocation, ctx) {
+    aff: {helpArgs: ["help","h"], description: "管理并发送 Aff 信息", async handle(invocation, ctx) {
       const db = store(ctx);
       const args = invocation.args;
       if (!args.length || args[0] === "help" || args[0] === "h") {

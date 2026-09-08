@@ -145,7 +145,7 @@ test('ids help/h uses invocation prefix and never calls native methods', async t
   assert.match(f.edits[0].text, /!!ids @用户名/);
   assert.match(f.edits[0].text, /注册时间估算/);
   assert.equal(f.edits[0].text, f.edits[1].text);
-  assert.deepEqual(f.edits[0].options, {parseMode: 'html'});
+  assert.deepEqual(f.edits[0].options, {parseMode: 'html', linkPreview: false});
 });
 test('ids self output retains fields, links and a single GetFullUser', async t => {
   const f = await fixture(t);

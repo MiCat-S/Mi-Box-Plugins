@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
@@ -71,8 +72,8 @@ function convert(text: string): string {
 }
 
 export default function createYinglish() {
-  return definePlugin({apiVersion: 1, id: "yinglish", description: "将文字转换为随机非主流风格",
-    commands: {yinglish: {description: "转换参数或回复消息中的文字", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "yinglish", description: "将文字转换为随机非主流风格",
+    commands: {yinglish: {helpArgs: ["help","h"], description: "转换参数或回复消息中的文字", async handle(invocation, context) {
       let input = invocation.args.join(" ").trim();
       if (!input && invocation.message.replyToId !== undefined) input = (await context.telegram.getReply(invocation.message))?.text.trim() ?? "";
       if (!input || ["help", "h"].includes(input.toLowerCase())) {

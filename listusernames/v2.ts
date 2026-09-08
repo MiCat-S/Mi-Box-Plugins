@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
@@ -48,8 +49,8 @@ async function sendParts(message: MessageEnvelope, context: PluginContext, parts
 }
 
 export default function createListUsernames() {
-  return definePlugin({apiVersion: 1, id: "listusernames", description: "列出账号管理的公开群组和频道",
-    commands: {listusernames: {description: "列出账号管理的公开群组和频道", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "listusernames", description: "列出账号管理的公开群组和频道",
+    commands: {listusernames: {helpArgs: ["help","h"], description: "列出账号管理的公开群组和频道", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
         await context.telegram.edit(invocation.message, `<b>公开群组/频道</b>\n<code>${escape(invocation.prefix)}listusernames</code>`, {parseMode: "html"});
         return;

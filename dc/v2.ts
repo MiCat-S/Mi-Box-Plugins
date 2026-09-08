@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import { definePlugin, type MessageEnvelope } from "telebox/sdk";
 import type { Api } from "teleproto";
 
@@ -6,7 +7,7 @@ const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/
 const location = (name: string, dc: number): string => `📍 <b>${escape(name)}</b> 所在数据中心为: <b>DC${dc}</b>`;
 
 export default function createDc() {
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1, id: "dc", description: "获取指定用户或当前群组/频道的 DC",
     commands: { dc: { description: "获取指定用户或当前群组/频道的 DC", async handle({ message, args }, context) {
       const edit = (text: string) => context.telegram.edit(message, text, { parseMode: "html" });

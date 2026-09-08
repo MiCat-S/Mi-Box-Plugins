@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
@@ -28,9 +29,9 @@ function isAudio(raw: ApiTypes.Message | undefined): raw is ApiTypes.Message {
 }
 
 export default function createAudioToVoice() {
-  return definePlugin({apiVersion: 1, id: "audio_to_voice", description: "使用 FFmpeg 将回复音频转换为 Telegram 语音",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "audio_to_voice", description: "使用 FFmpeg 将回复音频转换为 Telegram 语音",
     resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 180_000, maxOutputBytes: 256 * 1024}},
-    commands: {audio_to_voice: {description: "将回复音频转换为 Telegram 语音", async handle(invocation, context) {
+    commands: {audio_to_voice: {helpArgs: ["help","h"], description: "将回复音频转换为 Telegram 语音", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "") || invocation.message.replyToId === undefined) {
         await context.telegram.edit(invocation.message,
           `<b>音频转语音</b>\n回复音乐文件后发送 <code>${invocation.prefix}audio_to_voice</code>\n服务器需要安装 FFmpeg。`,

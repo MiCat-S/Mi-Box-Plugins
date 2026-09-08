@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 const escape=(v:unknown)=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]!);
@@ -26,4 +27,4 @@ async function run(message:MessageEnvelope,args:readonly string[],prefix:string,
   });
 }
 
-export default function createManageAdmin(){return definePlugin({apiVersion:1,id:"manage_admin",description:"添加、移除和列出群组管理员",commands:{manage_admin:{description:"管理管理员",ignoreEdited:true,async handle({message,args,prefix},ctx){await run(message,args,prefix,ctx);}}}});}
+export default function createManageAdmin(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"manage_admin",description:"添加、移除和列出群组管理员",commands:{manage_admin:{helpArgs: ["help","h"], helpOnEmpty: true, description:"管理管理员",ignoreEdited:true,async handle({message,args,prefix},ctx){await run(message,args,prefix,ctx);}}}});}

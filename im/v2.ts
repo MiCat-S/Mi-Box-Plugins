@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {createHash} from "node:crypto";
 import {readFile} from "node:fs/promises";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
@@ -23,7 +24,7 @@ async function peerInfo(ctx:PluginContext,message:MessageEnvelope,target?:string
 async function enforce(ctx:PluginContext,message:MessageEnvelope,act:Action){await ctx.telegram.withClient(async client=>{const raw=message.raw as any;if(act==="ban"){if(!message.senderId)throw new Error("无法确定发送者");const {Api}=await import("teleproto");const channel=await client.getInputEntity(raw?.peerId??returnBigInt(message.chatId));const participant=await client.getInputEntity(returnBigInt(message.senderId));await client.invoke(new Api.channels.EditBanned({channel,participant,bannedRights:new Api.ChatBannedRights({viewMessages:true,untilDate:0})}));}await client.deleteMessages(raw?.peerId??returnBigInt(message.chatId),[message.id],{revoke:true});});}
 const help=(prefix:string)=>`<b>图片监控</b>\n<code>${prefix}im on|off</code>\n<code>${prefix}im addchat [群ID|@用户名]</code>\n<code>${prefix}im delchat [群ID|@用户名]</code>\n<code>${prefix}im addmd5 MD5 delete|ban</code>\n<code>${prefix}im delmd5 MD5</code>\n<code>${prefix}im setaction delete|ban</code>\n回复图片或贴纸使用 <code>${prefix}im [delete|ban]</code>。`;
 
-const imageMonitorPlugin=definePlugin({apiVersion:1,id:"im",description:"监控指定聊天中的图片哈希和贴纸 ID",commands:{im:{description:"配置图片监控",ignoreEdited:true,async handle({message,args,prefix},ctx){try{
+const imageMonitorPlugin=definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"im",description:"监控指定聊天中的图片哈希和贴纸 ID",commands:{im:{description:"配置图片监控",ignoreEdited:true,async handle({message,args,prefix},ctx){try{
   const sub=args[0]?.toLowerCase(),state=await store(ctx).read();
   if(message.replyToId&&(!sub||sub==="delete"||sub==="ban")){const reply=await ctx.telegram.getReply(message);if(!reply)throw new Error("未找到被回复的消息");const raw=reply.raw as any,doc=document(raw),act=sub==="ban"?"ban":sub==="delete"?"delete":state.defaultAction;if(doc&&isSticker(doc)){const id=String(doc.id);await store(ctx).update(v=>({...v,bannedStickerIds:{...v.bannedStickerIds,[id]:act}}));await ctx.telegram.edit(message,`已添加贴纸 ID：<code>${esc(id)}</code>，操作：<code>${act}</code>`,{parseMode:"html"});return;}const md5=await digest(ctx,reply);await store(ctx).update(v=>({...v,bannedMD5s:{...v.bannedMD5s,[md5]:act}}));await ctx.telegram.edit(message,`已添加媒体 MD5：<code>${md5}</code>，操作：<code>${act}</code>`,{parseMode:"html"});return;}
   if(sub==="on"||sub==="off"){await store(ctx).update(v=>({...v,enabled:sub==="on"}));await ctx.telegram.edit(message,sub==="on"?"图片监控已启用。":"图片监控已禁用。");return;}

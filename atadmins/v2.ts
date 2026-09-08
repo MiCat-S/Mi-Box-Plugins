@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as delay} from "node:timers/promises";
 import {definePlugin} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
@@ -19,8 +20,8 @@ function pages(header: string, mentions: readonly string[]): string[] {
 }
 
 export default function createAtAdmins() {
-  return definePlugin({apiVersion: 1, id: "atadmins", description: "在群组中提醒所有管理员",
-    commands: {atadmins: {description: "在群组中提醒所有管理员", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "atadmins", description: "在群组中提醒所有管理员",
+    commands: {atadmins: {helpArgs: ["help","h"], description: "在群组中提醒所有管理员", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
         await context.telegram.edit(invocation.message, `<b>提醒管理员</b>\n<code>${escape(invocation.prefix)}atadmins [附加消息]</code>`, {parseMode: "html"});
         return;

@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
@@ -89,7 +90,7 @@ export default function createStickerToPic() {
       await context.telegram.edit(invocation.message, "贴纸转换失败，请确认服务器已安装 ImageMagick 且回复的是静态贴纸");
     }
   }};
-  return definePlugin({apiVersion: 1, id: "sticker_to_pic", description: "将静态贴纸转换为 JPG 或 PNG",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "sticker_to_pic", description: "将静态贴纸转换为 JPG 或 PNG",
     resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 60_000, maxOutputBytes: 256 * 1024}},
-    commands: {sticker_to_pic: command, stp: command}});
+    commands: {sticker_to_pic: {...command, helpArgs: ["help","h"]}, stp: {...command, helpArgs: ["help","h"]}}});
 }

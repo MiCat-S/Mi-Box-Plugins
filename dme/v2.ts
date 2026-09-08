@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import { definePlugin, type PluginContext, type MessageEnvelope } from "telebox/sdk";
 import { setTimeout as sleep } from "node:timers/promises";
 import {randomUUID} from "node:crypto";
@@ -214,7 +215,7 @@ async function execute(ctx: PluginContext, client: TelegramClient, signal: Abort
 export default function createDme() {
   const active = new Set<string>();
   const store = (ctx: PluginContext) => ctx.storage.json<Config>("config.json", defaults);
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1, id: "dme", description: help("."),
     settings: ctx => ({
       id: "dme", title: "防撤回删除", category: "管理",
@@ -233,7 +234,7 @@ export default function createDme() {
         signal.throwIfAborted(); await store(ctx).update(data => { Object.assign(data, patch); return data; });
       },
     }),
-    commands: { dme: { description: "删除自己的消息，支持防撤回模式", ignoreEdited: true,
+    commands: { dme: {helpOnEmpty: true, helpArgs: ["help","h"],  description: "删除自己的消息，支持防撤回模式", ignoreEdited: true,
       async handle({ message, args, prefix }, ctx) {
         const sub = (args[0] || "").toLowerCase();
         if (!sub || sub === "help" || sub === "h") {

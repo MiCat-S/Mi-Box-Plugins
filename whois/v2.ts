@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import {report} from "./v2/report";
 
@@ -26,7 +27,7 @@ function extract(raw: string): string {
   return "";
 }
 export default function createWhois() {
-  return definePlugin({apiVersion: 1, id: "whois", description: "查询域名注册信息",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "whois", description: "查询域名注册信息",
     async setup(ctx) {
       const db = store(ctx);
       if ((await db.read()).legacyImported) return;
@@ -46,7 +47,7 @@ export default function createWhois() {
       });
     },
     commands: {
-    whois: {description: "查询域名注册信息", async handle(invocation, ctx) {
+    whois: {helpArgs: ["help","h"], description: "查询域名注册信息", async handle(invocation, ctx) {
       let raw = invocation.args[0] ?? "";
       if (raw.toLowerCase() === "help" || raw.toLowerCase() === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
       if (!raw) {

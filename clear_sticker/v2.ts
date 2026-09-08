@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as delay} from "node:timers/promises";
 import {definePlugin, type CommandDefinition} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
@@ -57,7 +58,7 @@ export default function createClearSticker() {
       await context.telegram.edit(invocation.message, "清理贴纸消息失败，请检查群组权限");
     }
   }};
-  return definePlugin({apiVersion: 1, id: "clear_sticker", description: "清理群组历史中的贴纸消息",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "clear_sticker", description: "清理群组历史中的贴纸消息",
     commands: {clear_sticker: command, cs: command},
   });
 }

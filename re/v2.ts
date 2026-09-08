@@ -1,8 +1,9 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 import type {Api} from "teleproto";
 
 export default function createRe() {
-  return definePlugin({apiVersion: 1, id: "re", description: "复读回复的消息",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "re", description: "复读回复的消息",
     commands: {re: {description: "回复消息后重复转发，可指定数量和次数", async handle(invocation, ctx) {
       const reply = await ctx.telegram.getReply(invocation.message);
       const raw = reply?.raw as Api.Message | undefined;

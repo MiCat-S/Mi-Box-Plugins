@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
@@ -12,7 +13,7 @@ function duration(value: string | undefined): number | undefined {
 }
 
 export default function createPortball() {
-  return definePlugin({apiVersion: 1, id: "portball", description: "回复消息临时禁言群组成员",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "portball", description: "回复消息临时禁言群组成员",
     commands: {portball: {description: "回复消息临时禁言群组成员", async handle(invocation, context) {
       const seconds = duration(invocation.args.at(-1));
       if (!seconds || invocation.message.replyToId === undefined) {

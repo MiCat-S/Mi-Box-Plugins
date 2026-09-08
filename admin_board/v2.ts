@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 type LockData = {schemaVersion: 1; lockedSeats: Record<string, string[]>};
@@ -67,4 +68,4 @@ async function command(message:MessageEnvelope,args:readonly string[],ctx:Plugin
   const success:Stat[]=[],fail:string[]=[];await ctx.telegram.withClient(async(client:any)=>{const {Api}=await import("teleproto");for(const stat of selected.filter(item=>!item.creator)){try{const user=await client.getInputEntity(stat.user);if(target.channel){const channel=await client.getInputEntity(target.entity);await client.invoke(new Api.channels.EditAdmin({channel,userId:user,adminRights:new Api.ChatAdminRights({}),rank:""}));}else await client.invoke(new Api.messages.EditChatAdmin({chatId:target.entity.id,userId:user,isAdmin:false}));success.push(stat);}catch(error){fail.push(`${stat.name}（${errorText(error)}）`);}}});await send(ctx,message,`✂️ <b>尾部管理员清理完成</b>\n目标人数: <code>${limit}</code>\n实际候选: <code>${selected.length}</code>\n成功: <code>${success.length}</code>\n失败: <code>${fail.length}</code>${fail.length?`\n${fail.map(v=>`• ${escape(v)}`).join("\n")}`:""}`);
 }
 
-export default function createAdminBoard(){return definePlugin({apiVersion:1,id:"admin_board",description:"管理员活跃度排行、席位锁定和尾部管理员清理",commands:{admin_board:{description:"管理员席位管理",async handle({message,args,prefix},ctx){try{await command(message,args,ctx,prefix);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ <b>执行失败</b>\n\n${escape(errorText(error))}`,{parseMode:"html"});}}}}});}
+export default function createAdminBoard(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"admin_board",description:"管理员活跃度排行、席位锁定和尾部管理员清理",commands:{admin_board:{helpArgs: ["help","h"], helpOnEmpty: true, description:"管理员席位管理",async handle({message,args,prefix},ctx){try{await command(message,args,ctx,prefix);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ <b>执行失败</b>\n\n${escape(errorText(error))}`,{parseMode:"html"});}}}}});}

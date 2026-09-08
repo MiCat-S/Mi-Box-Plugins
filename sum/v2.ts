@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {
   buildMessageLink, DEFAULT_PROMPT, extractFileName, extractUrlsFromEntities, formatDate,
@@ -261,7 +262,7 @@ export default function createSum() {
     }
   };
 
-  return definePlugin({apiVersion: 1, id: "sum", description: help, commands: {sum: {description: "群消息即时与定时摘要", handle}},
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "sum", description: help, commands: {sum: {helpArgs: ["help","h","?"], description: "群消息即时与定时摘要", handle}},
     async setup(ctx) {
       await store(ctx).update(data => {
         const value = data as any;

@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as sleep} from "node:timers/promises";
 import {returnBigInt} from "teleproto/Helpers";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
@@ -55,12 +56,12 @@ function scheduleDelete(context: PluginContext, message: MessageEnvelope, second
   });
 }
 
-export default function createPlugin() { return definePlugin({
+export default function createPlugin() { return definePlugin({renderHelp: renderPluginHelp,
   apiVersion: 1,
   id: "autodel",
   description: "为自己发出的普通消息设置按聊天或全局自动删除。",
   commands: {
-    autodel: {
+    autodel: {helpArgs: ["h","help"], helpOnEmpty: true,
       description: "设置、查看或取消自动删除",
       async handle({message, args, prefix}, context) {
         const action = args[0]?.toLowerCase();

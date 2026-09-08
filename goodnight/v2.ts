@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type CommandInvocation, type PluginContext} from "telebox/sdk";
 
 type Group = {
@@ -51,7 +52,7 @@ export default function createGoodnight() {
       `<b>早晚安统计</b>\n状态: ${g.enabled ? "开启" : "关闭"}\n时区: ${timezone}\n当前时间: ${clock(g.timezone)}\n日期: ${g.date}\n晚安: ${g.sleepUsers.length} 人\n早安: ${g.wakeUsers.length} 人`,
       {parseMode: "html"});
   };
-  return definePlugin({apiVersion: 1, id: "goodnight", description: "早晚安统计", listeners: [{
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "goodnight", description: "早晚安统计", listeners: [{
     handle: async (message, ctx) => {
       const text = message.text.trim();
       const senderId = message.senderId;
@@ -96,7 +97,7 @@ export default function createGoodnight() {
         {linkPreview: false});
     },
   }], commands: {
-    goodnight: {description: "早晚安统计设置", handle},
-    gn: {description: "早晚安统计设置", handle},
+    goodnight: {helpArgs: ["help","h"], description: "早晚安统计设置", handle},
+    gn: {helpArgs: ["help","h"], description: "早晚安统计设置", handle},
   }});
 }

@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 import type {Api} from "teleproto";
 import {openAsBlob} from "node:fs";
@@ -34,8 +35,8 @@ function resultUrl(text: string): string {
 }
 
 export default function createOxost() {
-  return definePlugin({apiVersion: 1, id: "oxost", description: "上传回复中的媒体到 0x0.st",
-    commands: {"0x0": {description: "上传回复中的媒体到 0x0.st", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "oxost", description: "上传回复中的媒体到 0x0.st",
+    commands: {"0x0": {helpArgs: ["help","h"], description: "上传回复中的媒体到 0x0.st", async handle(invocation, context) {
       if (invocation.args.some(value => ["help", "h"].includes(value.toLowerCase()))) {
         await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
         return;

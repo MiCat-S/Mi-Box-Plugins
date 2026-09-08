@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes, TelegramClient} from "teleproto";
 
@@ -232,6 +233,6 @@ export default function createMusicBot() {
       await search(state, context, invocation, action, query, bot);
     },
   }]));
-  return definePlugin({apiVersion: 1, id: "music_bot", description: "通过多个 Telegram 音乐机器人搜索歌曲",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "music_bot", description: "通过多个 Telegram 音乐机器人搜索歌曲",
     commands, cleanup() { state.dispose(); }});
 }

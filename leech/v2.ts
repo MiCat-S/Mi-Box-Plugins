@@ -1,8 +1,9 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 
 export default function createLeech() {
-  return definePlugin({apiVersion: 1, id: "leech", description: "历史消息归档与抓取工具",
-    commands: {leech: {description: "查看归档状态和数据库信息", async handle(invocation, ctx) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "leech", description: "历史消息归档与抓取工具",
+    commands: {leech: {helpArgs: ["help","h"], helpOnEmpty: true, description: "查看归档状态和数据库信息", async handle(invocation, ctx) {
       const sub = invocation.args[0]?.toLowerCase() ?? "help";
       if (sub === "help" || sub === "h") {
         await ctx.telegram.edit(invocation.message,

@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
@@ -32,8 +33,8 @@ function attributes(user: ApiTypes.User): string[] {
 }
 
 export default function createIsAlive() {
-  return definePlugin({apiVersion: 1, id: "isalive", description: "查询用户在线状态及本群最后发言",
-    commands: {isalive: {description: "查询用户在线状态及本群最后发言", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "isalive", description: "查询用户在线状态及本群最后发言",
+    commands: {isalive: {helpArgs: ["help","h"], description: "查询用户在线状态及本群最后发言", async handle(invocation, context) {
       const input = invocation.args.join(" ").trim();
       if (!input || ["help", "h"].includes(input.toLowerCase())) {
         await context.telegram.edit(invocation.message,

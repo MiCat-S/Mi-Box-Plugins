@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as delay} from "node:timers/promises";
 import {definePlugin} from "telebox/sdk";
 import type {Api} from "teleproto";
@@ -25,8 +26,8 @@ function pages(values: readonly string[]): string[] {
 }
 
 export default function createAtAll() {
-  return definePlugin({apiVersion: 1, id: "atall", description: "在群组中提醒所有可见成员",
-    commands: {atall: {description: "在群组中提醒所有可见成员", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "atall", description: "在群组中提醒所有可见成员",
+    commands: {atall: {helpArgs: ["help","h"], description: "在群组中提醒所有可见成员", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
         await context.telegram.edit(invocation.message, `<b>提醒所有成员</b>\n<code>${escape(invocation.prefix)}atall</code>\n大量提醒可能触发 Telegram 频率限制。`, {parseMode: "html"});
         return;

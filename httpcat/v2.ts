@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -25,7 +26,7 @@ async function readImage(response: Response, signal: AbortSignal): Promise<Buffe
 }
 
 export default function createHttpcat() {
-  return definePlugin({apiVersion: 1, id: "httpcat", description: "发送 HTTP 状态码对应的图片",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "httpcat", description: "发送 HTTP 状态码对应的图片",
     commands: {httpcat: {description: "发送 HTTP 状态码图片", async handle(invocation, ctx) {
       const code = invocation.args[0] ?? "";
       if (!/^[1-5]\d{2}$/.test(code)) {

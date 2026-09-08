@@ -1,11 +1,12 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {writeFile} from "node:fs/promises";
 import {definePlugin} from "telebox/sdk";
 
-const help = (prefix: string) => `<b>在线状态探针</b>\n每 55 秒验证一次 Telegram 会话，并更新插件数据目录中的 <code>keep_online.txt</code>。\n\n<code>${prefix}keep_online</code> 查看状态`;
+const help = renderPluginHelp;
 
 export default function createKeepOnline() {
   let lastSuccess = 0;
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1,
     id: "keep_online",
     description: "定时验证 Telegram 会话并写入在线时间戳",

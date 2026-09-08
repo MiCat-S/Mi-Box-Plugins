@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as sleep} from "node:timers/promises";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import {curlCffi, probeCurlCffi, validatePythonPath} from "./v2/curl-cffi";
@@ -184,9 +185,9 @@ async function persist(ctx: PluginContext, cookie: string, info: Result, signal:
 export default function createNodeSeek({signRandom = true}: {signRandom?: boolean} = {}) {
   let signing = false;
   let dailyRunning = false;
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1, id: "nodeseek", description: "NodeSeek 论坛每日签到，领取鸡腿",
-    commands: {nodeseek: {description: "NodeSeek 签到、Cookie 与自动签到设置", async handle({message, args}, ctx) {
+    commands: {nodeseek: {helpOnEmpty: true, helpArgs: ["help"], description: "NodeSeek 签到、Cookie 与自动签到设置", async handle({message, args}, ctx) {
       const edit = (text: string, html = false) => {
         ctx.signal.throwIfAborted();
         return ctx.telegram.edit(message, text, html ? {parseMode: "html"} : {});

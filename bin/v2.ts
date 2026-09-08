@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 const help = `<b>BIN 查询</b>\n<code>bin 415042</code> 查询银行卡前六至八位信息`;
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
@@ -23,8 +24,8 @@ async function bincheck(ctx: PluginContext, bin: string) {
   } catch { return {}; }
 }
 export default function createBin() {
-  return definePlugin({apiVersion: 1, id: "bin", description: "查询银行卡 BIN 信息", commands: {
-    bin: {description: "查询银行卡 BIN 信息", async handle(invocation, ctx: PluginContext) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "bin", description: "查询银行卡 BIN 信息", commands: {
+    bin: {helpArgs: ["help","h"], helpOnEmpty: true, description: "查询银行卡 BIN 信息", async handle(invocation, ctx: PluginContext) {
       const value = invocation.args[0] ?? "";
       if (!value || value === "help" || value === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
       if (!/^\d{6,8}$/.test(value)) { await ctx.telegram.edit(invocation.message, "请输入 6 至 8 位数字 BIN"); return; }

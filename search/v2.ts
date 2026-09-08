@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import path from "node:path";
 
@@ -117,7 +118,7 @@ async function search(ctx: PluginContext, message: MessageEnvelope, originalArgs
   });
 }
 
-export default function createSearch() { return definePlugin({apiVersion:1,id:"search",description:"多频道视频资源搜索与频道源管理",settings: ctx => ({id:"search",title:"频道搜索",description:"频道搜索配置：默认频道、广告过滤",category:"插件配置",icon:"🔍",getSchema:()=>[{key:"defaultChannel",label:"默认频道",type:"string"},{key:"adFilters",label:"广告过滤词列表",type:"json"}],getValues:()=>database(ctx).read(),async setValues(patch){await database(ctx).update(current=>({...current,...patch,channelList:current.channelList,schemaVersion:1} as Config));}}),commands:{
+export default function createSearch() { return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"search",description:"多频道视频资源搜索与频道源管理",settings: ctx => ({id:"search",title:"频道搜索",description:"频道搜索配置：默认频道、广告过滤",category:"插件配置",icon:"🔍",getSchema:()=>[{key:"defaultChannel",label:"默认频道",type:"string"},{key:"adFilters",label:"广告过滤词列表",type:"json"}],getValues:()=>database(ctx).read(),async setValues(patch){await database(ctx).update(current=>({...current,...patch,channelList:current.channelList,schemaVersion:1} as Config));}}),commands:{
   so:{description:"搜索视频或管理频道源",async handle({message,args},ctx){try{await ctx.telegram.edit(message,"⚙️ 正在执行命令...");if(!(await manage(ctx,message,args)))await search(ctx,message,args);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ 错误：\n${errorText(error)}`);}}},
   search:{description:"搜索视频或管理频道源",async handle({message,args},ctx){try{await ctx.telegram.edit(message,"⚙️ 正在执行命令...");if(!(await manage(ctx,message,args)))await search(ctx,message,args);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ 错误：\n${errorText(error)}`);}}},
 }}); }

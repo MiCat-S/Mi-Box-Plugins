@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import {load, JSON_SCHEMA} from "js-yaml";
 import {fetchSubscription, trafficSummary} from "./v2/fetch";
@@ -70,8 +71,8 @@ function parse(raw: string) {
   return {total: nodes.length, counts, names, regionCounts};
 }
 export default function createSubinfo() {
-  return definePlugin({apiVersion: 1, id: "subinfo", description: "查看订阅基础信息", commands: {
-    subinfo: {description: "查看订阅基础信息", async handle(invocation, ctx: PluginContext) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "subinfo", description: "查看订阅基础信息", commands: {
+    subinfo: {helpArgs: ["help","h"], description: "查看订阅基础信息", async handle(invocation, ctx: PluginContext) {
       let url = invocation.args[0];
       if (!url) {
         const reply = await ctx.telegram.getReply(invocation.message);

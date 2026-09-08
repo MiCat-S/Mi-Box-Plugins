@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext, type MessageEnvelope} from "telebox/sdk";
 import {Api} from "teleproto";
 import {returnBigInt} from "teleproto/Helpers";
@@ -48,8 +49,8 @@ async function receipt(ctx: PluginContext, message: MessageEnvelope, text: strin
   }).catch(() => {if (!ctx.signal.aborted) ctx.log.error("trace.receipt_delete_failed");});
 }
 export default function createTrace() {
-  return definePlugin({apiVersion: 1, id: "trace", description: "用户与关键词自动回应", commands: {
-    trace: {description: "管理自动回应", async handle(invocation, ctx) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "trace", description: "用户与关键词自动回应", commands: {
+    trace: {helpArgs: ["help","h"], description: "管理自动回应", async handle(invocation, ctx) {
       const [sub, action, keyword] = invocation.args;
       const db = store(ctx);
       try {

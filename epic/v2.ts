@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 
 const ENDPOINT = "https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions?locale=zh-CN&country=CN&allowCountries=CN";
@@ -56,8 +57,8 @@ async function query(context: PluginContext): Promise<Game[]> {
 }
 
 export default function createEpic() {
-  return definePlugin({apiVersion: 1, id: "epic", description: "查看 Epic Games 当前限免游戏",
-    commands: {epic: {description: "查看 Epic Games 当前限免游戏", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "epic", description: "查看 Epic Games 当前限免游戏",
+    commands: {epic: {helpArgs: ["help","h"], description: "查看 Epic Games 当前限免游戏", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
         await context.telegram.edit(invocation.message, `<b>Epic 限免游戏</b>\n<code>${escape(invocation.prefix)}epic</code> 查看当前限免`, {parseMode: "html"});
         return;

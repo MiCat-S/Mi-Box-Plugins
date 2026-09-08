@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, open, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
@@ -110,13 +111,13 @@ function help(prefix: string): string {
 }
 
 export default function createConvert() {
-  return definePlugin({apiVersion: 1, id: "convert", description: "将回复视频流式转换为 MP3，可选 AI 元数据",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "convert", description: "将回复视频流式转换为 MP3，可选 AI 元数据",
     resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 180_000, maxOutputBytes: 256 * 1024}},
     settings: context => ({title: "视频转音频", description: "Gemini 元数据识别配置", category: "插件配置", icon: "🎬",
       getSchema: () => [{key: "apiKey", label: "Gemini API Key", type: "password", secret: true}],
       async getValues() { return {apiKey: (await configuration(context)).current.apiKey}; },
       async setValues(patch) { const key = patch.apiKey; if (typeof key === "string") await (await configuration(context)).store.update(value => ({...value, apiKey: key})); }}),
-    commands: {convert: {description: "将回复视频转换为 MP3", async handle(invocation, context) {
+    commands: {convert: {helpArgs: ["help","h"], description: "将回复视频转换为 MP3", async handle(invocation, context) {
       const sub = invocation.args[0]?.toLowerCase() ?? "";
       if (sub === "help" || sub === "h" || (!invocation.args.length && invocation.message.replyToId === undefined)) {
         await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return;

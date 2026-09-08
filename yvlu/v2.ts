@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, ui, type PluginContext, type CommandInvocation} from "telebox/sdk";
 import {escape, native, replyMessage, UserError} from "./v2/runtime";
 import {generateQuote, sendQuote} from "./v2/media";
@@ -116,7 +117,7 @@ async function handle(invocation: CommandInvocation, ctx: PluginContext): Promis
 }
 
 export default function createYvlu() {
-  return definePlugin({apiVersion: 1, id: "yvlu", description: "生成文字语录贴纸、图片与故事，管理贴纸包", renderHelp: help,
+  return definePlugin({apiVersion: 1, id: "yvlu", description: "生成文字语录贴纸、图片与故事，管理贴纸包", renderHelp: renderPluginHelp,
     commands: {yvlu: {description: "生成语录、保存贴纸及配置贴纸包", handle}},
   });
 }

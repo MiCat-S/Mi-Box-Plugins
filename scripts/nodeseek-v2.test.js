@@ -207,6 +207,7 @@ test('pure synchronous factory and lazy load use only candidate/helper/SDK sourc
     '../TeleBox-Core/src/v2/ui/text.ts',
     'nodeseek/v2.ts',
     'nodeseek/v2/curl-cffi.ts',
+    'nodeseek/v2/help.ts',
   ].map(file => path.resolve(__dirname, '..', file)).sort();
   assert.deepEqual(inputs, allowedInputs);
   assert.doesNotMatch(inputs.join('\n'), /compiler|teleproto|http|python/i);

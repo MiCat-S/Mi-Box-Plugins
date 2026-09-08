@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, ui, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {FIAT_CURRENCIES, CRYPTO_CURRENCIES} from "./v2/currencies";
 import {RateFailure, reason, request} from "./v2/http";
@@ -165,10 +166,10 @@ export default function createRate() {
   }
 
   return definePlugin({
-    apiVersion: 1, id: "rate", description: "加密货币汇率查询与数量换算", renderHelp: help,
+    apiVersion: 1, id: "rate", description: "加密货币汇率查询与数量换算", renderHelp: renderPluginHelp,
     cleanup() { fiatCache.clear(); dynamicFiats = undefined; },
     commands: {
-      rate: {description: "智能汇率查询与数量换算", async handle({message, args, prefix}, context) {
+      rate: {helpArgs: ["help","h"], description: "智能汇率查询与数量换算", async handle({message, args, prefix}, context) {
         context.signal.throwIfAborted();
         if (active >= 4) {
           try { await edit(context, message, feedback("error", "汇率查询繁忙", "请稍后重试")); }

@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {createHash} from "node:crypto";
 import {setTimeout as sleep} from "node:timers/promises";
 import {returnBigInt} from "teleproto/Helpers";
@@ -113,7 +114,7 @@ async function processMessage(message: MessageEnvelope, context: PluginContext, 
 
 export default function createPlugin() {
   const runtime: RuntimeState = {recent: new Map(), serial: new Map()};
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
   apiVersion: 1, id: "autorepeat", description: "在群组内达到不同用户人数阈值后自动复读相同文本。",
   commands: {autorepeat: {description: "管理群组自动复读", async handle({message, args, prefix}, context) {
     try {

@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext, type CommandInvocation, type MessageEnvelope} from "telebox/sdk";
 const help = `<b>盘古之白</b>\n<code>pangu</code> 当前状态\n<code>pangu 文本</code> 格式化中英文间距\n<code>pangu on/off</code> 当前会话开关\n<code>pangu reset</code> 当前会话恢复跟随全局\n<code>pangu global on/off</code> 全局开关\n<code>pangu whitelist add/remove/list</code> 白名单\n<code>pangu blacklist add/remove/list</code> 黑名单\n<code>pangu stats</code> 统计`;
 type Data = {legacyImported?: boolean; chats: Record<string, boolean>; globalMode: boolean; whitelist: string[]; blacklist: string[]; stats: {formattedMessages: number; lastFormatted: number | null}};
@@ -94,7 +95,7 @@ export default function createPangu() {
     if (!text || sub === "help" || sub === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
     await format(ctx, invocation.message, text);
   };
-  return definePlugin({apiVersion: 1, id: "pangu", description: "格式化中英文间距",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "pangu", description: "格式化中英文间距",
     async setup(ctx) {
       const db = rawStore(ctx);
       if ((await db.read()).legacyImported) return;
@@ -125,7 +126,7 @@ export default function createPangu() {
       await store(ctx).update(current => ({...current, stats: {...current.stats, formattedMessages: current.stats.formattedMessages + 1, lastFormatted: Date.now()}}));
     },
   }], commands: {
-    pangu: {description: "格式化中英文间距", handle: command},
+    pangu: {helpArgs: ["help","h"], description: "格式化中英文间距", handle: command},
   }});
 }
 async function format(ctx: PluginContext, message: MessageEnvelope, text: string) {

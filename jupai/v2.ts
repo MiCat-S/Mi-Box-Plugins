@@ -1,10 +1,11 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import {CustomFile} from "teleproto/client/uploads";
 const api = "https://api.txqq.pro/api/zt.php";
 const help = `<b>举牌小人</b>\n<code>jupai 文本</code>\n也可回复消息后使用 <code>jupai</code>`;
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
 export default function createJupai() {
-  return definePlugin({apiVersion: 1, id: "jupai", description: "生成举牌小人图片", commands: {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "jupai", description: "生成举牌小人图片", commands: {
     jupai: {description: "生成举牌小人图片", async handle(invocation, ctx: PluginContext) {
       let text = invocation.args.join(" ").trim();
       if (!text) {

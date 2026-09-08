@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, open, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
@@ -146,7 +147,7 @@ export default function createT() {
     await loaded.store.update(value => ({...value, users: {...value.users, [id]: {...existing, apiKey: key}}}));
     await context.telegram.edit(invocation.message, "API Key 设置成功");
   }};
-  return definePlugin({apiVersion: 1, id: "t", description: "Fish Audio 文字转语音与音乐",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "t", description: "Fish Audio 文字转语音与音乐",
     resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 180_000, maxOutputBytes: 256 * 1024}},
     commands: {t: commandT, ts: commandTs, tk: commandTk},
     settings: context => ({title: "TTS 语音", category: "插件配置", icon: "🔊", getSchema: () => [

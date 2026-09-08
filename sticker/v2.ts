@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes, TelegramClient} from "teleproto";
 
@@ -93,8 +94,8 @@ function help(prefix: string): string { return `<b>贴纸收藏</b>\n回复贴�
   `<code>${escape(prefix)}sticker 包名</code> 设置默认包 · <code>${escape(prefix)}sticker cancel</code> 取消`; }
 
 export default function createSticker() {
-  return definePlugin({apiVersion: 1, id: "sticker", description: "收藏贴纸到自己的贴纸包", commands: {
-    sticker: {description: "收藏贴纸或配置默认贴纸包", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "sticker", description: "收藏贴纸到自己的贴纸包", commands: {
+    sticker: {helpArgs: ["help","h"], description: "收藏贴纸或配置默认贴纸包", async handle(invocation, context) {
       const args = invocation.args;
       if (["help", "h"].includes(args[0]?.toLowerCase() ?? "")) {
         await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html", linkPreview: false}); return;

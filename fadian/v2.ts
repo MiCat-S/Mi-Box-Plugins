@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 
 const base = "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/fadian/";
@@ -31,9 +32,9 @@ function names(args: readonly string[], reply?: string): string[] {
 
 export default function createFadian() {
   const cache: Cache = new Map();
-  return definePlugin({apiVersion: 1, id: "fadian", description: "随机生成发电语录",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "fadian", description: "随机生成发电语录",
     cleanup() {cache.clear();},
-    commands: {fadian: {description: "随机生成发电语录", async handle(invocation, ctx) {
+    commands: {fadian: {helpOnEmpty: true, helpArgs: ["help","h"], description: "随机生成发电语录", async handle(invocation, ctx) {
       const lines = invocation.message.text.split(/\r?\n/);
       const args = invocation.args;
       const sub = (args[0] ?? "").toLowerCase();

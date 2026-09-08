@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as sleep} from "node:timers/promises";
 import {returnBigInt} from "teleproto/Helpers";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
@@ -82,9 +83,9 @@ function nextId(rules: Rule[]) { return String(Math.max(0, ...rules.map(rule => 
 
 export default function createPlugin() {
   const running = new Set<string>();
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
   apiVersion: 1, id: "autodelcmd", description: "按规则延迟删除命令及其响应。",
-  commands: {autodelcmd: {description: "管理命令自动删除规则", async handle({message, args, prefix}, context) {
+  commands: {autodelcmd: {helpOnEmpty: true, description: "管理命令自动删除规则", async handle({message, args, prefix}, context) {
     const action = args[0]?.toLowerCase();
     const state = await database(context).read();
     if (["on", "enable"].includes(action)) { await database(context).update(value => ({...value, enabled: true})); await context.telegram.edit(message, "🟢 自动删除功能已启用"); return; }

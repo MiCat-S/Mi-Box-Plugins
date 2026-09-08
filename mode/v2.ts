@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 type Mode = "off" | "del" | "bold" | "italic" | "underline" | "mask" | "all";
 type Data = {chats: Record<string, Mode>; whitelist: string[]; blacklist: string[]; globalMode: Mode};
@@ -5,7 +6,7 @@ const help = `<b>消息模式</b>\n<code>mode bold|italic|underline|del|mask|all
 const modes = new Set<Mode>(["off", "del", "bold", "italic", "underline", "mask", "all"]);
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
 export default function createMode() {
-  return definePlugin({apiVersion: 1, id: "mode", description: "管理消息格式模式",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "mode", description: "管理消息格式模式",
     listeners: [{ignoreCommands: true, async handle(message, ctx) {
       if (!(message.outgoing || message.saved) || !message.text.trim()) return;
       const data = await ctx.storage.json<Data>("config.json", {chats: {}, whitelist: [], blacklist: [], globalMode: "off"}).read();
@@ -23,7 +24,7 @@ export default function createMode() {
       ctx.signal.throwIfAborted();
       await ctx.telegram.edit(message, start + esc(message.text.trim()) + end, {parseMode: "html"});
     }}], commands: {
-    mode: {description: "管理消息格式模式", async handle(invocation, ctx: PluginContext) {
+    mode: {helpArgs: ["help","h"], description: "管理消息格式模式", async handle(invocation, ctx: PluginContext) {
       const db = ctx.storage.json<Data>("config.json", {chats: {}, whitelist: [], blacklist: [], globalMode: "off"});
       const data = await db.read(); const chat = invocation.message.chatId; const [first, second] = invocation.args.map(String);
       if (!first) {

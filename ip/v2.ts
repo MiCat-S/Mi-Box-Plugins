@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {isIP} from "node:net";
 import {domainToASCII} from "node:url";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
@@ -155,7 +156,7 @@ async function edit(context: PluginContext, message: MessageEnvelope, text: stri
 }
 
 export default function createIp() {
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1, id: "ip", description,
     commands: {
       ip: {description: "查询 IP 地址或域名的详细信息", async handle({message, args}, context) {

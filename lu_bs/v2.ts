@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 const TIME_ZONE = "Asia/Shanghai";
@@ -189,11 +190,11 @@ export default function createLuBs() {
     },
   };
 
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1,
     id: "lu_bs",
     description: "鲁小迅整点贴纸报时",
-    commands: {lu_bs: command},
+    commands: {lu_bs: {...command, helpArgs: ["help"]}},
     async setup(context) {
       await store(context).update(source => normalizeState(source));
     },

@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 
 const translations: ReadonlyArray<readonly [RegExp, string]> = [
@@ -50,7 +51,7 @@ async function detect(ctx: PluginContext): Promise<string> {
 }
 
 export default function createService() {
-  return definePlugin({apiVersion: 1, id: "service", description: "查看 systemd 服务状态",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "service", description: "查看 systemd 服务状态",
     resources: {processes: {concurrency: 1, queueCapacity: 1, timeoutMs: 8_000, maxOutputBytes: 64 * 1024}},
     commands: {service: {description: "查看指定或当前 systemd 服务状态", async handle({message, args}, ctx) {
       let name: string;

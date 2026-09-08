@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, open, readFile, rm, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import {createHash} from "node:crypto";
@@ -81,9 +82,9 @@ async function masked(sharp: typeof import("sharp"), context: PluginContext, rol
 export default function createEatGif() {
   let catalog: Catalog | undefined;
   const getCatalog = async (context: PluginContext): Promise<Catalog> => catalog ??= await json<Catalog>(context, "config.json");
-  return definePlugin({apiVersion: 1, id: "eatgif", description: "将双方头像合成为动画贴纸",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "eatgif", description: "将双方头像合成为动画贴纸",
     resources: {processes: {concurrency: 1, queueCapacity: 1, timeoutMs: 180_000, maxOutputBytes: 256 * 1024}},
-    commands: {eatgif: {description: "生成头像融合动画", async handle(invocation, context) {
+    commands: {eatgif: {helpArgs: ["help","h"], description: "生成头像融合动画", async handle(invocation, context) {
       const sub = invocation.args[0]?.toLowerCase() ?? "";
       try {
         if (sub === "clear") { await rm(context.files.dataPath("cache"), {recursive: true, force: true}); catalog = undefined;

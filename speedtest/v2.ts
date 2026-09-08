@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type CommandInvocation, type PluginContext} from "telebox/sdk";
 import {
   DEFAULT_ORDER, migrateConfig, normalizeType, readConfig, updateConfig, type MessageType,
@@ -197,12 +198,12 @@ export default function createSpeedtest() {
     }
   }};
 
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1,
     id: "speedtest",
     description: "使用官方 Ookla CLI 的网络测速工具",
     resources: {processes: {concurrency: 1, queueCapacity: 3, timeoutMs: 180_000, maxOutputBytes: 2 * 1024 * 1024}},
-    commands: {speedtest: command, st: command},
+    commands: {speedtest: {...command, helpArgs: ["help","h"]}, st: {...command, helpArgs: ["help","h"]}},
     settings: context => ({
       id: "speedtest", title: "Speedtest 测速", description: "网络测速配置", category: "插件配置", icon: "🚀",
       getSchema: () => [
