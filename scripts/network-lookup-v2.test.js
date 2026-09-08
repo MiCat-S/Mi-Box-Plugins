@@ -8,14 +8,14 @@ const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 
-async function fixture(t, id, fetch) {
+async function fixture(t, id, fetch, client) {
   const {artifactDir} = buildPlugin({id, packageRoot: path.resolve(__dirname, '..', id), entry: 'v2.ts'});
   const create = require(path.join(artifactDir, 'index.cjs')).default;
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), `mibot-${id}-`)));
   const edits = [], replies = [], requests = [];
   const host = new PluginHost({storageRoot: root, logger: {info(){}, error(){}}, http: {fetch: async (url, init) => { requests.push({url:new URL(url), init}); return fetch(new URL(url), init); }}, telegram: {
     async edit(message,text,options){edits.push({message,text,options});}, async reply(message,text,options){replies.push({message,text,options});},
-    async invoke(){throw new Error('unexpected invoke');}, async getReply(){return undefined;}, async withClient(){throw new Error('unexpected client');},
+    async invoke(){throw new Error('unexpected invoke');}, async getReply(){return undefined;}, async withClient(operation, signal){if(!client)throw new Error('unexpected client');return operation(client,signal);},
   }});
   await host.load(create());
   t.after(async()=>{assert.equal((await host.shutdown(1000)).completed,true);await fs.rm(root,{recursive:true,force:true});});
@@ -88,4 +88,23 @@ test('BGP SVG masks decoded addresses and removes IP hyperlink targets before ra
   const svg = privateGraph('<svg xmlns="http://www.w3.org/2000/svg"><a href="https://38.59.246.201"><text>38&#46;59.246.201</text></a><text>2001:db8::1</text></svg>');
   assert.doesNotMatch(svg, /38\.59\.246\.201|2001:db8::1|href=/);
   assert.match(svg, /38\.59\.\*\.\*/);
+});
+
+test('BGP loads its image pipeline on demand and sends a complete PNG before temp cleanup', async t => {
+  let file, image;
+  const f = await fixture(t, 'bgp', async () => new Response(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="blue"/></svg>',
+    {headers: {'content-type': 'image/svg+xml'}}), {
+      async sendFile(_chat, options) { file = options.file; image = await fs.readFile(file); },
+    });
+  await f.run('.bgp 1.1.1.1');
+  assert.ok(image, 'The lazy graph pipeline must reach the media send operation');
+  assert.deepEqual(image.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const sharp = require(path.join(core, 'node_modules/sharp'));
+  const metadata = await sharp(image).metadata();
+  assert.equal(metadata.format, 'png');
+  assert.ok(metadata.width > 0 && metadata.width <= 2400);
+  assert.ok(metadata.height > 0 && metadata.height <= 1800);
+  await assert.rejects(fs.stat(file), {code: 'ENOENT'});
+  assert.equal(f.requests.length, 1);
 });

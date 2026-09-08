@@ -1,4 +1,3 @@
-import {load} from "cheerio";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api} from "teleproto";
 
@@ -26,6 +25,7 @@ async function page(context: PluginContext, url: URL): Promise<string> {
 }
 
 async function search(context: PluginContext, code: string): Promise<Item[]> {
+  const {load} = await import("cheerio");
   const url = new URL("https://javdb.com/search");
   url.searchParams.set("q", code); url.searchParams.set("f", "all");
   const $ = load(await page(context, url));
@@ -42,6 +42,7 @@ async function search(context: PluginContext, code: string): Promise<Item[]> {
 }
 
 async function detail(context: PluginContext, url: URL) {
+  const {load} = await import("cheerio");
   const $ = load(await page(context, url));
   const value = (label: string, linkOnly = false) => {
     const node = $(`.panel-block strong:contains("${label}")`).first().parent().find(linkOnly ? ".value a" : ".value").first();
