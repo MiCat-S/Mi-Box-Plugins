@@ -43,12 +43,11 @@ function normalize(input: unknown): State {
   return {...source, schemaVersion: 2, enabled: source.enabled === true, rules, pending};
 }
 
-const running = new Set<string>();
-async function forget(context: PluginContext, id: string) {
+async function forget(context: PluginContext, id: string, running: Set<string>) {
   running.delete(id);
   await database(context).update(state => { const pending = {...state.pending}; delete pending[id]; return {...state, pending}; });
 }
-async function deletePending(context: PluginContext, pending: Pending) {
+async function deletePending(context: PluginContext, pending: Pending, running: Set<string>) {
   const id = key(pending.chatId, pending.messageId);
   if (running.has(id)) return;
   running.add(id);
@@ -59,15 +58,15 @@ async function deletePending(context: PluginContext, pending: Pending) {
     } catch (error) {
       if (!signal.aborted) context.log.error("autodelcmd:delete", {error: String(error).slice(0, 300)});
     } finally {
-      if (!signal.aborted) await forget(context, id);
+      if (!signal.aborted) await forget(context, id, running);
       else running.delete(id);
     }
   });
 }
-async function queue(context: PluginContext, chatId: string, messageId: number, delay: number) {
+async function queue(context: PluginContext, chatId: string, messageId: number, delay: number, running: Set<string>) {
   const item = {chatId, messageId, dueAt: Date.now() + delay * 1000};
   await database(context).update(state => ({...state, pending: {...state.pending, [key(chatId, messageId)]: item}}));
-  await deletePending(context, item);
+  await deletePending(context, item, running);
 }
 function match(rules: Rule[], command: string, args: readonly string[]): Rule | undefined {
   return rules.find(rule => rule.command === command && rule.parameters?.includes(args[0] ?? ""))
@@ -81,7 +80,9 @@ async function responseIds(context: PluginContext, message: MessageEnvelope): Pr
 }
 function nextId(rules: Rule[]) { return String(Math.max(0, ...rules.map(rule => Number(rule.id)).filter(Number.isFinite)) + 1); }
 
-export default function createPlugin() { return definePlugin({
+export default function createPlugin() {
+  const running = new Set<string>();
+  return definePlugin({
   apiVersion: 1, id: "autodelcmd", description: "按规则延迟删除命令及其响应。",
   commands: {autodelcmd: {description: "管理命令自动删除规则", async handle({message, args, prefix}, context) {
     const action = args[0]?.toLowerCase();
@@ -128,12 +129,12 @@ export default function createPlugin() { return definePlugin({
     const route = context.commands.parse(message.text); if (!route || route.command === "autodelcmd") return;
     const rule = match(state.rules, route.command, route.args); if (!rule) return;
     const ids = rule.deleteResponse ? await responseIds(context, message) : [];
-    for (const id of [...ids, message.id]) await queue(context, message.chatId, id, rule.delay);
+    for (const id of [...ids, message.id]) await queue(context, message.chatId, id, rule.delay, running);
   }}],
   async setup(context) {
     const legacy = await database(context).read(); const state = normalize(legacy);
     await database(context).update(() => state);
-    for (const pending of Object.values(state.pending)) await deletePending(context, pending);
+    for (const pending of Object.values(state.pending)) await deletePending(context, pending, running);
   },
   cleanup() { running.clear(); },
 }); }

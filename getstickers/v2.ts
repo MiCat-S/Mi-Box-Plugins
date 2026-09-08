@@ -1,4 +1,4 @@
-import {access, appendFile, stat, unlink, writeFile} from "node:fs/promises";
+import {access, appendFile, rm, stat, unlink, writeFile} from "node:fs/promises";
 import {constants, createWriteStream} from "node:fs";
 import path from "node:path";
 import {ZipArchive} from "archiver";
@@ -57,6 +57,7 @@ async function convert(context: PluginContext, input: string, output: string, ki
     await helper(context, FFMPEG, ["-nostdin", "-y", "-i", input, "-vf", filter, ...(kind === "webp" ? ["-loop", "0"] : []), output], 120_000); return true;
   } catch (error) {
     if (context.signal.aborted) throw error;
+    await rm(output, {force: true});
     context.log.info("getstickers_conversion_skipped", {kind}); return false;
   }
 }
@@ -151,9 +152,15 @@ export default function createGetStickers() {
               for (const item of result?.packs ?? []) for (const id of item?.documents ?? []) emojiById.set(String(id), String(item?.emoticon ?? ""));
               for (let index = 0; index < documents.length; index++) {
                 signal.throwIfAborted(); const item: any = documents[index]; const kind = extension(item, Api);
+                if (Number(item.size) > MAX_ITEM) throw new Error("Sticker too large");
                 const stem = String(index).padStart(3, "0"); const sourceFile = path.join(pack, `${stem}.${kind}`);
                 await client.downloadFile(new Api.InputDocumentFileLocation({id: item.id, accessHash: item.accessHash,
-                  fileReference: item.fileReference ?? Buffer.alloc(0), thumbSize: ""}), {outputFile: sourceFile});
+                  fileReference: item.fileReference ?? Buffer.alloc(0), thumbSize: ""}), {outputFile: sourceFile, signal,
+                  progressCallback(downloaded) {
+                    signal.throwIfAborted();
+                    if (downloaded.greater(MAX_ITEM)) throw new Error("Sticker too large");
+                  }});
+                signal.throwIfAborted();
                 const sourceInfo = await stat(sourceFile); if (!sourceInfo.isFile() || !sourceInfo.size || sourceInfo.size > MAX_ITEM) throw new Error("Sticker too large");
                 const converted = path.join(pack, `${stem}.gif`); const ok = await convert(context, sourceFile, converted, kind, directory);
                 if (ok) {const convertedInfo=await stat(converted);if(!convertedInfo.isFile()||!convertedInfo.size||convertedInfo.size>MAX_ITEM)throw new Error("Converted sticker too large");await unlink(sourceFile);}

@@ -108,3 +108,70 @@ test('BGP loads its image pipeline on demand and sends a complete PNG before tem
   await assert.rejects(fs.stat(file), {code: 'ENOENT'});
   assert.equal(f.requests.length, 1);
 });
+
+function searchHtml(url, title = 'Primary result') {
+  return `<div class="result results_links"><a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent(url)}">${title}</a><div class="result__snippet">Kept snippet</div></div>`;
+}
+
+test('duckduckgo keeps primary results when the optional supplement fails', async t => {
+  const f = await fixture(t, 'duckduckgo', async url => {
+    if (url.hostname === 'html.duckduckgo.com') return new Response(searchHtml('https://example.com/primary'));
+    throw new Error('supplement-secret');
+  });
+  await f.run('.ddg query');
+  assert.match(f.edits.at(-1).text, /Primary result/);
+  assert.doesNotMatch(f.edits.at(-1).text, /搜索失败|supplement-secret/);
+  assert.equal(f.requests.length, 2);
+});
+
+test('duckduckgo preserves encoded URL components through its redirect link', async t => {
+  const target = 'https://example.com/search?q=one%26two&next=%252F&text=100%25';
+  const f = await fixture(t, 'duckduckgo', async () => new Response(searchHtml(target)));
+  await f.run('.ddg -n 1 query');
+  const href = f.edits.at(-1).text.match(/href="([^"]+)"/)?.[1].replaceAll('&amp;', '&');
+  assert.equal(href, target);
+});
+
+test('duckduckgo deduplicates repeated results within its supplement', async t => {
+  const f = await fixture(t, 'duckduckgo', async url => url.hostname === 'html.duckduckgo.com'
+    ? new Response(searchHtml('https://example.com/primary'))
+    : Response.json({data: {web: [
+      {url: 'https://example.com/secondary', title: 'Secondary'},
+      {url: 'https://example.com/secondary', title: 'Duplicate'},
+    ]}}));
+  await f.run('.ddg query');
+  assert.equal((f.edits.at(-1).text.match(/href="https:\/\/example.com\/secondary"/g) ?? []).length, 1);
+});
+
+test('deepwiki keeps every Unicode answer character within Telegram page budgets', async t => {
+  const answer = '🙂<&'.repeat(2500);
+  const f = await fixture(t, 'deepwiki', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (body.method === 'initialize') return new Response('{}', {headers: {'mcp-session-id': 'local'}});
+    if (body.method === 'notifications/initialized') return new Response('', {status: 202});
+    return Response.json({result: {content: [{type: 'text', text: answer}]}});
+  });
+  await f.run('.deepwiki add core https://github.com/owner/repo');
+  await f.run('.deepwiki ' + '🚀&'.repeat(600));
+  const pages = [f.edits.at(-1).text, ...f.replies.map(item => item.text)];
+  for (const page of pages) {
+    assert.ok(page.length <= 3500, `HTML page exceeded budget: ${page.length}`);
+    assert.equal(page.isWellFormed(), true);
+  }
+  assert.equal((pages.join('').match(/🙂/gu) ?? []).length, 2500);
+  assert.equal((pages.join('').match(/&lt;/g) ?? []).length, 2500);
+});
+
+test('deepwiki truncates its answer budget at a complete UTF-16 character', async t => {
+  const f = await fixture(t, 'deepwiki', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (body.method === 'initialize') return new Response('{}', {headers: {'mcp-session-id': 'local'}});
+    if (body.method === 'notifications/initialized') return new Response('', {status: 202});
+    return Response.json({result: {content: [{type: 'text', text: 'x'.repeat(47999) + '😀'}]}});
+  });
+  await f.run('.deepwiki add core https://github.com/owner/repo');
+  await f.run('.deepwiki question');
+  const pages = [f.edits.at(-1).text, ...f.replies.map(item => item.text)];
+  assert.ok(pages.every(page => page.isWellFormed() && page.length <= 3500));
+  assert.equal((pages.join('').match(/x/g) ?? []).length, 47999);
+});
