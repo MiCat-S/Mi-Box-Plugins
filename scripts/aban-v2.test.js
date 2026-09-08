@@ -7,7 +7,7 @@ const os = require('node:os');
 const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
-let root, factory, Api, integer, manifest;
+let root, factory, Api, integer, manifest, prepared;
 const envelope = {id: 9, chatId: '-100100', senderId: '1', outgoing: true, text: '.ban 2'};
 test.before(async () => {
   test.mock.method(globalThis, 'fetch', () => assert.fail('No live HTTP'));
@@ -21,13 +21,14 @@ test.before(async () => {
   manifest = built.manifest;
   const protoPath = require.resolve(path.join(core, 'node_modules/teleproto'));
   const loaded = !!require.cache[protoPath];
-  factory = require(path.join(built.artifactDir, 'index.cjs')).default;
+  prepared = await require(path.join(core, 'dist/v2/artifacts.js')).prepareArtifact(built.artifactDir);
+  factory = () => prepared.create();
   factory();
   assert.equal(!!require.cache[protoPath], loaded);
   ({Api} = require(protoPath));
   ({returnBigInt: integer} = require(path.join(core, 'node_modules/teleproto/Helpers.js')));
 });
-test.after(async () => { test.mock.restoreAll(); if (root) await fs.rm(root, {recursive: true, force: true}); });
+test.after(async () => { prepared?.release(); test.mock.restoreAll(); if (root) await fs.rm(root, {recursive: true, force: true}); });
 const user = (id = '2') => new Api.User({id: integer(id), accessHash: integer(30), firstName: '<Target&>'});
 const channel = (id = '100', rights = {banUsers: true, deleteMessages: true}) =>
   new Api.Channel({id: integer(id), accessHash: integer(20), title: 'Group', megagroup: true,
@@ -397,4 +398,25 @@ test('a displayed result awaiting Telegram acknowledgement does not block the ne
   assert.match(f.edits.at(-1).text, /成功 1/);
   assert.match(f.edits.at(-1).text, /user\?id=3/);
   acknowledged.resolve();
+});
+
+test('reply users without an input peer fall back to managed group resolution', async t => {
+  const partial = new Api.User({id: integer(2), firstName: 'Partial', min: true});
+  const f = await fixture(t, {reply: {id: 1, senderId: '2', raw: {sender: partial}}, native: {
+    getEntity: async () => {throw new Error('cache miss');},
+    getInputEntity: async target => {
+      if (!(target instanceof Api.User) || target === partial) throw new Error('User without accessHash or min cannot be input');
+      return peer(target.id.toString());
+    },
+  }});
+  await f.run('.sb', {replyToId: 1});
+  assert.match(f.edits.at(-1).text, /成功 1/);
+  assert.ok(f.mutations().some(req => req instanceof Api.channels.EditBanned));
+});
+
+test('unexpected account failures identify their stage without exposing private error text', async t => {
+  const f = await fixture(t, {native: {getMe: async () => {throw new Error('private-server-details');}}});
+  await f.run('.sb 2');
+  assert.match(f.edits.at(-1).text, /阶段：读取账号/);
+  assert.doesNotMatch(JSON.stringify({edits: f.edits, logs: f.logs}), /private-server-details/);
 });

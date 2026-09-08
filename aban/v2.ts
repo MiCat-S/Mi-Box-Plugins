@@ -65,7 +65,7 @@ export default function createAban() {
   const edit = (ctx: PluginContext, inv: CommandInvocation, text: string) =>
     ctx.telegram.edit(inv.message, text, { parseMode: "html", linkPreview: false });
 
-  const execute = async (inv: CommandInvocation, ctx: PluginContext) => {
+  const execute = async (inv: CommandInvocation, ctx: PluginContext, setStage: (stage: string) => void) => {
     const args = inv.command === "refresh" ? undefined : parseArgs(inv);
     await ctx.telegram.withClient(async (client: TelegramClient, signal: AbortSignal) => {
       const { Api } = await import("teleproto");
@@ -116,15 +116,18 @@ export default function createAban() {
         return found;
       };
       if (inv.command === "refresh") {
+        setStage("读取管理群");
         cache = undefined;
         const found = await groups(true);
         await edit(ctx, inv, `<b>管理群缓存</b>\n已刷新 <code>${found.length}</code> 个有封禁权限的群组/频道`);
         return;
       }
+      setStage("读取账号");
       const me = await call(() => client.getMe());
       const current = async () => fromEntity(await call(() => client.getEntity(
         (inv.message.raw as { peerId?: Api.TypePeer } | undefined)?.peerId ?? integer(inv.message.chatId))));
       const batch = inv.command === "sb" || inv.command === "unsb";
+      setStage("读取管理群");
       const selected = batch ? await groups() : [await current()];
       if (!selected.length) throw new Notice("没有可管理的群组；可先使用 refresh 刷新缓存");
 
@@ -143,7 +146,10 @@ export default function createAban() {
           return { id: user.id.toString(), peer: await call(() => client.getInputEntity(user)),
             label: [user.firstName, user.lastName].filter(Boolean).join(" ") || user.id.toString() };
         };
-        if (known) return asTarget(known);
+        if (known) {
+          try { return await asTarget(known); }
+          catch (error) { signal.throwIfAborted(); if (errorCode(error) === "FLOOD_WAIT") throw error; }
+        }
         try { return await asTarget(await call(() => client.getEntity(id!.startsWith("@") ? id! : integer(id!)))); }
         catch (error) {
           signal.throwIfAborted();
@@ -174,6 +180,7 @@ export default function createAban() {
         }
         throw new Notice("无法解析该用户ID；请回复其消息、使用用户名，或 refresh 后重试");
       };
+      setStage("解析目标用户");
       const target = await resolve();
       if (target.id === me.id.toString()) throw new Notice("不能对当前登录账号执行管理操作");
       const permission = async (g: Group) => {
@@ -217,6 +224,7 @@ export default function createAban() {
         if (failed) throw failed.reason;
       };
       await edit(ctx, inv, `<b>${names[inv.command as keyof typeof names]}</b>\n目标：${escape(target.label.slice(0, 120))}\n正在检查 ${selected.length} 个群/频道…`);
+      setStage("检查管理权限");
       await parallel(selected, async group => {
         try {
           const rights = await permission(group);
@@ -255,10 +263,12 @@ export default function createAban() {
         }
       };
       await edit(ctx, inv, `<b>${names[inv.command as keyof typeof names]}</b>\n目标：${escape(target.label.slice(0, 120))}\n正在处理 ${ready.length} 个群/频道…`);
+      setStage("执行管理操作");
       await parallel(ready, async item => {
         try { await apply(item.group); success++; applied.add(`${item.group.kind}:${item.group.id}`); }
         catch (error) { signal.throwIfAborted(); fail(error instanceof Notice ? error.message : errorCode(error)); }
       });
+      setStage("清理目标消息");
       if (action === "ban" && inv.message.chatId.startsWith("-")) {
         const item = ready.find(({ group: g }) => (g.kind === "channel" ? "-100" + g.id : "-" + g.id) === inv.message.chatId);
         historyNote = !item ? "当前群未通过管理检查" : item.group.kind === "chat" ? "基本群不支持批量清理"
@@ -280,6 +290,7 @@ export default function createAban() {
         .map(([reason, count]) => `${escape(failureLabels[reason] ?? reason)} · ${count} 个`).join("\n");
       const remaining = reasonEntries.slice(5).reduce((total, [, count]) => total + count, 0);
       const counts = [`成功 ${success}`, ...(failed ? [`失败 ${failed}`] : []), ...(skipped ? [`不支持 ${skipped}`] : [])];
+      setStage("发送结果");
       await edit(ctx, inv, `<b>${names[inv.command as keyof typeof names]}结果</b>
 <a href="tg://user?id=${target.id}">${escape(target.label.slice(0, 120))}</a> · <code>${target.id}</code>
 
@@ -291,16 +302,17 @@ export default function createAban() {
       await edit(ctx, inv, help(inv.prefix)); return;
     }
     const run = async () => {
+      let stage = "解析命令";
       try {
         if (inv.command === "sb" || inv.command === "unsb") {
           await edit(ctx, inv, `<b>${names[inv.command]}</b>\n正在读取管理群并解析目标…`);
         }
-        await execute(inv, ctx);
+        await execute(inv, ctx, value => {stage = value;});
       }
       catch (error) {
         ctx.signal.throwIfAborted();
-        ctx.log.error("aban:command", { command: inv.command, reason: errorCode(error) });
-        await edit(ctx, inv, `<b>操作未完成</b>\n${escape(error instanceof Notice ? error.message : errorCode(error))}`);
+        ctx.log.error("aban:command", { command: inv.command, stage, reason: errorCode(error) });
+        await edit(ctx, inv, `<b>操作未完成</b>\n阶段：${stage}\n${escape(error instanceof Notice ? error.message : errorCode(error))}`);
       }
     };
     if (inv.command === "sb" || inv.command === "unsb") {
