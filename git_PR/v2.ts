@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 
 const MASK = "••••••••";
@@ -59,9 +60,9 @@ const help = (prefix: string) => `<b>Git PR 管理</b>\n<code>${prefix}git login
   `<code>${prefix}git merge owner/repo 编号</code>\n<code>${prefix}git mergeall owner/repo</code>`;
 
 export default function createGitPr() {
-  return definePlugin({apiVersion: 1, id: "git_PR", description: "通过 Git API 管理 Pull Request",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "git_PR", description: "通过 Git API 管理 Pull Request",
     async setup(context) { await store(context).update(normalize); },
-    commands: {git: {description: "列出和合并 Git Pull Request", async handle(invocation: any, context: PluginContext) {
+    commands: {git: {helpArgs: ["help","h"], helpOnEmpty: true, description: "列出和合并 Git Pull Request", async handle(invocation: any, context: PluginContext) {
       const sub = (invocation.args[0] ?? "help").toLowerCase();
       if (["help", "h"].includes(sub)) { await output(invocation, context, help(invocation.prefix)); return; }
       try {

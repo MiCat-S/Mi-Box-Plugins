@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api} from "teleproto";
 
@@ -96,7 +97,7 @@ async function fallback(context: PluginContext, category: string): Promise<Downl
 }
 
 export default function createBizhi() {
-  return definePlugin({apiVersion: 1, id: "bizhi", description: "随机获取高品质桌面壁纸",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "bizhi", description: "随机获取高品质桌面壁纸",
     commands: {bizhi: {description: "随机获取高品质桌面壁纸", async handle(invocation, context) {
       const sendAsFile = invocation.args.includes("-f");
       const category = invocation.args.find(value => !value.startsWith("-"))?.toLowerCase() ?? "";

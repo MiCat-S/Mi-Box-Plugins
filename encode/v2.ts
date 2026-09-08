@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 const MAX_INPUT = 16_384;
@@ -45,9 +46,9 @@ async function inputText(ctx: PluginContext, message: MessageEnvelope, args: rea
 }
 
 export default function createEncode() {
-  return definePlugin({apiVersion: 1, id: "encode", description: "Base64 与 URL 编码解码工具",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "encode", description: "Base64 与 URL 编码解码工具",
     commands: {
-      encode: {description: "查看编码解码帮助", async handle({message, prefix}, ctx) {
+      encode: {helpOnEmpty: true, description: "查看编码解码帮助", async handle({message, prefix}, ctx) {
         await ctx.telegram.edit(message, help(prefix), {parseMode: "html"});
       }},
       b64encode: {description: "Base64 编码", async handle(invocation, ctx) {

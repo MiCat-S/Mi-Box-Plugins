@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 
 const escape = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -21,10 +22,10 @@ function* chunks(text: string): Generator<string> {
 }
 
 export default function createGt() {
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1, id: "gt", description: help,
     commands: {
-      gt: {description: "Google 翻译", async handle({message}, context) {
+      gt: {helpArgs: ["help","h"], description: "Google 翻译", async handle({message}, context) {
         try {
           let text = message.text.replace(/^\S+\s*/, "");
           const first = text.match(/^\S+/)?.[0].toLowerCase();

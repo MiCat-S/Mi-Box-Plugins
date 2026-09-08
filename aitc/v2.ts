@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 
 type Config = {
@@ -102,8 +103,8 @@ const help = (prefix: string) => `<b>AITC AI 转写</b>\n` +
   `<code>${escape(prefix)}aitc prompt 文本</code> · <code>spn 名称 Prompt</code> · <code>info</code>`;
 
 export default function createAitc() {
-  return definePlugin({apiVersion: 1, id: "aitc", description: "使用自定义 Prompt 和 OpenAI 兼容接口转写文本",
-    commands: {aitc: {description: "AI 转写与 Prompt 预设管理", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "aitc", description: "使用自定义 Prompt 和 OpenAI 兼容接口转写文本",
+    commands: {aitc: {helpArgs: ["help","h"], description: "AI 转写与 Prompt 预设管理", async handle(invocation, context) {
       const first = invocation.args[0]?.toLowerCase() ?? "";
       const rest = invocation.args.slice(1).join(" ").trim();
       const edit = (text: string, html = true) => context.telegram.edit(invocation.message, text,

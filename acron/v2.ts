@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {Api} from "teleproto";
 import {returnBigInt} from "teleproto/Helpers";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
@@ -37,8 +38,8 @@ export default function createAcron() {
     } catch { await store.update(current => {const found = current.tasks.find(item => item.id === id); if (found) {found.lastRunAt = String(Date.now()); found.lastError = "任务执行失败"; found.delivery = "pending";} return current;}); }
   });
   const register = async (context: PluginContext, task: Task) => { if (task.disabled || disposers.has(task.id)) return; const dispose = await context.jobs.register(`task_${task.id}`, {cron: task.cron, timeZone: "Asia/Shanghai", description: `acron ${task.type} ${task.id}`}, () => execute(context, task.id)); disposers.set(task.id, dispose); };
-  return definePlugin({apiVersion: 1, id: "acron", description: "定时发送、复制、转发、删除及置顶消息",
-    commands: {acron: {description: "管理 Cron 定时任务", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "acron", description: "定时发送、复制、转发、删除及置顶消息",
+    commands: {acron: {helpOnEmpty: true, description: "管理 Cron 定时任务", async handle(invocation, context) {
       const store = context.storage.json<State>("acron_config.json", defaults); const sub = invocation.args[0]?.toLowerCase();
       if (!sub) return context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
       if (["list", "ls", "la"].includes(sub)) { const state = await store.read(); const all = sub === "la" || invocation.args[1] === "all"; const filterArg = sub === "la" ? invocation.args[1] : invocation.args[all ? 2 : 1]; const filter = types.includes(filterArg as TaskType) ? filterArg : undefined; const tasks = state.tasks.filter(task => (all || task.chatId === invocation.message.chatId) && (!filter || task.type === filter)); const text = tasks.length ? `📋 <b>${all ? "所有" : "当前会话"}定时任务</b>\n\n${tasks.map(task => `<code>${task.id}</code> · <code>${task.type}</code> · ${task.disabled ? "已禁用" : "已启用"}\n<code>${escape(task.cron)}</code>${task.remark ? ` · ${escape(task.remark)}` : ""}${task.lastResult ? `\n结果: ${escape(task.lastResult)}` : ""}${task.lastError ? `\n错误: ${escape(task.lastError)}` : ""}`).join("\n\n")}` : "暂无定时任务"; return context.telegram.edit(invocation.message, text.slice(0, 4000), {parseMode: "html"}); }

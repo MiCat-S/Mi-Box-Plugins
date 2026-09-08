@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes, TelegramClient} from "teleproto";
 
@@ -90,6 +91,6 @@ export default function createBotmzt() {
   for (const [name, command] of Object.entries(IMAGE_COMMANDS)) {
     commands[name] = {description: "从图片机器人获取剧透图片", handle: (invocation: any, context: PluginContext) => request(runtime, context, invocation, command, true)};
   }
-  return definePlugin({apiVersion: 1, id: "botmzt", description: `从 ${BOT} 获取剧透图片`, commands,
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "botmzt", description: `从 ${BOT} 获取剧透图片`, commands,
     cleanup() { runtime.cursor = 0; runtime.tail = Promise.resolve(); }});
 }

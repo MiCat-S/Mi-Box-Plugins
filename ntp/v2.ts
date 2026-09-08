@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 
 const HOST = "time.cloudflare.com";
@@ -20,7 +21,7 @@ async function query(ctx: PluginContext) {
 }
 
 export default function createNtp() {
-  return definePlugin({apiVersion: 1, id: "ntp", description: "查询网络时间偏差并尝试校准系统时间",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "ntp", description: "查询网络时间偏差并尝试校准系统时间",
     resources: {processes: {concurrency: 1, queueCapacity: 1, timeoutMs: 5000, maxOutputBytes: 64 * 1024}},
     commands: {ntp: {description: "查询或校准系统时间", async handle(invocation, ctx) {
       const mode = (invocation.args[0] ?? "").toLowerCase();

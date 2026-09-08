@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import { definePlugin, type CommandInvocation, type PluginContext } from "telebox/sdk";
 import type { Api, TelegramClient } from "teleproto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -351,7 +352,7 @@ export default function createAban() {
       });
     } else await run();
   };
-  return definePlugin({ apiVersion: 1, id: "aban", description: help("."),
+  return definePlugin({renderHelp: renderPluginHelp,  apiVersion: 1, id: "aban", description: help("."),
     commands: Object.fromEntries(Object.entries({ aban: "封禁管理帮助", ...names, refresh: "刷新管理群缓存" })
       .map(([name, description]) => [name, { description, ignoreEdited: true, handle }])),
     cleanup() { cache = undefined; },

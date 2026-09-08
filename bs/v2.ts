@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
@@ -89,9 +90,9 @@ async function forward(invocation: any, context: PluginContext, count: number): 
 }
 
 export default function createBs() {
-  return definePlugin({apiVersion: 1, id: "bs", description: "将回复消息保送至已配置目标",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "bs", description: "将回复消息保送至已配置目标",
     async setup(context) { await store(context).update(normalize); },
-    commands: {bs: {description: "管理目标或保送回复消息", async handle(invocation: any, context: PluginContext) {
+    commands: {bs: {helpArgs: ["help","h","说明"], description: "管理目标或保送回复消息", async handle(invocation: any, context: PluginContext) {
       const command = (invocation.args[0] ?? "").toLowerCase();
       if (!command || /^\d+$/.test(command)) return forward(invocation, context, command ? Number(command) : 1);
       if (["help", "h", "说明"].includes(command)) { await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }

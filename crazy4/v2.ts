@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 import type {Api} from "teleproto";
 import {crazy4Data} from "./v2/data";
@@ -6,8 +7,8 @@ const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
 
 export default function createCrazy4() {
-  return definePlugin({apiVersion: 1, id: "crazy4", description: "随机发送疯狂星期四文案",
-    commands: {crazy4: {description: "随机发送疯狂星期四文案", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "crazy4", description: "随机发送疯狂星期四文案",
+    commands: {crazy4: {helpArgs: ["help","h"], description: "随机发送疯狂星期四文案", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
         await context.telegram.edit(invocation.message, `<b>疯狂星期四</b>\n<code>${escape(invocation.prefix)}crazy4</code> 随机发送一条文案`, {parseMode: "html"});
         return;

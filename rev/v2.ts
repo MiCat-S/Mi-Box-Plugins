@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
@@ -167,7 +168,7 @@ async function editReversedReply(context: PluginContext, invocation: any, reply:
 }
 
 export default function createRev() {
-  return definePlugin({apiVersion: 1, id: "rev", description: "反转文字或翻转回复的媒体",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "rev", description: "反转文字或翻转回复的媒体",
     resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 180_000, maxOutputBytes: 512 * 1024}}, commands: {
     rev: {description: "反转文字或翻转回复的媒体", async handle(invocation, context) {
       const selected = parse(invocation.args);

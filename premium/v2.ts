@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 import type {Api} from "teleproto";
 
@@ -5,8 +6,8 @@ const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
 
 export default function createPremium() {
-  return definePlugin({apiVersion: 1, id: "premium", description: "统计群组 Telegram Premium 用户比例",
-    commands: {premium: {description: "统计群组 Telegram Premium 用户比例", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "premium", description: "统计群组 Telegram Premium 用户比例",
+    commands: {premium: {helpArgs: ["help","h"], description: "统计群组 Telegram Premium 用户比例", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
         await context.telegram.edit(invocation.message, `<b>Premium 统计</b>\n<code>${escape(invocation.prefix)}premium</code>\n<code>${escape(invocation.prefix)}premium force</code> 强制统计大型群组`, {parseMode: "html"});
         return;

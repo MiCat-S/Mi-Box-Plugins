@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {stat} from "node:fs/promises";
 import path from "node:path";
 import {definePlugin, type PluginContext} from "telebox/sdk";
@@ -121,7 +122,7 @@ export default function createPicToSticker() {
       await context.telegram.edit(invocation.message, "图片转换失败，请确认回复的是图片、格式受支持且输出小于 512 KiB");
     }
   }};
-  return definePlugin({apiVersion: 1, id: "pic_to_sticker", description: "将图片转换为贴纸", commands: {pic_to_sticker: command, pts: command},
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "pic_to_sticker", description: "将图片转换为贴纸", commands: {pic_to_sticker: {...command, helpArgs: ["help","h"]}, pts: {...command, helpArgs: ["help","h"]}},
     settings: context => ({title: "图片转贴纸", description: "贴纸转换配置", category: "插件配置", icon: "🖼️",
       getSchema: () => [{key: "defaultEmoji", label: "默认表情", type: "string", max: 32}, {key: "quality", label: "质量", type: "number", min: 1, max: 100},
         {key: "format", label: "格式", type: "select", options: [{value: "webp", label: "WebP"}, {value: "png", label: "PNG"}]},

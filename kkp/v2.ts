@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes, TelegramClient} from "teleproto";
 
@@ -57,8 +58,8 @@ export default function createKkp() {
     await previous.catch(() => undefined);
     try { return await operation(); } finally { release(); }
   };
-  return definePlugin({apiVersion: 1, id: "kkp", description: "通过 Telegram 机器人获取随机视频",
-    commands: {kkp: {description: "获取随机视频", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "kkp", description: "通过 Telegram 机器人获取随机视频",
+    commands: {kkp: {helpArgs: ["help","h"], description: "获取随机视频", async handle(invocation, context) {
       const sub = invocation.args[0]?.toLowerCase() ?? "";
       if (sub === "help" || sub === "h") {
         await context.telegram.edit(invocation.message,

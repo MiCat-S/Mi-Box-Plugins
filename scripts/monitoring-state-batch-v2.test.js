@@ -14,6 +14,21 @@ function memory(initial){let value=structuredClone(initial);let tail=Promise.res
 function context(state,client={}){const edits=[],replies=[],logs=[],controller=new AbortController();const json=memory(state);return{json,edits,replies,controller,ctx:{signal:controller.signal,tasks:{run(_label,fn){return fn(controller.signal);},add(){return async()=>{};}},storage:{json(){return json;},sqlite(){return{read(){return Promise.reject(Object.assign(new Error('missing'),{code:'ENOENT'}));}};}},telegram:{async edit(_m,text,options){edits.push({text,options});},async reply(_m,text,options){replies.push({text,options});},async getReply(){return undefined;},async withClient(fn){return fn(client,controller.signal);}},log:{info(){},error(event,fields){logs.push({event,fields});}}}};}
 const message=(text,extra={})=>({id:1,chatId:'-1009007199254740993',senderId:'9007199254740995',outgoing:true,text,raw:{peerId:{className:'PeerChannel'},...extra}});
 
+test('pmcaptcha accepts documented Chinese actions and rejects unknown actions atomically', async () => {
+  const f = context({schemaVersion: 1, config: {failActions: [], passActions: []}, sessions: {}, importedLegacy: true});
+  const plugin = createCaptcha();
+  const run = args => plugin.commands.pmc.handle({command: 'pmc', prefix: '.', args, message: message(`.pmc ${args.join(' ')}`)}, f.ctx);
+  await run(['set', 'fail', '屏蔽', '举报']);
+  assert.deepEqual(f.json.value().config.failActions, ['block', 'report']);
+  await run(['set', 'pass', '取消静音', '取消归档', '白名单']);
+  assert.deepEqual(f.json.value().config.passActions, ['unmute', 'unarchive', 'whitelist']);
+  await run(['set', 'fail', 'block', '拼写错误']);
+  assert.match(f.edits.at(-1).text, /未知动作/);
+  assert.deepEqual(f.json.value().config.failActions, ['block', 'report']);
+  await run(['set', 'fail', '无']);
+  assert.deepEqual(f.json.value().config.failActions, []);
+});
+
 test('keyword keeps string chat ids, preserves unknown state, and gives inherited rules priority',async()=>{
   const state={schemaVersion:1,nextId:3,importedLegacy:true,future:{kept:true},aliases:{'-1009007199254740993':'-1001'},tasks:[
     {id:1,chatId:'-1001',key:'hello',response:'inherited',include:true,regexp:false,exact:false,caseSensitive:false,ignoreForward:false,reply:true,deleteSource:false,banSeconds:0,restrictSeconds:0,deleteReplyAfter:0,deleteSourceAfter:0},

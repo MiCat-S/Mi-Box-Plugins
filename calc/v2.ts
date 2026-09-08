@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 
 const MAX_EXPR_LENGTH = 120;
@@ -87,8 +88,8 @@ function format(value: number): string {
 const help = (prefix: string) => `<b>计算器</b>\n<code>${escape(prefix)}calc 2+2*5</code>\n<code>${escape(prefix)}calc (10-3)*4</code>\n支持括号、小数和负数。`;
 
 export default function createCalc() {
-  return definePlugin({apiVersion: 1, id: "calc", description: "安全计算四则运算表达式",
-    commands: {calc: {description: "计算四则运算表达式", async handle(invocation, ctx) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "calc", description: "安全计算四则运算表达式",
+    commands: {calc: {helpArgs: ["help","h"], description: "计算四则运算表达式", async handle(invocation, ctx) {
       const expression = invocation.args.join(" ").trim();
       if (!expression || expression.toLowerCase() === "help" || expression.toLowerCase() === "h") {
         await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});

@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 
 /**
@@ -7,7 +8,7 @@ import {definePlugin} from "telebox/sdk";
  * privilege and process-budget policy.
  */
 export default function createExecCompatibility() {
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1,
     id: "exec",
     description: "系统命令执行由 Core V2 内置 exec 提供",

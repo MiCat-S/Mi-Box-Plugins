@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import {returnBigInt} from "teleproto/Helpers";
 
@@ -51,8 +52,8 @@ export default function createSendAt() {
     if (remove) { await disposers.get(id)?.(); disposers.delete(id); }
   });
   const register = async (context: PluginContext, task: Task, timeZone = "Asia/Shanghai") => { if (task.pause || disposers.has(task.task_id)) return; const dispose = await context.jobs.register(`task_${task.task_id}`, {cron: cronFor(task), timeZone, description: `定时发送任务 ${task.task_id}`}, () => execute(context, task.task_id)); disposers.set(task.task_id, dispose); };
-  return definePlugin({apiVersion: 1, id: "sendat", description: "按固定时间或间隔发送消息",
-    commands: {sendat: {description: "管理定时发送任务", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "sendat", description: "按固定时间或间隔发送消息",
+    commands: {sendat: {helpArgs: ["help","h"], helpOnEmpty: true, description: "管理定时发送任务", async handle(invocation, context) {
       const store = context.storage.json<State>("tasks.json", defaults); const sub = invocation.args[0]?.toLowerCase();
       if (!sub || sub === "help" || sub === "h") return context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
       if (sub === "list") { const all = invocation.args[1] === "all"; if (all) return context.telegram.edit(invocation.message, "❌ 只有管理员可以查看所有任务", {}); const tasks = (await store.read()).tasks.filter(task => task.cid === invocation.message.chatId); return context.telegram.edit(invocation.message, tasks.length ? `📋 <b>我的任务：</b>\n\n${tasks.map(description).join("\n\n")}` : "📝 您没有已注册的任务", {parseMode: "html"}); }

@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 
 
@@ -5,7 +6,7 @@ interface SureConfig extends Record<string, unknown> {users: string[]; chats: st
 const defaults: SureConfig = {users: [], chats: [], messages: {}};
 
 export default function createSure() {
-  return definePlugin({apiVersion: 1, id: "sure", description: "管理 bot 代发消息的白名单规则",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "sure", description: "管理 bot 代发消息的白名单规则",
     commands: {sure: {description: "维护代发用户、对话和消息白名单", async handle(invocation, ctx) {
       const owner = await ctx.telegram.withClient(client => client.getMe());
       if (invocation.message.senderId !== String(owner.id)) {

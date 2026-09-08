@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
@@ -74,6 +75,6 @@ export default function createCopyStickerSet() {
       await context.telegram.edit(invocation.message, "贴纸包复制失败，请确认贴纸包存在且账户允许创建新贴纸包");
     }
   }};
-  return definePlugin({apiVersion: 1, id: "copy_sticker_set", description: "复制 Telegram 贴纸包",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "copy_sticker_set", description: "复制 Telegram 贴纸包",
     commands: {copy_sticker_set: command, css: command}});
 }

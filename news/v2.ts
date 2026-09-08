@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 const help = `<b>每日新闻</b>\n<code>news</code> 获取新闻、历史、成语和诗词`;
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
@@ -73,8 +74,8 @@ function pages(data: Data): string[] {
   return result;
 }
 export default function createNews() {
-  return definePlugin({apiVersion: 1, id: "news", description: "每日新闻资讯", commands: {
-    news: {description: "获取每日新闻资讯", async handle(invocation, ctx) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "news", description: "每日新闻资讯", commands: {
+    news: {helpArgs: ["help","h"], description: "获取每日新闻资讯", async handle(invocation, ctx) {
       if (invocation.args[0] === "help" || invocation.args[0] === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
       if (invocation.args.length) {
         await ctx.telegram.edit(invocation.message, "未知参数，请使用 news help 查看帮助"); return;

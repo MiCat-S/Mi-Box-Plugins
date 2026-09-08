@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {getBotName, definePlugin, type PluginContext} from "telebox/sdk";
 
 type Stats = {schemaVersion: number; startTime: number; reportCount: number};
@@ -55,7 +56,7 @@ async function hitokoto(context: PluginContext): Promise<string> {
 }
 
 export default function createAnnualReport() {
-  return definePlugin({apiVersion: 1, id: "annualreport", description: "生成 Telegram 年度使用报告", commands: {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "annualreport", description: "生成 Telegram 年度使用报告", commands: {
     annualreport: {description: "生成 Telegram 年度使用报告", async handle(invocation, context) {
       await context.telegram.edit(invocation.message, "正在生成年度报告…");
       try {

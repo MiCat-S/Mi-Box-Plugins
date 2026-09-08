@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, appendFile, stat, unlink, writeFile} from "node:fs/promises";
 import {constants, createWriteStream} from "node:fs";
 import path from "node:path";
@@ -126,7 +127,7 @@ async function createArchive(source: string, target: string, signal: AbortSignal
 function help(prefix: string): string { return `回复贴纸后发送 <code>${prefix.replace(/[&<>]/g, "") }getstickers</code>，将整包转换并打包为 ZIP`; }
 
 export default function createGetStickers() {
-  return definePlugin({apiVersion: 1, id: "getstickers", description: "下载并打包整个贴纸包",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "getstickers", description: "下载并打包整个贴纸包",
     resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 180_000, maxOutputBytes: 256 * 1024}}, commands: {
       getstickers: {description: "下载回复贴纸所属的贴纸包", async handle(invocation, context) {
         try {

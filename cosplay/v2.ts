@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import path from "node:path";
 import {open, stat} from "node:fs/promises";
 import {load} from "cheerio";
@@ -124,6 +125,6 @@ async function run(invocation: any, context: PluginContext): Promise<void> {
 
 export default function createCosplay() {
   const command = {description: "从随机套图获取 Cosplay 图片", handle: run};
-  return definePlugin({apiVersion: 1, id: "cosplay", description: "从 cosplaytele.com 获取同一套图中的随机图片",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "cosplay", description: "从 cosplaytele.com 获取同一套图中的随机图片",
     commands: {cos: command, cosplay: command}});
 }

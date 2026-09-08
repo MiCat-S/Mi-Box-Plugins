@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import {isIP} from "node:net";
 import {annotateLocations} from "./v2/location";
@@ -52,8 +53,8 @@ async function runDig(ctx: PluginContext, values: string[]): Promise<string> {
 }
 
 export default function createDig() {
-  return definePlugin({apiVersion: 1, id: "dig", description: "查询 DNS 记录",
-    commands: {dig: {description: "查询 DNS 记录", async handle(invocation, ctx) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "dig", description: "查询 DNS 记录",
+    commands: {dig: {helpArgs: ["help","h"], helpOnEmpty: true, description: "查询 DNS 记录", async handle(invocation, ctx) {
       const raw = invocation.args;
       if (!raw.length || raw[0] === "help" || raw[0] === "h") {
         await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return;

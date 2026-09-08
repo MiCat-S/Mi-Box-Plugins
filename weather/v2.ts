@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 
 const escape = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
@@ -35,8 +36,8 @@ async function get(ctx: PluginContext, url: string, params: Record<string, strin
   return ctx.http.json(target.toString(), {}, {timeoutMs: 10000, redirects:{allowedHosts:[target.hostname],maxRedirects:2}});
 }
 export default function createWeather() {
-  return definePlugin({apiVersion: 1, id: "weather", description: "查询城市天气", commands: {
-    weather: {description: "查询城市天气", async handle(invocation, ctx) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "weather", description: "查询城市天气", commands: {
+    weather: {helpArgs: ["help","h"], helpOnEmpty: true, description: "查询城市天气", async handle(invocation, ctx) {
       const city = invocation.args.join(" ").trim();
       if (!city || city.toLowerCase() === "help" || city.toLowerCase() === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
       if (!validCity(city)) { await ctx.telegram.edit(invocation.message, "请输入有效的城市名"); return; }

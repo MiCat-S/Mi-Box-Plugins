@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import { definePlugin, type PluginContext } from "telebox/sdk";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -43,7 +44,7 @@ export default function createDa() {
       await save(ctx, task);
     } catch { ctx.signal.throwIfAborted(); ctx.log.error("da:progress"); }
   };
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1, id: "da", description: help("."),
     async setup(ctx) {
       const store = database(ctx);
@@ -69,7 +70,7 @@ export default function createDa() {
         task.errors = task.errors?.length ? ["历史任务存在删除失败"] : [];
       } return data; });
     },
-    commands: { da: { description: "批量删除群组消息", ignoreEdited: true, async handle({ message, args, prefix }, ctx) {
+    commands: { da: {helpOnEmpty: true, helpArgs: ["help","h"],  description: "批量删除群组消息", ignoreEdited: true, async handle({ message, args, prefix }, ctx) {
       const raw = message.raw as { isPrivate?: boolean; peerId?: any } | undefined;
       if (raw?.isPrivate || !message.chatId.startsWith("-")) {
         await ctx.telegram.edit(message, "仅群组可用"); return;

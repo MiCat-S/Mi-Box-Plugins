@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, open, readFile, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
@@ -211,9 +212,9 @@ async function handle(invocation: any, context: PluginContext): Promise<void> {
 
 export default function createXmsl() {
   const command = {description: "生成羡慕调侃短句", ignoreEdited: true, handle};
-  return definePlugin({apiVersion: 1, id: "xmsl", description: "使用 OpenAI 或 Gemini 生成羡慕调侃短句",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "xmsl", description: "使用 OpenAI 或 Gemini 生成羡慕调侃短句",
     resources: {processes: {concurrency: 1, queueCapacity: 1, timeoutMs: 90_000, maxOutputBytes: 256 * 1024}},
-    commands: {xmsl: command, xm: command}, setup: migrate,
+    commands: {xmsl: {...command, helpArgs: ["help"]}, xm: {...command, helpArgs: ["help"]}}, setup: migrate,
     settings: context => ({id: "xmsl", title: "XMSL", description: "羡慕短句模型配置", category: "插件配置", icon: "🤢",
       getSchema: () => [{key:"apiMode",label:"API 模式",type:"select",options:[{label:"OpenAI",value:"openai"},{label:"Gemini",value:"gemini"}]},
         {key:"apiKey",label:"API Key",type:"password",secret:true},{key:"baseUrl",label:"API 地址",type:"string",required:true},{key:"model",label:"模型",type:"string",required:true}],

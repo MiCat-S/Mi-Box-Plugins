@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#x27;"})[c]!);
@@ -52,7 +53,7 @@ async function query(message: MessageEnvelope, target: string, count: number, ct
   });
 }
 
-export default function createHis() { return definePlugin({apiVersion: 1, id: "his", description: "查询指定用户或频道在群内的发言历史", commands: {his: {description: "查询消息历史", async handle({message,args,prefix}, ctx) {
+export default function createHis() { return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "his", description: "查询指定用户或频道在群内的发言历史", commands: {his: {helpArgs: ["help","h"], description: "查询消息历史", async handle({message,args,prefix}, ctx) {
   try {
     if (args[0] === "help" || args[0] === "h") { await ctx.telegram.edit(message, HELP.replaceAll("{p}", escape(prefix)), {parseMode:"html"}); return; }
     let target: string | undefined, count = 30;

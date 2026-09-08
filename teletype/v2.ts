@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 interface State extends Record<string, unknown> { schemaVersion: number; autoMode: boolean; enabledUsers: string[]; maxEdits: number; }
@@ -18,9 +19,9 @@ async function animate(message: MessageEnvelope, text: string, context: PluginCo
 }
 
 export default function createTeletype() {
-  return definePlugin({
+  return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1, id: "teletype", description: "手动或自动显示打字机编辑效果",
-    commands: {teletype: {description: "打字机效果", ignoreEdited: true, async handle(invocation, context) {
+    commands: {teletype: {helpOnEmpty: true, description: "打字机效果", ignoreEdited: true, async handle(invocation, context) {
       const store = context.storage.json<State>("config.json", defaults);
       const first = invocation.args[0]?.toLowerCase();
       if (!first) return context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});

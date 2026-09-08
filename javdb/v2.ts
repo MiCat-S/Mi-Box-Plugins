@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {load} from "cheerio";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api} from "teleproto";
@@ -153,6 +154,6 @@ export default function createJavdb() {
       await context.telegram.edit(invocation.message, "番号查询失败，请稍后重试");
     }
   }};
-  return definePlugin({apiVersion: 1, id: "javdb", description: "查询 JavDB 番号资料",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "javdb", description: "查询 JavDB 番号资料",
     commands: {javdb: command, av: command, jav: command, jd: command}});
 }

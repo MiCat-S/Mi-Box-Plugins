@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as delay} from "node:timers/promises";
 import {definePlugin} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
@@ -19,8 +20,8 @@ async function recent(client: any): Promise<ApiTypes.Message[]> {
 }
 
 export default function createNetease() {
-  return definePlugin({apiVersion: 1, id: "netease", description: "通过 Music163bot 搜索和发送网易云音乐",
-    commands: {netease: {description: "搜索和发送网易云音乐", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "netease", description: "通过 Music163bot 搜索和发送网易云音乐",
+    commands: {netease: {helpArgs: ["help","h"], description: "搜索和发送网易云音乐", async handle(invocation, context) {
       const keyword = invocation.args.join(" ").trim();
       if (!keyword || ["help", "h"].includes(keyword.toLowerCase())) {
         await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});

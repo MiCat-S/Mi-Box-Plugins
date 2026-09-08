@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 import type {Api} from "teleproto";
 
@@ -20,8 +21,8 @@ function validUploadUrl(value: string): URL {
 }
 
 export default function createSoutu() {
-  return definePlugin({apiVersion: 1, id: "soutu", description: "回复图片生成反向搜图链接",
-    commands: {soutu: {description: "回复图片生成反向搜图链接", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "soutu", description: "回复图片生成反向搜图链接",
+    commands: {soutu: {helpArgs: ["help","h"], description: "回复图片生成反向搜图链接", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
         await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
         return;

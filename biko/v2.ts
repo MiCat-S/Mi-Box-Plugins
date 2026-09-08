@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
@@ -66,8 +67,8 @@ function pages(header: string, records: readonly RecordItem[]): string[] {
 }
 
 export default function createBiko() {
-  return definePlugin({apiVersion: 1, id: "biko", description: "整理指定用户在来源对话中的消息并发送到目标对话",
-    commands: {biko: {description: "跨对话整理指定用户的近期消息", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "biko", description: "整理指定用户在来源对话中的消息并发送到目标对话",
+    commands: {biko: {helpArgs: ["help"], helpOnEmpty: true, description: "跨对话整理指定用户的近期消息", async handle(invocation, context) {
       if (invocation.args[0]?.toLowerCase() === "help" || invocation.args.length !== 4) {
         await context.telegram.edit(invocation.message,
           `<b>Biko 消息整理</b>\n<code>${escape(invocation.prefix)}biko 来源对话 来源用户 最大消息数 目标对话</code>\n最大消息数 ${MAX_MESSAGES}。`,

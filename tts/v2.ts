@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {open, stat} from "node:fs/promises";
 import path from "node:path";
 import {definePlugin, type PluginContext} from "telebox/sdk";
@@ -72,7 +73,7 @@ async function deleteCommand(invocation: any, context: PluginContext): Promise<v
 }
 
 export default function createTts() {
-  return definePlugin({apiVersion: 1, id: "tts", description: "Azure Speech 文字转语音",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "tts", description: "Azure Speech 文字转语音",
     commands: {tts: {description: "合成语音并管理 Azure TTS 配置", async handle(invocation, context) {
       const sub = (invocation.args[0] ?? "").toLowerCase();
       const edit = (text: string, html = true) => context.telegram.edit(invocation.message, text, html ? {parseMode: "html"} : undefined);

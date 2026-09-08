@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {readFile} from "node:fs/promises";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 
@@ -45,7 +46,7 @@ async function ai(c:PluginContext,p:Provider,prompt:string,content:string,timeou
   const data=await c.http.withResponse(target,{method:"POST",redirect:"manual",credentials:"omit",headers,body:JSON.stringify(body)},responseJson,{timeoutMs,signal:c.signal,redirects:{allowedHosts:[target.hostname],maxRedirects:2}}) as any;
   const text=p.type==="gemini"?data?.candidates?.[0]?.content?.parts?.map((x:any)=>typeof x?.text==="string"?x.text:"").join(""):data?.choices?.[0]?.message?.content;if(typeof text!=="string"||!text.trim())throw new Error("无有效响应");return text.trim();}
 
-export default function createUai(){return definePlugin({apiVersion:1,id:"uai",description:"引用消息并使用 AI 汇总或分析历史消息",commands:{uai:{description:"AI 汇总或分析引用来源",async handle(i,c){const edit=(text:string,html=false)=>c.telegram.edit(i.message,text,html?{parseMode:"html",linkPreview:false}:{});const [sub,...rest]=i.args;try{
+export default function createUai(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"uai",description:"引用消息并使用 AI 汇总或分析历史消息",commands:{uai:{helpArgs: ["help","h"], helpOnEmpty: true, description:"AI 汇总或分析引用来源",async handle(i,c){const edit=(text:string,html=false)=>c.telegram.edit(i.message,text,html?{parseMode:"html",linkPreview:false}:{});const [sub,...rest]=i.args;try{
   if(!sub||sub==="help"||sub==="h"){await edit(help(i.prefix),true);return;}let state=normalize(await store(c).read());
   if(sub==="add"){if(!i.message.saved){await edit("API Key 配置仅限收藏夹");return;}if(rest.length<4)throw new Error("用法：uai add 名称 URL KEY openai|gemini");const[name,url,key,typeRaw]=rest,type=typeRaw as ProviderType;if(type!=="openai"&&type!=="gemini")throw new Error("类型必须是 openai 或 gemini");const p=provider({name,baseUrl:url,apiKey:key,type,model:type==="gemini"?"gemini-2.0-flash":"gpt-4o"});if(!p)throw new Error("供应商配置无效");await store(c).update(v=>normalize({...v,providers:{...normalize(v).providers,[name]:p},defaultProvider:normalize(v).defaultProvider??name,legacyImported:true}));await edit(`供应商 ${name} 已添加`);return;}
   if(sub==="del"){const name=rest[0];if(!name||!state.providers[name])throw new Error("供应商不存在");delete state.providers[name];state.defaultProvider=state.defaultProvider===name?Object.keys(state.providers)[0]??null:state.defaultProvider;await store(c).update(()=>state);await edit("供应商已删除");return;}

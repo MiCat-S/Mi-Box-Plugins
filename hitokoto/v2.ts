@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import {setTimeout as delay} from "node:timers/promises";
 
@@ -58,8 +59,8 @@ async function fetchHitokoto(ctx: PluginContext, selected: string[] | undefined)
 }
 
 export default function createHitokoto() {
-  return definePlugin({apiVersion: 1, id: "hitokoto", description: "获取随机一言并按类型筛选",
-    commands: {hitokoto: {description: "获取随机一言", async handle(invocation, ctx) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "hitokoto", description: "获取随机一言并按类型筛选",
+    commands: {hitokoto: {helpArgs: ["help","h"], description: "获取随机一言", async handle(invocation, ctx) {
       const args = invocation.args.map(value => value.trim()).filter(Boolean);
       if (args[0]?.toLowerCase() === "help" || args[0]?.toLowerCase() === "h") {
         await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});

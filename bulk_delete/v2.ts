@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 type Data = {schemaVersion: 1; userDeleteMode: Record<string, boolean>};
@@ -76,7 +77,7 @@ async function handle(message: MessageEnvelope, args: readonly string[], ctx: Pl
 }
 
 export default function createBulkDelete() {
-  return definePlugin({apiVersion: 1, id: "bulk_delete", description: "回复消息后批量删除范围消息；bd <数字> 删除自己的最近消息；bd on/off 控制是否删除他人消息", commands: {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "bulk_delete", description: "回复消息后批量删除范围消息；bd <数字> 删除自己的最近消息；bd on/off 控制是否删除他人消息", commands: {
     bd: {description: "批量删除消息", async handle({message, args}, ctx) { await handle(message, args, ctx); }},
   }});
 }

@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, writeFile} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
@@ -64,7 +65,7 @@ async function sendQr(context: PluginContext, invocation: any, input: string): P
 }
 
 export default function createQr() {
-  return definePlugin({apiVersion: 1, id: "qr", description: "生成或识别二维码",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "qr", description: "生成或识别二维码",
     resources: {processes: {concurrency: 1, queueCapacity: 4, timeoutMs: 30_000, maxOutputBytes: 2 * 1024 * 1024}}, commands: {
     qr: {description: "生成或识别二维码", async handle(invocation, context) {
       const input = invocation.args.join(" ").trim();

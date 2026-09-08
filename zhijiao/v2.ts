@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import {randomInt} from "node:crypto";
 import {setTimeout as delay} from "node:timers/promises";
@@ -35,8 +36,8 @@ const phrases: Record<string, string> = {
 const help = `<b>掷筊</b>\n<code>zhijiao</code> 随机投掷三次并查看卦辞`;
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
 export default function createZhijiao() {
-  return definePlugin({apiVersion: 1, id: "zhijiao", description: "随机掷筊", commands: {
-    zhijiao: {description: "随机掷筊", async handle(invocation, ctx: PluginContext) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "zhijiao", description: "随机掷筊", commands: {
+    zhijiao: {helpArgs: ["help","h"], description: "随机掷筊", async handle(invocation, ctx: PluginContext) {
       if (invocation.args[0] === "help" || invocation.args[0] === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
       const options: Toss[] = ["胜", "阳", "阴"];
       const tosses: Toss[] = [];

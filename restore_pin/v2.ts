@@ -1,10 +1,11 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as delay} from "node:timers/promises";
 import {definePlugin} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 export default function createRestorePin() {
-  return definePlugin({apiVersion: 1, id: "restore_pin", description: "从管理员日志恢复最近取消的置顶消息",
-    commands: {restore_pin: {description: "恢复最近取消的置顶消息", async handle(invocation, context) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "restore_pin", description: "从管理员日志恢复最近取消的置顶消息",
+    commands: {restore_pin: {helpArgs: ["help","h"], description: "恢复最近取消的置顶消息", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
         await context.telegram.edit(invocation.message, `<b>恢复置顶</b>\n<code>${invocation.prefix}restore_pin</code>\n仅支持拥有管理员权限的超级群组和频道。`, {parseMode: "html"});
         return;

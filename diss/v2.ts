@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import {setTimeout as delay} from "node:timers/promises";
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
@@ -31,8 +32,8 @@ async function readQuote(response: Response, signal: AbortSignal): Promise<strin
   }
 }
 export default function createDiss() {
-  return definePlugin({apiVersion: 1, id: "diss", description: "获取儒雅随和语录", commands: {
-    diss: {description: "获取一条语录", async handle(invocation, ctx: PluginContext) {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "diss", description: "获取儒雅随和语录", commands: {
+    diss: {helpArgs: ["help","h"], description: "获取一条语录", async handle(invocation, ctx: PluginContext) {
       if (invocation.args[0] === "help" || invocation.args[0] === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
       try {
         await ctx.telegram.edit(invocation.message, "正在获取语录…");

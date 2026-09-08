@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, ui, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {
   InputError, modes, providerTypes, readConfig, reasoningValues, requireInput, settings,
@@ -247,8 +248,8 @@ function serviceText(input: unknown): {text: string; systemPrompt?: string} {
 }
 
 export default function createAi() {
-  return definePlugin({apiVersion: 1, id: "ai", description: "AI 对话、搜索、媒体生成与配置", renderHelp: help, settings,
-    commands: {ai: {description: "AI 对话、搜索与配置", handle}},
+  return definePlugin({apiVersion: 1, id: "ai", description: "AI 对话、搜索、媒体生成与配置", renderHelp: renderPluginHelp, settings,
+    commands: {ai: {helpArgs: ["help","?"], description: "AI 对话、搜索与配置", handle}},
     services: {
       chat: {description: "使用当前聊天模型生成文字", async handle(input, ctx, signal) {
         const value = serviceText(input); const cfg = await readConfig(ctx, signal);

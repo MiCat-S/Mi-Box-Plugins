@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {setTimeout as sleep} from "node:timers/promises";
 
@@ -19,4 +20,4 @@ async function run(message:MessageEnvelope,ctx:PluginContext){
     void ctx.tasks.run(`paolu:cleanup:${message.chatId}:${sent.id}`,async scoped=>{await sleep(10000,undefined,{signal:scoped});await ctx.telegram.withClient(c=>c.deleteMessages(chat,[sent.id],{revoke:true}));}).catch(()=>undefined);
   });
 }
-export default function createPaolu(){return definePlugin({apiVersion:1,id:"paolu",description:"删除群内消息并禁言所有成员",commands:{paolu:{description:"群组一键跑路",ignoreEdited:true,async handle({message},ctx){try{await run(message,ctx);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ 操作失败: ${escape((error as any)?.message??error)}`,{parseMode:"html"});}}}}});}
+export default function createPaolu(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"paolu",description:"删除群内消息并禁言所有成员",commands:{paolu:{description:"群组一键跑路",ignoreEdited:true,async handle({message},ctx){try{await run(message,ctx);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ 操作失败: ${escape((error as any)?.message??error)}`,{parseMode:"html"});}}}}});}

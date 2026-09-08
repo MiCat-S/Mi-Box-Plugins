@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {setTimeout as sleep} from "node:timers/promises";
 
@@ -27,4 +28,4 @@ async function command(message:MessageEnvelope,args:readonly string[],prefix:str
     const rate=users.length?((removed/users.length)*100).toFixed(1):"0";await ctx.telegram.edit(message,search?`✅ <b>搜索完成</b> - ${esc(modeName(mode,day))}\n\n📊 扫描人数: <code>${scanned}</code> 人\n🎯 符合条件: <code>${users.length}</code> 人\n📁 报告: <code>${esc(report)}</code>`:`🎉 <b>清理完成</b> - ${esc(modeName(mode,day))}\n\n📊 扫描人数: <code>${scanned}</code> 人\n🎯 符合条件: <code>${users.length}</code> 人\n✅ 成功移出: <code>${removed}</code> 人\n❌ 失败/跳过: <code>${users.length-removed}</code> 人\n📈 成功率: <code>${rate}%</code>\n📁 报告: <code>${esc(report)}</code>`,{parseMode:"html"});
   });
 }
-export default function createCleanMember(){return definePlugin({apiVersion:1,id:"clean_member",description:"按活跃度、发言数或账户状态搜索并清理群成员",commands:{clean_member:{description:"群成员清理",ignoreEdited:true,async handle({message,args,prefix},ctx){try{await command(message,args,prefix,ctx);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ 处理失败: ${esc((error as any)?.message??error)}`,{parseMode:"html"});}}}}});}
+export default function createCleanMember(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"clean_member",description:"按活跃度、发言数或账户状态搜索并清理群成员",commands:{clean_member:{helpArgs: ["help","h"], helpOnEmpty: true, description:"群成员清理",ignoreEdited:true,async handle({message,args,prefix},ctx){try{await command(message,args,prefix,ctx);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ 处理失败: ${esc((error as any)?.message??error)}`,{parseMode:"html"});}}}}});}

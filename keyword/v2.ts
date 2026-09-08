@@ -1,3 +1,4 @@
+import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as sleep} from "node:timers/promises";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {returnBigInt} from "teleproto/Helpers";
@@ -57,7 +58,7 @@ async function apply(ctx:PluginContext,message:MessageEnvelope,task:Task){
 
 const help=(prefix:string)=>`<b>关键词回复</b>\n<code>${prefix}keyword list [all]</code>\n<code>${prefix}keyword rm 1,2</code>\n<code>${prefix}keyword alias 群ID|rm</code>\n添加格式：关键词、回复、选项、动作和延迟用单独一行 <code>+++</code> 分隔。`;
 
-const keywordPlugin=definePlugin({apiVersion:1,id:"keyword",description:"按聊天配置关键词回复、删除和成员处置",commands:{keyword:{description:"管理关键词回复",async handle({message,args,prefix},ctx){try{
+const keywordPlugin=definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"keyword",description:"按聊天配置关键词回复、删除和成员处置",commands:{keyword:{helpArgs: ["h","help"], helpOnEmpty: true, description:"管理关键词回复",async handle({message,args,prefix},ctx){try{
   const state=await store(ctx).read(),action=args[0]?.toLowerCase();
   if(!action||action==="h"||action==="help"){await ctx.telegram.edit(message,help(prefix),{parseMode:"html"});return;}
   if(action==="list"){const all=args[1]==="all",items=all?state.tasks:state.tasks.filter(t=>t.chatId===message.chatId);await ctx.telegram.edit(message,items.length?items.map(t=>`<code>${t.id}</code> - <code>${esc(t.key)}</code>${all?` - <code>${esc(t.chatId)}</code>`:""} - ${esc(t.response)}`).join("\n"):all?"当前没有任何关键词任务":"当前聊天没有任何关键词任务",{parseMode:"html"});return;}
