@@ -3,7 +3,7 @@ import type { Api, TelegramClient } from "teleproto";
 import { setTimeout as sleep } from "node:timers/promises";
 
 type Action = "kick" | "ban" | "unban" | "mute" | "unmute";
-type Group = { id: string; title: string; kind: "channel" | "chat"; accessHash?: string };
+type Group = { id: string; title: string; kind: "channel" | "chat"; accessHash?: string; deleteMessages?: boolean };
 type Target = { id: string; peer: Api.TypeInputPeer; label: string };
 const names = { kick: "踢出", ban: "封禁", unban: "解封", mute: "禁言", unmute: "解除禁言",
   sb: "批量封禁", unsb: "批量解封" };
@@ -62,7 +62,6 @@ function parseArgs(invocation: CommandInvocation) {
 
 export default function createAban() {
   let cache: { groups: Group[]; expires: number } | undefined;
-  let busy = false;
   const edit = (ctx: PluginContext, inv: CommandInvocation, text: string) =>
     ctx.telegram.edit(inv.message, text, { parseMode: "html", linkPreview: false });
 
@@ -91,7 +90,8 @@ export default function createAban() {
       const fromEntity = (entity: unknown): Group => {
         if (entity instanceof Api.Chat) return { id: entity.id.toString(), title: entity.title, kind: "chat" };
         if (entity instanceof Api.Channel && entity.accessHash !== undefined) {
-          return { id: entity.id.toString(), title: entity.title, kind: "channel", accessHash: entity.accessHash.toString() };
+          return { id: entity.id.toString(), title: entity.title, kind: "channel", accessHash: entity.accessHash.toString(),
+          deleteMessages: !!(entity.creator || entity.adminRights?.deleteMessages) };
         }
         throw new Notice("当前会话不是可管理的群组或频道");
       };
@@ -185,11 +185,12 @@ export default function createAban() {
             (item instanceof Api.ChatParticipantCreator || item instanceof Api.ChatParticipantAdmin));
           return { allowed: isAdmin(me.id.toString()), admin: isAdmin(target.id), deleteMessages: false };
         }
-        const self = (await call(() => client.invoke(new Api.channels.GetParticipant({
+        // Batch groups already carry the account's creator/banUsers rights from dialogs.
+        const self = batch ? undefined : (await call(() => client.invoke(new Api.channels.GetParticipant({
           channel: channel(g), participant: new Api.InputPeerSelf() })))).participant;
-        const allowed = self instanceof Api.ChannelParticipantCreator ||
+        const allowed = batch || self instanceof Api.ChannelParticipantCreator ||
           (self instanceof Api.ChannelParticipantAdmin && !!self.adminRights.banUsers);
-        const deleteMessages = self instanceof Api.ChannelParticipantCreator ||
+        const deleteMessages = batch ? !!g.deleteMessages : self instanceof Api.ChannelParticipantCreator ||
           (self instanceof Api.ChannelParticipantAdmin && !!self.adminRights.deleteMessages);
         if (!allowed) return { allowed, admin: false, deleteMessages };
         let admin = false;
@@ -204,15 +205,27 @@ export default function createAban() {
       const fail = (reason: string) => failures.set(reason, (failures.get(reason) ?? 0) + 1);
       const ready: { group: Group; deleteMessages: boolean }[] = [];
       let admins = 0, skipped = 0;
-      for (const group of selected) {
+      const parallel = async <T>(items: readonly T[], operation: (item: T) => Promise<void>) => {
+        let next = 0;
+        const settled = await Promise.allSettled(Array.from({length: Math.min(batch ? 4 : 1, items.length)}, async () => {
+          while (next < items.length) {
+            signal.throwIfAborted();
+            await operation(items[next++]);
+          }
+        }));
+        const failed = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failed) throw failed.reason;
+      };
+      await edit(ctx, inv, `<b>${names[inv.command as keyof typeof names]}</b>\n目标：${escape(target.label.slice(0, 120))}\n正在检查 ${selected.length} 个群/频道…`);
+      await parallel(selected, async group => {
         try {
           const rights = await permission(group);
-          if (!rights.allowed) { fail("无封禁权限"); continue; }
+          if (!rights.allowed) { fail("无封禁权限"); return; }
           if (rights.admin) admins++;
-          if (group.kind === "chat" && ["unban", "unsb", "mute", "unmute"].includes(inv.command)) { skipped++; continue; }
+          if (group.kind === "chat" && ["unban", "unsb", "mute", "unmute"].includes(inv.command)) { skipped++; return; }
           ready.push({ group, deleteMessages: rights.deleteMessages });
         } catch (error) { signal.throwIfAborted(); fail(error instanceof Notice ? error.message : errorCode(error)); }
-      }
+      });
       if (admins && !args!.confirm) {
         throw new Notice(`目标在 ${admins} 个群/频道具有管理员身份；请在原命令末尾追加 true 确认`);
       }
@@ -242,10 +255,10 @@ export default function createAban() {
         }
       };
       await edit(ctx, inv, `<b>${names[inv.command as keyof typeof names]}</b>\n目标：${escape(target.label.slice(0, 120))}\n正在处理 ${ready.length} 个群/频道…`);
-      for (const item of ready) {
+      await parallel(ready, async item => {
         try { await apply(item.group); success++; applied.add(`${item.group.kind}:${item.group.id}`); }
         catch (error) { signal.throwIfAborted(); fail(error instanceof Notice ? error.message : errorCode(error)); }
-      }
+      });
       if (action === "ban" && inv.message.chatId.startsWith("-")) {
         const item = ready.find(({ group: g }) => (g.kind === "channel" ? "-100" + g.id : "-" + g.id) === inv.message.chatId);
         historyNote = !item ? "当前群未通过管理检查" : item.group.kind === "chat" ? "基本群不支持批量清理"
@@ -277,15 +290,18 @@ export default function createAban() {
     if (inv.command === "aban" || ["help", "h"].includes(inv.args[0] ?? "")) {
       await edit(ctx, inv, help(inv.prefix)); return;
     }
-    if (busy) { await edit(ctx, inv, "封禁管理任务正在执行，请等待完成"); return; }
-    busy = true;
     const run = async () => {
-      try { await execute(inv, ctx); }
+      try {
+        if (inv.command === "sb" || inv.command === "unsb") {
+          await edit(ctx, inv, `<b>${names[inv.command]}</b>\n正在读取管理群并解析目标…`);
+        }
+        await execute(inv, ctx);
+      }
       catch (error) {
         ctx.signal.throwIfAborted();
         ctx.log.error("aban:command", { command: inv.command, reason: errorCode(error) });
         await edit(ctx, inv, `<b>操作未完成</b>\n${escape(error instanceof Notice ? error.message : errorCode(error))}`);
-      } finally { busy = false; }
+      }
     };
     if (inv.command === "sb" || inv.command === "unsb") {
       void ctx.tasks.run("aban:batch", run).catch(() => {
