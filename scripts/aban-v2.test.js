@@ -420,3 +420,42 @@ test('unexpected account failures identify their stage without exposing private 
   assert.match(f.edits.at(-1).text, /阶段：读取账号/);
   assert.doesNotMatch(JSON.stringify({edits: f.edits, logs: f.logs}), /private-server-details/);
 });
+
+test('replied users resolve by their source message when account user lookup is unavailable', async t => {
+  const source = new Api.PeerChannel({channelId: integer(900)});
+  const f = await fixture(t, {reply: {id: 71, chatId: '-100900', senderId: '2', raw: {peerId: source}}, native: {
+    getEntity: async () => {throw new Error('user lookup unavailable');},
+    getInputEntity: async target => {
+      if (target === source) return new Api.InputPeerChannel({channelId: integer(900), accessHash: integer(99)});
+      throw new Error('user lookup unavailable');
+    },
+  }});
+  await f.run('.sb', {replyToId: 71});
+  assert.match(f.edits.at(-1).text, /成功 1/);
+  const request = f.mutations().find(req => req instanceof Api.channels.EditBanned);
+  assert.ok(request.participant instanceof Api.InputPeerUserFromMessage);
+  assert.equal(request.participant.msgId, 71);
+  assert.equal(request.participant.peer.channelId.toString(), '900');
+  assert.equal(request.participant.userId.toString(), '2');
+  assert.ok(request.getBytes().length > 0);
+  assert.equal(f.calls.filter(c => c.method === 'getEntity').length, 0);
+});
+
+test('basic group reply removal converts the message reference to InputUserFromMessage', async t => {
+  const entity = new Api.Chat({id: integer(100), title: 'Basic', creator: true});
+  const source = new Api.PeerChat({chatId: integer(100)});
+  const f = await fixture(t, {entity, reply: {id: 72, senderId: '2', raw: {peerId: source}}, native: {
+    getInputEntity: async target => {
+      assert.equal(target, source);
+      return new Api.InputPeerChat({chatId: integer(100)});
+    },
+  }});
+  await f.run('.ban', {chatId: '-100', replyToId: 72});
+  const request = f.mutations()[0];
+  assert.ok(request instanceof Api.messages.DeleteChatUser);
+  assert.ok(request.userId instanceof Api.InputUserFromMessage);
+  assert.equal(request.userId.msgId, 72);
+  assert.equal(request.userId.userId.toString(), '2');
+  assert.ok(request.getBytes().length > 0);
+  assert.match(f.edits.at(-1).text, /成功 1/);
+});
