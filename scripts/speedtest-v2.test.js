@@ -84,7 +84,7 @@ function fetchForResult(image = png) {
     if ((init.method || 'GET') === 'HEAD' && url.hostname === 'www.speedtest.net') return new Response(null, {status: 204});
     if (url.hostname === 'ip-api.com') return Response.json({as: 'AS64500 Example', country: 'China', countryCode: 'CN'});
     if (url.hostname === 'www.speedtest.net' && url.pathname.endsWith('.png')) {
-      assert.fail('official result images must not be requested');
+      return new Response(image, {headers: {'content-type': 'image/png'}});
     }
     throw new Error(`unexpected request ${url}`);
   };
@@ -190,7 +190,7 @@ test('report partitioning counts visible UTF-16 units and produces a bounded sho
 });
 
 test('photo, sticker, file, and txt modes deliver real image artifacts with their documented behavior', async t => {
-  for (const type of ['photo', 'sticker', 'file', 'txt']) {
+  for (const type of [null, 'photo', 'sticker', 'file', 'txt']) {
     let deleted = 0;
     const f = await hostFixture(t, {fetch: fetchForResult(), setup: async root => {
       const dir = path.join(root, 'speedtest'); await fs.mkdir(dir, {recursive: true});
@@ -207,6 +207,12 @@ test('photo, sticker, file, and txt modes deliver real image artifacts with thei
     } else {
       const metadata = await sharp(f.sent[0].bytes).metadata();
       assert.equal(metadata.format, 'png');
+      assert.deepEqual(f.sent[0].bytes, png);
+      assert.match(f.sent[0].value.caption, /SPEEDTEST/);
+      assert.match(f.sent[0].value.caption, /Test &amp; Node/);
+      assert.match(f.sent[0].value.caption, /100Mbps/);
+      assert.match(f.sent[0].value.caption, /50Mbps/);
+      assert.equal(f.sent[0].value.parseMode, 'html');
       assert.equal(f.sent[0].value.forceDocument, type === 'file');
       assert.equal(deleted, 1);
     }
@@ -238,15 +244,25 @@ for (const externalIp of ['203.0.113.9', '2001:db8::1234']) {
   });
 }
 
-test('local result card masks IP fields and delivery never fetches official result images', async t => {
+test('report masks IP fields in server and ISP names', async t => {
   const sample = JSON.parse(result); sample.server.name = '38.59.246.201'; sample.isp = '2001:db8::1234';
-  const svg = reportTools.resultCardSvg(sample);
-  assert.doesNotMatch(svg, /38\.59\.246\.201|2001:db8::1234/);
-  assert.match(svg, /38\.59\.\*\.\*/);
-  assert.equal((await sharp(Buffer.from(svg)).metadata()).format, 'svg');
-  // Text-only context avoids any real network or account access.
   const signal = new AbortController().signal;
   const context = {signal, http: {json: async () => ({})}, tasks: {run: async (_name, op) => op(signal)}};
   const report = await reportTools.buildReport(context, sample);
   assert.doesNotMatch(report, /speedtest\.net\/result|38\.59\.246\.201|2001:db8::1234/);
+});
+
+test('official image download failure preserves the complete text report', async t => {
+  const f = await hostFixture(t, {fetch: async (input, init) => {
+    if (new URL(input).pathname.endsWith('.png')) return new Response('unavailable', {status: 503});
+    return fetchForResult()(input, init);
+  }, setup: async root => {
+    await writeExecutable(path.join(root, 'speedtest/speedtest'), cliSource(path.join(root, 'image-failure.argv')));
+  }});
+  await f.run('.speedtest');
+  assert.equal(f.sent.length, 0);
+  assert.match(f.edits.at(-1).text, /Test &amp; Node/);
+  assert.match(f.edits.at(-1).text, /100Mbps/);
+  assert.match(f.edits.at(-1).text, /50Mbps/);
+  assert.deepEqual(await fs.readdir(path.join(f.root, '.temp/speedtest')), []);
 });
