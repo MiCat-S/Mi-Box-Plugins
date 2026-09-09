@@ -175,3 +175,38 @@ test('fbi rebuild failure clears live increments and allows a later rebuild', as
   assert.ok(saved[peer(1)]);
   assert.ok(!saved[peer(5)], 'a failed rebuild must release its increments');
 });
+
+test('fbi rebuild preserves metadata for a fetched group with no live increment', async t => {
+  const cache = {[peer(1)]: {username: 'group1', lastActiveAt: Date.now() - 1000, custom: {keep: 'chat'},
+    msgs: [cached(1, now - 10000, {custom: 'message'}), cached(99, now - 10001)]}};
+  const f = await fixture(t, {cache, client: {
+    async getDialogs() { return [{id: peer(1), isGroup: true}]; },
+    async *iterMessages() { yield cached(1, now - 10000, {text: 'fresh text'}); },
+  }});
+  await f.run('.fbi cache rebuild');
+  const saved = (await f.read()).cache[peer(1)];
+  assert.equal(typeof saved.lastActiveAt, 'number');
+  assert.deepEqual(saved.custom, {keep: 'chat'});
+  assert.equal(saved.msgs[0].text, 'fresh text');
+  assert.equal(saved.msgs[0].custom, 'message');
+  assert.deepEqual(saved.msgs.map(message => message.id), [1], 'old history must not re-enter');
+});
+
+test('fbi rebuild keeps a recently active fetched group under a shrinking limit', async t => {
+  let entered, release;
+  const ready = new Promise(resolve => {entered = resolve;});
+  const gate = new Promise(resolve => {release = resolve;});
+  const cache = {[peer(1)]: {username: 'group1', lastActiveAt: Date.now() - 1000, msgs: [cached(1, now - 10000)]}};
+  const f = await fixture(t, {cacheLimit: 12, cache, client: {
+    async getDialogs() { entered(); await gate; return Array.from({length: 11}, (_, index) => ({id: peer(index + 1), isGroup: true})); },
+    async *iterMessages(chat) { const id = Number(String(chat).slice(4)); yield cached(id, id === 1 ? now - 10000 : now - 100); },
+  }});
+  const rebuild = f.run('.fbi cache rebuild');
+  await ready;
+  await f.host.patchSettings('fbi', {cacheLimit: 10});
+  release();
+  await rebuild;
+  const saved = (await f.read()).cache;
+  assert.ok(saved[peer(1)], 'recently active fetched group must survive the LRU trim');
+  assert.equal(Object.keys(saved).length, 10);
+});
