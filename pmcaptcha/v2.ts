@@ -1,3 +1,4 @@
+import {generateImageCaptcha as imageCaptcha} from "./v2/image";
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as sleep} from "node:timers/promises";
 import {readFile} from "node:fs/promises";
@@ -30,19 +31,6 @@ async function migrate(ctx:PluginContext){const state=await store(ctx).read();if
 function isPrivate(m:MessageEnvelope){const raw=m.raw as any;return raw?.isPrivate===true||raw?.peerId?.className==="PeerUser"||(m.chatId===m.senderId&&!m.saved);}
 function sender(m:MessageEnvelope){const raw=m.raw as any,s=raw?.sender??raw?._sender;return{name:String([s?.firstName,s?.lastName].filter(Boolean).join(" ")||s?.username||m.senderId||"用户"),...(s?.username?{username:String(s.username)}:{}),bot:!!s?.bot,premium:!!s?.premium};}
 function math(){const a=2+Math.floor(Math.random()*18),b=2+Math.floor(Math.random()*18);return{question:`${a} + ${b}`,answer:String(a+b)};}
-async function imageCaptcha(digitOnly:boolean){
-  let canvas:any;
-  try{const moduleName="canvas";canvas=await import(moduleName);}catch{return undefined;}
-  const chars=digitOnly?"0123456789":"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const answer=Array.from({length:5},()=>chars[Math.floor(Math.random()*chars.length)]).join("");
-  const surface=canvas.createCanvas(240,90),draw=surface.getContext("2d");
-  const random=(min:number,max:number)=>Math.floor(Math.random()*(max-min+1))+min;
-  draw.fillStyle="#f2f4f8";draw.fillRect(0,0,240,90);
-  for(let i=0;i<10;i++){draw.beginPath();draw.moveTo(0,random(0,90));draw.bezierCurveTo(60,random(0,90),180,random(0,90),240,random(0,90));draw.strokeStyle=`hsla(${random(0,360)},55%,42%,0.45)`;draw.lineWidth=random(1,2);draw.stroke();}
-  for(let i=0;i<120;i++){draw.beginPath();draw.arc(random(0,240),random(0,90),random(1,2),0,Math.PI*2);draw.fillStyle=`hsla(${random(0,360)},45%,35%,0.55)`;draw.fill();}
-  for(let i=0;i<answer.length;i++){draw.save();draw.translate(32+i*43,48+random(-9,9));draw.rotate(random(-25,25)*Math.PI/180);draw.font=`bold ${random(34,42)}px monospace`;draw.textAlign="center";draw.textBaseline="middle";draw.strokeStyle="#fff";draw.lineWidth=4;draw.strokeText(answer[i],0,0);draw.fillStyle=`hsl(${random(0,360)},70%,24%)`;draw.fillText(answer[i],0,0);draw.restore();}
-  return{answer,buffer:surface.toBuffer("image/png") as Buffer};
-}
 function prompt(c:Config,s:Session){const footer=`\n\n⏱ 验证时间：<b>${c.timeout||"不限"}</b> 秒\n🔢 最大次数：<b>${c.maxTries||"不限"}</b>`;if(s.mode==="text")return c.prompt?esc(c.prompt).replace("{keyword}",esc(s.question)):`🔒 <b>人机验证</b>\n\n请回复：<code>${esc(s.question)}</code>${footer}`;return c.prompt?esc(c.prompt).replace("{question}",esc(s.question)):`🔒 <b>人机验证</b>\n\n请回答：<code>${esc(s.question)} = ?</code>${footer}`;}
 async function peer(ctx:PluginContext,userId:string){return ctx.telegram.withClient(client=>client.getInputEntity(returnBigInt(userId)));}
 async function cleanupMessages(ctx:PluginContext,s:Session){if(!s.promptIds.length)return;await ctx.telegram.withClient(async client=>client.deleteMessages(returnBigInt(s.userId),s.promptIds,{revoke:false})).catch(()=>{});}
