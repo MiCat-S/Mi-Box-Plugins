@@ -1,3 +1,5 @@
+import {fileName, duration, matches, score, channelVideos} from "./v2/videos";
+import {setTimeout as sleep} from "node:timers/promises";
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import path from "node:path";
@@ -8,13 +10,6 @@ const DEFAULT_FILTERS = ["广告","推广","赞助","合作","代理","招商","
 const defaults: Config = {schemaVersion: 1, defaultChannel: null, channelList: [], adFilters: DEFAULT_FILTERS};
 const database = (ctx: PluginContext) => ctx.storage.json<Config>("channel_search_config.json", defaults);
 const messageText = (m: any) => String(m?.text || m?.message || "");
-const normalize = (text: string) => text.toLowerCase().replace(/[-_\s.|\\/#]+/g, " ").replace(/\s+/g, " ").trim();
-const fileName = (m: any): string => m?.video?.attributes?.find((a: any) => a.className === "DocumentAttributeFilename")?.fileName || "";
-const duration = (m: any): number => Number(m?.video?.attributes?.find((a: any) => a.className === "DocumentAttributeVideo")?.duration || 0);
-const matches = (m: any, query: string) => {
-  const q = normalize(query), parts = q.split(" ").filter(Boolean);
-  return [messageText(m), fileName(m)].some(source => { const text = normalize(source); return text.includes(q) || parts.every(part => text.split(" ").some(word => word.includes(part))); });
-};
 const isAd = (m: any, config: Config) => config.adFilters.some(word => `${messageText(m)}\n${fileName(m)}`.toLowerCase().includes(word.toLowerCase()));
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -89,32 +84,41 @@ async function search(ctx: PluginContext, message: MessageEnvelope, originalArgs
   await ctx.telegram.edit(message, type === "kkp" ? "🎲 正在随机寻找视频..." : "🔍 正在搜索视频...");
   await ctx.telegram.withClient(async (client: any, signal) => {
     const order = [...new Set([config.defaultChannel, ...config.channelList.map(item => item.handle)].filter(Boolean) as string[])]; const videos: any[] = [];
-    for (const handle of order) {
+    const processedGroupIds=new Set<string>();
+    for (const [index,handle] of order.entries()) {
       signal.throwIfAborted();
+      if(index>0)await sleep(750,undefined,{signal});
+      const info=config.channelList.find(item=>item.handle===handle);
+      if(!info)continue;
       try {
-        const entity = await client.getEntity(handle); const found: any[] = await client.getMessages(entity, {limit: 200, ...(query ? {search: query} : {})});
-        const valid = found.filter(item => item.video && !isAd(item, config) && (type === "search" ? matches(item, query) : duration(item) >= 20 && duration(item) <= 180)); videos.push(...valid);
-        const info = config.channelList.find(item => item.handle === handle);
-        if (type === "search" && query && info?.linkedGroup) {
-          const linked = await client.getEntity(info.linkedGroup);
-          const linkedFound: any[] = await client.getMessages(linked, {limit: 100, search: query});
-          videos.push(...linkedFound.filter(item => item.video && matches(item, query) && !isAd(item, config)));
+        const entity=await client.getEntity(handle);
+        const valid=await channelVideos(client,entity,info.linkedGroup,query,type,item=>isAd(item,config),processedGroupIds,signal);
+        videos.push(...valid);
+        if(valid.length&&type==="search"&&!random)break;
+      } catch (error) {
+        signal.throwIfAborted();
+        if(errorText(error).includes("Could not find the input entity")){
+          await database(ctx).update(current=>({...current,channelList:current.channelList.filter(item=>item.handle!==handle),defaultChannel:current.defaultChannel===handle?null:current.defaultChannel}));
         }
-        if (valid.length && type === "search" && !random) break;
-      } catch (error) { ctx.log.error("search_source_failed", {source: handle, error: errorText(error).slice(0, 160)}); }
+        ctx.log.error("search_source_failed", {source:handle,error:errorText(error).slice(0,160)});
+      }
     }
     const unique = [...new Map(videos.map(item => [`${item.peerId ?? ""}:${item.id}`, item])).values()];
     if (!unique.length) { await ctx.telegram.edit(message, type === "kkp" ? "🤷‍♂️ 未找到合适的视频。" : "❌ 在任何频道中均未找到匹配结果。"); return; }
-    const selected: any = random || type === "kkp" ? unique[Math.floor(Math.random()*unique.length)] : unique.sort((a,b) => (matches(b, query)?1:0)-(matches(a,query)?1:0) || duration(b)-duration(a))[0];
+    const selected: any = random || type === "kkp" ? unique[Math.floor(Math.random()*unique.length)] : unique.sort((a,b) => score(b,query)-score(a,query) || duration(b)-duration(a))[0];
     await ctx.telegram.edit(message, "✅ 已找到结果，准备发送...");
     const peer: any = (message.raw as any)?.peerId ?? message.chatId;
     if (!spoiler) {
-      try { await client.forwardMessages(peer, {messages:[selected.id], fromPeer:selected.peerId}); return; } catch {}
+      try { await client.forwardMessages(peer, {messages:[selected.id], fromPeer:selected.peerId}); if(message.outgoing&&typeof (message.raw as any)?.delete==="function")await (message.raw as any).delete().catch(()=>{}); return; } catch {}
     }
     await ctx.files.withTemp(async (directory, scoped) => {
       const target = path.join(directory, "video.mp4"); await client.downloadMedia(selected.media, {outputFile: target}); scoped.throwIfAborted();
-      await client.sendFile(peer, {file: target, caption: query || messageText(selected), spoiler, forceDocument:false, replyTo:message.id});
+      const {Api}=await import("teleproto");
+      const attribute=selected.video?.attributes.find((item:any)=>item.className==="DocumentAttributeVideo");
+      await client.sendFile(peer, {file:target,caption:query||messageText(selected),spoiler,forceDocument:false,replyTo:message.id,
+        attributes:[new Api.DocumentAttributeVideo({duration:attribute?.duration||0,w:attribute?.w||0,h:attribute?.h||0,supportsStreaming:true}),new Api.DocumentAttributeFilename({fileName:path.basename(target)})]});
     });
+    if(message.outgoing&&typeof (message.raw as any)?.delete==="function")await (message.raw as any).delete().catch(()=>{});
   });
 }
 
