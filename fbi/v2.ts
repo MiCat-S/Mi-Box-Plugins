@@ -69,20 +69,21 @@ export default function createFbi(){let context:PluginContext|undefined,chats=ne
     }
    });
    // Listeners keep accepting messages while Telegram history is fetched.
-   // Merge their bounded increments over the fetched history by id instead of
-   // treating the whole old cache as a live increment.
-   const merged=new Map<string,Chat>(fresh);
-   for(const [peer,increments] of rebuildIncrements){
-    const fetched=merged.get(peer);
+   // Every fetched peer and every retained increment peer goes through the same
+   // metadata merge, even when there is no live increment.
+   const peers=new Set([...fresh.keys(),...rebuildIncrements.keys()]);
+   const merged=new Map<string,Chat>();
+   for(const peer of peers){
+    const fetched=fresh.get(peer);
     const existing=chats.get(peer);
-    if(!fetched&&!existing)continue;
-    // Keep the existing chat's unknown fields and real-time lastActiveAt;
-    // username/title may come from this fetch.
+    const increments=rebuildIncrements.get(peer);
+    // Keep a peer only when it was fetched or has a retained live increment.
+    if(!fetched&&!increments)continue;
     const base:Chat=existing??fetched!;
     const template:Chat=fetched?{...base,
       ...(fetched.username!==undefined?{username:fetched.username}:{}),
       ...(fetched.title!==undefined?{title:fetched.title}:{})}:{...base};
-    merged.set(peer,{...template,msgs:mergeMessages(fetched?.msgs??[],increments.values(),existing?.msgs??[])});
+    merged.set(peer,{...template,msgs:mergeMessages(fetched?.msgs??[],increments?.values()??[],existing?.msgs??[])});
    }
    chats=restore(Object.fromEntries(merged),cacheLimit).chats;
    await persist();
