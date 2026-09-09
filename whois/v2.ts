@@ -1,13 +1,9 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import {report} from "./v2/report";
+import {records, type WhoisRecords} from "./v2/records";
 
 const help = `<b>WHOIS 域名查询</b>\n<code>whois example.com</code>`;
-type RecordItem = {domain: string; rawData: string; queryTime: string};
-type Data = {history: RecordItem[]; cache: Record<string, RecordItem>;
-  settings?: {maxHistory?: number; cacheHours?: number; enableNotifications?: boolean};
-  legacyImported?: boolean};
-const store = (ctx: PluginContext) => ctx.storage.json<Data>("data.json", {history: [], cache: {}});
 const positive = (value: number | undefined, fallback: number) =>
   typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
@@ -28,24 +24,7 @@ function extract(raw: string): string {
 }
 export default function createWhois() {
   return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "whois", description: "查询域名注册信息",
-    async setup(ctx) {
-      const db = store(ctx);
-      if ((await db.read()).legacyImported) return;
-      const legacy = await ctx.storage.json<Partial<Data>>("whois_data.json", {}).read();
-      if (!legacy.history && !legacy.cache) return;
-      await db.update(current => {
-        if (current.legacyImported) return current;
-        const seen = new Set<string>();
-        const history = [...current.history, ...(legacy.history ?? [])].filter(item => {
-          const key = JSON.stringify([item.domain, item.queryTime, item.rawData]);
-          if (seen.has(key)) return false;
-          seen.add(key); return true;
-        });
-        return {...legacy, ...current, history,
-          cache: {...legacy.cache, ...current.cache},
-          settings: {...legacy.settings, ...current.settings}, legacyImported: true};
-      });
-    },
+    async setup(ctx) { await records(ctx).initialize(); },
     commands: {
     whois: {helpArgs: ["help","h"], description: "查询域名注册信息", async handle(invocation, ctx) {
       let raw = invocation.args[0] ?? "";
@@ -55,16 +34,15 @@ export default function createWhois() {
         raw = reply?.text.match(/(?:https?:\/\/)?(?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:\/[^\s]*)?/i)?.[0] ?? "";
         if (!raw) {await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return;}
       }
-      const db = store(ctx);
+      const db = records(ctx);
       if (raw.toLowerCase() === "clear") {
-        let counts = {history: 0, cache: 0};
-        await db.update(data => { counts = {history: data.history.length, cache: Object.keys(data.cache).length}; return {...data, history: [], cache: {}}; });
+        const counts = await db.clear();
         await ctx.telegram.edit(invocation.message, `已清除历史 ${counts.history} 条、缓存 ${counts.cache} 个域名`); return;
       }
       if (raw.toLowerCase() === "history") {
-        const data = await db.read();
-        const rows = data.history.slice(0, 20).map((item, i) => `${i + 1}. <code>${esc(item.domain)}</code> <i>${item.queryTime.slice(5, 16).replace("T", " ")}</i>`).join("\n");
-        await ctx.telegram.edit(invocation.message, `<b>WHOIS 查询历史</b>\n\n${rows || "暂无查询历史"}\n\n共 ${data.history.length} 条，缓存 ${Object.keys(data.cache).length} 个`, {parseMode:"html"}); return;
+        const data = await db.history();
+        const rows = data.rows.map((item, i) => `${i + 1}. <code>${esc(item.domain)}</code> <i>${item.queryTime.slice(5, 16).replace("T", " ")}</i>`).join("\n");
+        await ctx.telegram.edit(invocation.message, `<b>WHOIS 查询历史</b>\n\n${rows || "暂无查询历史"}\n\n共 ${data.history} 条，缓存 ${data.cache} 个`, {parseMode:"html"}); return;
       }
       const inputs = raw.toLowerCase() === "batch" ? invocation.args.slice(1) : invocation.args.slice(0, 10);
       if (raw.toLowerCase() === "batch") {
@@ -96,18 +74,17 @@ export default function createWhois() {
   }});
 }
 
-async function query(name: string, ctx: PluginContext, db: {read(): Promise<Data>; update(mutator: (data: Data) => Data): Promise<Data>}): Promise<string> {
+async function query(name: string, ctx: PluginContext, db: WhoisRecords): Promise<string> {
   ctx.signal.throwIfAborted();
-  const data = await db.read();
-  const cached = data.cache[name];
+  const {cached, settings} = await db.lookup(name);
   const age = cached ? Date.now() - Date.parse(cached.queryTime) : NaN;
-  if (cached && age >= 0 && age < positive(data.settings?.cacheHours, 24) * 3600000) return cached.rawData;
+  if (cached && age >= 0 && age < positive(settings?.cacheHours, 24) * 3600000) return cached.rawData;
   try {
     const text = await ctx.http.text(`https://namebeta.com/api/search/check?query=${encodeURIComponent(name)}`, {headers: {"user-agent": "Mi Box"}}, {timeoutMs: 10000, redirects:{allowedHosts:["namebeta.com"],maxRedirects:2}});
     const result = extract(text);
     if (!result) return "";
     const item = {domain: name, rawData: result, queryTime: new Date().toISOString()};
-    await db.update(data => ({...data, history: [item, ...data.history].slice(0, Math.floor(positive(data.settings?.maxHistory, 100))), cache: {...data.cache, [name]: item}}));
+    await db.save(item);
     return result;
   } catch { ctx.signal.throwIfAborted(); return ""; }
 }
