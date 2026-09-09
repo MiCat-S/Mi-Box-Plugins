@@ -7,6 +7,7 @@ import {fetchQuote} from "./v2/quote";
 type TargetInfo = {name: string; lockedAt: number; hits: number};
 type State = Record<string, Record<string, TargetInfo>>;
 type DissConfig = {model: string; tag: string; reasoningEffort: string};
+type AiSelection = {chat?: {tag?: string; model?: string; reasoningEffort?: string}};
 
 const COOLDOWN_MS = 2_500;
 const CONFIG_DEFAULTS: DissConfig = {model: "", tag: "", reasoningEffort: ""};
@@ -24,6 +25,17 @@ function nameOf(message: MessageEnvelope | undefined): string {
   if (sender.title) return String(sender.title);
   if (sender.username) return `@${sender.username}`;
   return "";
+}
+
+/** Read-only view of the ai plugin's current chat selection, used only for help text. */
+async function describeAi(ctx: PluginContext): Promise<string> {
+  if (!ctx.services.available("ai", "selection")) return "";
+  try {
+    const selection = await ctx.services.call<AiSelection>("ai", "selection", null, ctx.signal);
+    const chat = selection?.chat;
+    if (!chat?.tag || !chat?.model) return "";
+    return `${chat.tag} / ${chat.model} · 思考 ${chat.reasoningEffort ?? "auto"}`;
+  } catch { return ""; }
 }
 
 export default function createDiss() {
@@ -226,17 +238,31 @@ export default function createDiss() {
     const prefix = escape(invocation.prefix);
     const show = async () => {
       const current = await store.read();
+      const ai = await describeAi(ctx);
+      const follow = ai ? `跟随 ai 插件（当前 ${escape(ai)}）` : "跟随 ai 插件";
+      const value = (override: string) => override ? `<code>${escape(override)}</code>` : follow;
       await ctx.telegram.edit(invocation.message, [
         "<b>Diss AI 设置</b>",
-        `模型：<code>${escape(current.model || "跟随 ai 插件当前聊天模型")}</code>`,
-        `提供商：<code>${escape(current.tag || "跟随 ai 插件当前聊天提供商")}</code>`,
-        `思考强度：<code>${escape(current.reasoningEffort || "跟随 ai 插件")}</code>`,
+        "自动回怼默认复用 ai 插件的聊天提供商，可在这里单独覆盖模型 / 提供商 / 思考强度。",
         "",
-        `<code>${prefix}dissai model 模型名</code> · <code>${prefix}dissai provider tag</code>`,
-        `<code>${prefix}dissai reasoning none</code> · 用 <code>reset</code> 恢复跟随 ai 插件`,
+        "<b>当前</b>",
+        `• 模型：${value(current.model)}`,
+        `• 提供商：${value(current.tag)}`,
+        `• 思考强度：${value(current.reasoningEffort)}`,
+        "",
+        "<b>修改</b>",
+        `<code>${prefix}dissai model 模型名</code>`,
+        `<code>${prefix}dissai provider tag</code>`,
+        `<code>${prefix}dissai reasoning 级别</code>`,
+        `<code>${prefix}dissai model reset</code> 恢复跟随 ai 插件（provider / reasoning 同理）`,
+        "",
+        `思考强度可选：<code>${[...REASONING_VALUES].join(" | ")}</code>`,
+        `查看 ai 的提供商：<code>${prefix}ai config list</code>`,
+        "改完需 <code>.tpm update ai</code> 与 <code>.tpm update diss</code> 后才生效。",
+        "自动回怼可能产生调用费用；AI 不可用时使用本地模板。",
       ].join("\n"), {parseMode: "html"});
     };
-    if (!scope) { await show(); return; }
+    if (!scope || ["help", "h", "?"].includes(scope.toLowerCase())) { await show(); return; }
     const key = scope.toLowerCase();
     const field: keyof DissConfig | undefined = key === "model" ? "model"
       : key === "provider" || key === "tag" ? "tag"
