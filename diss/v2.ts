@@ -13,6 +13,10 @@ const COOLDOWN_MS = 2_500;
 const CONFIG_DEFAULTS: DissConfig = {model: "", tag: "", reasoningEffort: ""};
 const REASONING_VALUES = new Set(["auto", "none", "minimal", "low", "medium", "high", "xhigh"]);
 const QUOTE_ARGS = new Set(["语录", "quote", "yulu", "saying"]);
+const TIME_PART = String.raw`\d{1,2}:\d{2}(?::\d{2})?`;
+const TZ_PART = String.raw`(?:GMT|UTC|UT)\s*(?:[+-]\s*\d{1,2}(?::\d{2})?)?`;
+/** Trailing clock/GMT timezone, including fancy Unicode forms once NFKD-normalized. */
+const TZ_SUFFIX = new RegExp(String.raw`[\s|·•\-–—]*[（(\[【]?\s*(?:${TIME_PART}\s*${TZ_PART}|${TZ_PART}|${TIME_PART})\s*[）)\]】]?\s*$`, "u");
 const escape = (value: string): string =>
   String(value).replace(/[&<>"]/g, character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"})[character]!);
 
@@ -21,10 +25,35 @@ function nameOf(message: MessageEnvelope | undefined): string {
   const sender = (message.raw as {sender?: {firstName?: string; lastName?: string; title?: string; username?: string}} | undefined)?.sender;
   if (!sender) return "";
   const name = `${sender.firstName ?? ""} ${sender.lastName ?? ""}`.trim();
-  if (name) return name;
-  if (sender.title) return String(sender.title);
+  if (name) return cleanName(name);
+  if (sender.title) return cleanName(String(sender.title));
   if (sender.username) return `@${sender.username}`;
   return "";
+}
+
+/**
+ * Keep the nickname but drop a trailing clock/GMT timezone such as `江砚 𝟚𝟙:𝟜𝟙 𝔾𝕄𝕋+𝟠`.
+ * NFKD only drives detection; the returned prefix is sliced from the original text,
+ * so the nickname's own characters (including fancy ones) are preserved.
+ */
+function cleanName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return trimmed;
+  const points = Array.from(trimmed);
+  let normalized = "";
+  const map: number[] = [];
+  for (let index = 0; index < points.length; index++) {
+    const part = points[index]!.normalize("NFKD");
+    for (const character of part) {
+      normalized += character;
+      for (let unit = 0; unit < character.length; unit++) map.push(index);
+    }
+  }
+  const match = TZ_SUFFIX.exec(normalized);
+  if (!match || match.index === undefined) return trimmed;
+  const cut = map[match.index] ?? points.length;
+  const cleaned = points.slice(0, cut).join("").trim();
+  return cleaned || trimmed;
 }
 
 type MediaHints = {
@@ -106,7 +135,7 @@ export default function createDiss() {
     for (const entity of raw?.entities ?? []) {
       if (entity.className === "MessageEntityMentionName" && entity.userId != null) {
         const name = text.slice(entity.offset, entity.offset + entity.length).replace(/^@/, "");
-        return {id: String(entity.userId), name: name || `用户${entity.userId}`};
+        return {id: String(entity.userId), name: cleanName(name) || `用户${entity.userId}`};
       }
       if (entity.className === "MessageEntityMention") {
         const username = text.slice(entity.offset, entity.offset + entity.length).replace(/^@/, "");
@@ -143,12 +172,13 @@ export default function createDiss() {
     await mutate(ctx, current => {
       const chats = {...current};
       const map = {...(chats[chat] ?? {})};
-      map[target.id] = {name: target.name || `用户${target.id}`, lockedAt: Date.now(), hits: map[target.id]?.hits ?? 0};
+      const display = cleanName(target.name) || `用户${target.id}`;
+      map[target.id] = {name: display, lockedAt: Date.now(), hits: map[target.id]?.hits ?? 0};
       chats[chat] = map;
       return chats;
     });
     await ctx.telegram.edit(invocation.message,
-      `🔫 已锁定 <b>${escape(target.name)}</b>（<code>${escape(target.id)}</code>），TA 一张嘴就喷死 TA。`,
+      `🔫 已锁定 <b>${escape(cleanName(target.name) || target.name)}</b>（<code>${escape(target.id)}</code>），TA 一张嘴就喷死 TA。`,
       {parseMode: "html"});
   };
 
@@ -239,7 +269,8 @@ export default function createDiss() {
     inFlight.add(key);
     void ctx.tasks.run("diss:reply", async signal => {
       try {
-        const insult = await buildInsult(ctx, signal, content, info.name || `用户${senderId}`);
+        const name = cleanName(info.name) || `用户${senderId}`;
+        const insult = await buildInsult(ctx, signal, content, name);
         signal.throwIfAborted();
         if (!insult) return;
         await ctx.telegram.reply(message, escape(insult), {parseMode: "html"});
