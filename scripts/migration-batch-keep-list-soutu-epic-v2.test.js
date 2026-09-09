@@ -75,9 +75,10 @@ test('soutu uploads a replied photo and emits both reverse-search links', async 
   const photo = Buffer.from('ffd8ffe000104a464946', 'hex');
   const f = await fixture(t, 'soutu', {
     message: {replyToId: 9},
-    reply: {raw: {photo: {}, async downloadMedia() { return photo; }}},
+    reply: {raw: {photo: {}, async downloadMedia({outputFile}) { await fs.writeFile(outputFile, photo); return outputFile; }}},
     fetch: async (url, init) => {
       requests.push({url: String(url), init});
+      assert.deepEqual(Buffer.from(await init.body.get('file').arrayBuffer()), photo);
       return new Response('https://0x0.st/example.jpg\n');
     },
   });
