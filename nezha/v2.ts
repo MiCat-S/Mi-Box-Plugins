@@ -2,6 +2,7 @@ import {generateChartConfig} from "./v2/chart";
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import {createHmac} from "node:crypto";
 import path from "node:path";
+import {open,type FileHandle} from "node:fs/promises";
 import {definePlugin,type MessageEnvelope,type PluginContext} from "telebox/sdk";
 type Config={schemaVersion:1;url:string;secret:string;serviceMonitor:boolean;legacyImported:boolean;[key:string]:unknown};
 type Server={id:number;name:string;display_index?:number;last_active?:string;host?:any;state?:any;geoip?:any};
@@ -17,7 +18,41 @@ const online=(s:Server)=>Boolean(s.last_active&&Date.now()-new Date(s.last_activ
 function row(s:Server,services?:Map<string,number>){const state=s.state??{},host=s.host??{},pct=(a:number,b:number)=>b?Math.min(100,a/b*100).toFixed(1):"0.0";const monitors=services?.size?`\n📶 ${[...services].map(([n,d])=>`${esc(n)}:${d.toFixed(1)}ms`).join(" | ")}`:"";if(!online(s))return`🔴 <b>${esc(s.name)}</b> <code>#${s.id}</code>${monitors}`;return`🟢 <b>${esc(s.name)}</b> <code>#${s.id}</code>${monitors}\n<blockquote>CPU ${Number(state.cpu??0).toFixed(1)}% · 内存 ${pct(state.mem_used,host.mem_total)}% · 硬盘 ${pct(state.disk_used,host.disk_total)}%\n网络 ↑${bytes(state.net_out_speed??0)}/s ↓${bytes(state.net_in_speed??0)}/s · 运行 ${Math.floor((state.uptime??0)/86400)} 天</blockquote>`;}
 async function services(c:PluginContext,config:Config,id:number){const result=new Map<string,number>();try{const data=await get(c,config,`/api/v1/service/${id}`);if(Array.isArray(data))for(const x of data){const delay=Array.isArray(x?.avg_delay)?Number(x.avg_delay.at(-1)):NaN;if(typeof x?.monitor_name==="string"&&Number.isFinite(delay))result.set(x.monitor_name,delay);}}catch{}return result;}
 async function list(c:PluginContext,config:Config){const data=await get(c,config,"/api/v1/server");if(!Array.isArray(data))throw new Error("服务器列表结构异常");const servers=data.filter((x:any)=>Number.isSafeInteger(x?.id)&&typeof x?.name==="string") as Server[];const maps=new Map<number,Map<string,number>>();if(config.serviceMonitor)await Promise.all(servers.filter(online).map(async s=>maps.set(s.id,await services(c,config,s.id))));servers.sort((a,b)=>Number(online(b))-Number(online(a))+(a.display_index??0)-(b.display_index??0));const count=servers.filter(online).length;return`📊 <b>哪吒监控</b> (${count}/${servers.length} 在线)\n\n${servers.map(s=>row(s,maps.get(s.id))).join("\n\n")}`.slice(0,4000);}
-async function chart(c:PluginContext,m:MessageEnvelope,config:Config,target:string){const all=await get(c,config,"/api/v1/server");if(!Array.isArray(all))throw new Error("服务器列表结构异常");const server=(all as Server[]).find(s=>String(s.id)===target||s.name===target);if(!server)throw new Error("未找到服务器");const monitor=await get(c,config,`/api/v1/service/${server.id}`);if(!Array.isArray(monitor)||!monitor.length)throw new Error("没有服务监控数据");const body={chart:generateChartConfig(monitor,server.name),width:800,height:400,backgroundColor:"black",format:"png"};const u=new URL("https://quickchart.io/chart");const image=await c.http.withResponse(u,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)},async(r,s)=>{if(!r.ok)throw new Error(`HTTP ${r.status}`);const reader=r.body?.getReader();if(!reader)throw new Error("图表响应为空");const chunks:Buffer[]=[];let total=0;try{for(;;){s.throwIfAborted();const x=await reader.read();if(x.done)break;total+=x.value.length;if(total>4*1024*1024)throw new Error("图表过大");chunks.push(Buffer.from(x.value));}return Buffer.concat(chunks);}finally{reader.releaseLock();}},{timeoutMs:30_000,redirects:{allowedHosts:["quickchart.io"],maxRedirects:1}});await c.files.withTemp(async dir=>{const file=path.join(dir,"chart.png");await (await import("node:fs/promises")).writeFile(file,image);await c.telegram.withClient(client=>client.sendFile((m.raw as any)?.peerId??m.chatId,{file,caption:`${server.name} 服务延迟`,replyTo:m.id}));});}
+async function chart(c:PluginContext,m:MessageEnvelope,config:Config,target:string){
+  const all=await get(c,config,"/api/v1/server");
+  if(!Array.isArray(all))throw new Error("服务器列表结构异常");
+  const server=(all as Server[]).find(s=>String(s.id)===target||s.name===target);
+  if(!server)throw new Error("未找到服务器");
+  const monitor=await get(c,config,`/api/v1/service/${server.id}`);
+  if(!Array.isArray(monitor)||!monitor.length)throw new Error("没有服务监控数据");
+  const body={chart:generateChartConfig(monitor,server.name),width:800,height:400,backgroundColor:"black",format:"png"};
+  const u=new URL("https://quickchart.io/chart");
+  await c.files.withTemp(async(dir,signal)=>{
+    const file=path.join(dir,"chart.png");
+    await c.http.withResponse(u,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)},async(r,s)=>{
+      if(!r.ok)throw new Error(`HTTP ${r.status}`);
+      const reader=r.body?.getReader();
+      if(!reader)throw new Error("图表响应为空");
+      let handle:FileHandle|undefined,total=0,finished=false;
+      try{
+        handle=await open(file,"wx");
+        for(;;){
+          s.throwIfAborted();
+          const x=await reader.read();
+          if(x.done){finished=true;break;}
+          total+=x.value.length;
+          if(total>4*1024*1024)throw new Error("图表过大");
+          await handle.writeFile(x.value);
+        }
+      }finally{
+        try{await handle?.close();}
+        finally{try{if(!finished)await reader.cancel();}finally{reader.releaseLock();}}
+      }
+    },{timeoutMs:30_000,redirects:{allowedHosts:["quickchart.io"],maxRedirects:1}});
+    signal.throwIfAborted();
+    await c.telegram.withClient(client=>client.sendFile((m.raw as any)?.peerId??m.chatId,{file,caption:`${server.name} 服务延迟`,replyTo:m.id}));
+  });
+}
 async function migrate(c:PluginContext){const current=await store(c).read();if(current.legacyImported)return;let legacy:any={};try{legacy=JSON.parse(await (await import("node:fs/promises")).readFile(c.files.dataPath("config.json"),"utf8"));}catch{}await store(c).update(v=>({...v,url:v.url||String(legacy.url??""),secret:v.secret||String(legacy.secret??""),serviceMonitor:typeof legacy.serviceMonitor==="boolean"?legacy.serviceMonitor:v.serviceMonitor,legacyImported:true}));}
 async function command(m:MessageEnvelope,args:readonly string[],c:PluginContext){try{const sub=args[0]?.toLowerCase();if(sub==="set"){if(!m.saved)throw new Error("密钥配置仅限收藏夹");if(!args[1]||!args[2])throw new Error("用法：nezha set URL JWT_SECRET");root(args[1]);const candidate={...(await store(c).read()),url:args[1].replace(/\/+$/,"")!,secret:args.slice(2).join(" ")};await get(c,candidate,"/api/v1/server");await store(c).update(v=>({...v,url:candidate.url,secret:candidate.secret}));await c.telegram.edit(m,"哪吒配置已验证并保存。");return;}const config=await store(c).read();if(!config.url||!config.secret)throw new Error("请先配置哪吒地址和 JWT Secret");if(sub==="service"){if(!["on","off"].includes(args[1]??""))throw new Error("用法：nezha service on|off");await store(c).update(v=>({...v,serviceMonitor:args[1]==="on"}));await c.telegram.edit(m,"服务监控设置已更新。");return;}await c.telegram.edit(m,"正在获取哪吒监控数据…");if(sub==="chart"){if(!args.slice(1).length)throw new Error("请提供服务器名称或 ID");await chart(c,m,config,args.slice(1).join(" "));return;}await c.telegram.edit(m,await list(c,config),{parseMode:"html"});}catch(e){if(!c.signal.aborted)await c.telegram.edit(m,`❌ ${esc(e instanceof Error?e.message:"哪吒请求失败")}`,{parseMode:"html"});}}
 export default function createNezha(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"nezha",description:"查询哪吒监控服务器与服务延迟",commands:{nezha:{description:"查询或配置哪吒监控",async handle(i,c){await command(i.message,i.args,c);}}},settings:c=>({id:"nezha",title:"哪吒监控",category:"插件配置",icon:"📊",getSchema:()=>[{key:"url",label:"面板地址",type:"string"},{key:"secret",label:"JWT Secret",type:"password",secret:true},{key:"serviceMonitor",label:"服务监控",type:"boolean"}],getValues:async()=>{const v=await store(c).read();return{url:v.url,secret:v.secret,serviceMonitor:v.serviceMonitor};},async setValues(p){await store(c).update(v=>{const url=typeof p.url==="string"?p.url:v.url;if(url)root(url);return{...v,url,secret:typeof p.secret==="string"?p.secret:v.secret,serviceMonitor:typeof p.serviceMonitor==="boolean"?p.serviceMonitor:v.serviceMonitor};});}}),setup:migrate});}
