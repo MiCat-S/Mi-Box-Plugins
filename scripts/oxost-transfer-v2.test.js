@@ -14,6 +14,7 @@ async function fixture(t, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-upload-')));
   const edits = [], requests = [], downloads = [];
   const raw = {media: {}, document: {size: 8, attributes: [{fileName: 'report.pdf'}], ...options.document},
+    ...(options.raw ?? {}),
     async downloadMedia(params) {
       downloads.push(params);
       if (options.download) return options.download(params);
@@ -133,4 +134,44 @@ test('oxost failed HTTP upload closes the file lifetime and keeps diagnostics pr
   assert.match(f.edits.at(-1), /上传失败/);
   assert.doesNotMatch(f.edits.join(''), /private-upload-diagnostic/);
   await assert.rejects(fs.stat(f.downloads[0].outputFile), {code: 'ENOENT'});
+});
+
+test('oxost accepts the exact 100 MiB announced size and a missing size', async t => {
+  for (const document of [{size: 100 * 1024 * 1024}, {size: undefined}]) {
+    const f = await fixture(t, {document, fetch: async () => new Response('https://0x0.st/ok')});
+    await f.run();
+    assert.match(f.edits.at(-1), /0x0\.st\/ok/, JSON.stringify(document));
+    assert.equal(f.requests.length, 1);
+  }
+});
+
+test('oxost derives photo file names from a 12-byte header', async t => {
+  const cases = [['ffd8ff', 'photo.jpg'], ['89504e47', 'photo.png'], ['47494638', 'photo.gif'],
+    ['52494646' + '00000000' + '57454250', 'photo.webp']];
+  for (const [magic, name] of cases) {
+    const header = Buffer.from(magic.padEnd(24, '0'), 'hex').subarray(0, 12);
+    const f = await fixture(t, {document: {attributes: []}, raw: {photo: true},
+      download: async params => { await fs.writeFile(params.outputFile, header); return params.outputFile; },
+      fetch: async (_url, init) => { assert.equal(init.body.get('file').name, name); return new Response('https://0x0.st/photo'); }});
+    await f.run();
+    assert.match(f.edits.at(-1), /0x0\.st\/photo/, name);
+  }
+});
+
+test('oxost unload during upload response consumption cleans the temporary file', async t => {
+  let started, file;
+  const ready = new Promise(resolve => {started = resolve;});
+  const f = await fixture(t, {fetch: async (_url, _init, download) => {
+    file = download.outputFile;
+    return new Response(new ReadableStream({start(controller) {
+      controller.enqueue(new TextEncoder().encode('https://0x0.st/'));
+      started();
+    }}));
+  }});
+  const running = f.run();
+  await ready;
+  assert.equal((await f.host.unload('oxost', 1000)).completed, true);
+  await running;
+  assert.equal(f.edits.length, 1);
+  await assert.rejects(fs.stat(file), {code: 'ENOENT'});
 });
