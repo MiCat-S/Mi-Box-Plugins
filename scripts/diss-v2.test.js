@@ -192,3 +192,20 @@ test('dissai overrides the provider, model and reasoning effort used for replies
   await f.run('.dissai model reset');
   assert.match(f.edits.at(-1).text, /已恢复跟随 ai 插件的模型/);
 });
+
+test('a locked target gets a reply for media-only messages but not service or empty ones', async t => {
+  const seen = [];
+  const f = await fixture(t, {
+    reply: {id: 2, chatId: '1', senderId: String(TARGET), text: 'hi', raw: {sender: {firstName: 'Victim'}}},
+    ai: input => { seen.push(input); return '你个憨批'; },
+  });
+  await f.run('.diss');
+  await f.listen({text: '', raw: {action: {className: 'MessageActionPinMessage'}}});
+  await f.listen({text: '', raw: {}});
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(f.replies.length, 0);
+  await f.listen({text: '', raw: {sticker: {alt: '😂'}}});
+  await waitFor(() => f.replies.length === 1);
+  assert.match(seen[0].text, /发了一个表情包（😂）/);
+  assert.equal(f.replies.length, 1);
+});
