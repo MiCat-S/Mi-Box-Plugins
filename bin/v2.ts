@@ -77,6 +77,10 @@ export default function createBin() {
         const currency = typeof data?.country?.currency === "string" ? data.country.currency.toUpperCase() : "";
         const business = typeof data?.commercial === "boolean" ? data.commercial : /BUSINESS|CORPORATE|COMMERCIAL/i.test(brand) ? true : undefined;
         const type = field(data?.type).toUpperCase();
+        const numberDetails = [
+          ...(Number.isSafeInteger(data?.number?.length) && data.number.length > 0 ? [`卡号长度  ${data.number.length} 位`] : []),
+          ...(typeof data?.number?.luhn === "boolean" ? [`Luhn ${yesNo(data.number.luhn)}`] : []),
+        ];
         const quote = (rate: number) => rate.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: rate < 0.01 ? 6 : 4, useGrouping: false});
         const lines = [
           `<b>💳 BIN · 卡片档案</b>`,
@@ -100,8 +104,7 @@ export default function createBin() {
             `<code>1 USD = ${quote(rates.rates.CNY)} CNY</code>`,
             `<i>${rates.updated ? `${rates.updated} · ` : ""}</i><a href="https://www.exchangerate-api.com">ExchangeRate-API</a>`,
           ] : ["汇率暂不可用"]),
-          ``,
-          `<blockquote expandable>卡号规则  ${esc(Number.isFinite(data?.number?.length) ? `${data.number.length} 位` : "未知")} · Luhn ${yesNo(data?.number?.luhn)}</blockquote>`,
+          ...(numberDetails.length ? [``, `<blockquote expandable>${esc(numberDetails.join(" · "))}</blockquote>`] : []),
         ];
         const pages = await ui.renderRichText(lines.join("\n"));
         for (const [index, page] of pages.entries()) {

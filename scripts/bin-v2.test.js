@@ -43,6 +43,7 @@ test('bin card renders country metadata and dated cross rates in one safe messag
   assert.match(text, /EUR € · Euro/);
   assert.match(text, /1 EUR = 8\.00 CNY/);
   assert.match(text, /1 USD = 7\.00 CNY/);
+  assert.match(text, /卡号长度  16 位 · Luhn 是/);
   assert.match(text, /2026-09-09/);
   assert.match(result.text, /&lt;SERVICES&gt; &amp; Co\./);
   assert.match(result.text, /<code>41705691<\/code>/);
@@ -61,6 +62,8 @@ test('bin keeps unknown flags distinct from false and preserves card details whe
   assert.match(text, /Available Bank/);
   assert.match(text, /区号  未知/);
   assert.match(text, /汇率暂不可用/);
+  assert.doesNotMatch(text, /卡号规则|卡号长度|Luhn/);
+  assert.doesNotMatch(f.edits.at(-1).text, /blockquote/);
   assert.doesNotMatch(text, /NaN|undefined|Infinity/);
 });
 
