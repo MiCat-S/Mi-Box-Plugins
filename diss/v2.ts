@@ -27,6 +27,30 @@ function nameOf(message: MessageEnvelope | undefined): string {
   return "";
 }
 
+type MediaHints = {
+  sticker?: {alt?: string}; videoNote?: unknown; voice?: unknown; audio?: unknown;
+  gif?: unknown; video?: unknown; photo?: unknown; contact?: unknown;
+  geo?: unknown; poll?: unknown; document?: unknown;
+};
+
+/** Describe a media-only message so a locked target still gets a relevant reply. */
+function contentHint(message: MessageEnvelope): string {
+  const raw = message.raw as MediaHints | undefined;
+  if (!raw) return "";
+  if (raw.sticker) return `发了一个表情包${raw.sticker.alt ? `（${raw.sticker.alt}）` : ""}`;
+  if (raw.videoNote) return "发了一个圆形视频";
+  if (raw.voice) return "发了一段语音";
+  if (raw.audio) return "发了一段音频";
+  if (raw.gif) return "发了一个 GIF";
+  if (raw.video) return "发了一段视频";
+  if (raw.photo) return "发了一张图片";
+  if (raw.contact) return "发了一张名片";
+  if (raw.geo) return "发了一个位置";
+  if (raw.poll) return "发了一个投票";
+  if (raw.document) return "发了一个文件";
+  return "";
+}
+
 /** Read-only view of the ai plugin's current chat selection, used only for help text. */
 async function describeAi(ctx: PluginContext): Promise<string> {
   if (!ctx.services.available("ai", "selection")) return "";
@@ -204,7 +228,7 @@ export default function createDiss() {
     return pick(INSULTS).replace(/\{name\}/g, name || "憨批");
   };
 
-  const autoReply = (message: MessageEnvelope, info: TargetInfo, ctx: PluginContext): void => {
+  const autoReply = (message: MessageEnvelope, info: TargetInfo, ctx: PluginContext, content: string): void => {
     const senderId = message.senderId;
     if (!senderId) return;
     const key = `${message.chatId}:${senderId}`;
@@ -215,7 +239,7 @@ export default function createDiss() {
     inFlight.add(key);
     void ctx.tasks.run("diss:reply", async signal => {
       try {
-        const insult = await buildInsult(ctx, signal, message.text, info.name || `用户${senderId}`);
+        const insult = await buildInsult(ctx, signal, content, info.name || `用户${senderId}`);
         signal.throwIfAborted();
         if (!insult) return;
         await ctx.telegram.reply(message, escape(insult), {parseMode: "html"});
@@ -327,11 +351,14 @@ export default function createDiss() {
     listeners: [{
       async handle(message, ctx) {
         if (message.outgoing || message.saved) return;
-        if (!message.senderId || !message.text.trim()) return;
+        if (!message.senderId) return;
+        if ((message.raw as {action?: unknown} | undefined)?.action) return;
+        const content = message.text.trim() || contentHint(message);
+        if (!content) return;
         await ensure(ctx);
         const info = state[message.chatId]?.[message.senderId];
         if (!info) return;
-        autoReply(message, info, ctx);
+        autoReply(message, info, ctx, content);
       },
     }],
   });

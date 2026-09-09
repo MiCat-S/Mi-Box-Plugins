@@ -25,6 +25,7 @@ export function renderHelp(prefix: string): string {
     `<code>${p}dissai reasoning 级别</code> 思考强度，可选 auto | none | minimal | low | medium | high | xhigh`,
     `<code>${p}dissai model reset</code> 恢复跟随 ai 插件（provider / reasoning 同理）`,
     "只设模型不设 provider 时，沿用 ai 当前聊天提供商的 URL/Key。",
+    "对方只发表情包、图片、语音等（无文字）也会回怼。",
     "可能产生调用费用；AI 不可用时使用本地模板。",
   ].join("\n");
 }
