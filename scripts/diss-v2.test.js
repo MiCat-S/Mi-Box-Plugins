@@ -47,7 +47,7 @@ async function fixture(t, {ai, selection, fetch, entities = new Map([['@victim',
   }}));
   await host.load(create());
   t.after(async () => { await host.shutdown(2000); await fs.rm(root, {recursive: true, force: true}); });
-  return {host, edits, replies,
+  return {host, edits, replies, root,
     run: (text, extra = {}) => host.dispatchPrimary({id: 1, chatId: '1', senderId: String(ME.id), outgoing: true, text, ...extra}),
     listen: (extra = {}) => host.dispatchListeners({id: 2, chatId: '1', senderId: String(TARGET), outgoing: false, text: 'hello', ...extra}),
   };
@@ -208,4 +208,31 @@ test('a locked target gets a reply for media-only messages but not service or em
   await waitFor(() => f.replies.length === 1);
   assert.match(seen[0].text, /发了一个表情包（😂）/);
   assert.equal(f.replies.length, 1);
+});
+
+test('nickname timezone suffixes are stripped when locking', async t => {
+  const seen = [];
+  const f = await fixture(t, {
+    reply: {id: 2, chatId: '1', senderId: String(TARGET), text: 'hi', raw: {sender: {firstName: '江砚 𝟚𝟙:𝟜𝟙 𝔾𝕄𝕋+𝟠'}}},
+    ai: input => { seen.push(input); return '你个憨批'; },
+  });
+  await f.run('.diss');
+  assert.match(f.edits.at(-1).text, /已锁定 <b>江砚<\/b>/);
+  assert.doesNotMatch(f.edits.at(-1).text, /𝔾𝕄𝕋/);
+  await f.listen();
+  await waitFor(() => f.replies.length === 1);
+  assert.match(seen[0].text, /对方昵称：江砚/);
+  assert.doesNotMatch(seen[0].text, /𝔾𝕄𝕋/);
+});
+
+test('nickname timezone suffixes are stripped from previously stored names too', async t => {
+  const seen = [];
+  const f = await fixture(t, {ai: input => { seen.push(input); return '你个憨批'; }});
+  await fs.mkdir(path.join(f.root, 'diss'), {recursive: true});
+  await fs.writeFile(path.join(f.root, 'diss', 'state.json'),
+    JSON.stringify({'1': {42: {name: '江砚 𝟚𝟙:𝟜𝟙 𝔾𝕄𝕋+𝟠', lockedAt: 0, hits: 0}}}));
+  await f.listen();
+  await waitFor(() => f.replies.length === 1);
+  assert.match(seen[0].text, /对方昵称：江砚/);
+  assert.doesNotMatch(seen[0].text, /𝔾𝕄𝕋/);
 });

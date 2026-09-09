@@ -26,6 +26,7 @@ export function renderHelp(prefix: string): string {
     `<code>${p}dissai model reset</code> 恢复跟随 ai 插件（provider / reasoning 同理）`,
     "只设模型不设 provider 时，沿用 ai 当前聊天提供商的 URL/Key。",
     "对方只发表情包、图片、语音等（无文字）也会回怼。",
+    "对方昵称里的花体时区（如 <code>𝟚𝟙:𝟜𝟙 𝔾𝕄𝕋+𝟠</code>）会自动去掉，只留昵称。",
     "可能产生调用费用；AI 不可用时使用本地模板。",
   ].join("\n");
 }
