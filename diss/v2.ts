@@ -6,8 +6,11 @@ import {fetchQuote} from "./v2/quote";
 
 type TargetInfo = {name: string; lockedAt: number; hits: number};
 type State = Record<string, Record<string, TargetInfo>>;
+type DissConfig = {model: string; tag: string; reasoningEffort: string};
 
 const COOLDOWN_MS = 2_500;
+const CONFIG_DEFAULTS: DissConfig = {model: "", tag: "", reasoningEffort: ""};
+const REASONING_VALUES = new Set(["auto", "none", "minimal", "low", "medium", "high", "xhigh"]);
 const QUOTE_ARGS = new Set(["语录", "quote", "yulu", "saying"]);
 const escape = (value: string): string =>
   String(value).replace(/[&<>"]/g, character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"})[character]!);
@@ -31,6 +34,7 @@ export default function createDiss() {
   const inFlight = new Set<string>();
 
   const store = (ctx: PluginContext) => ctx.storage.json<State>("state.json", {});
+  const configStore = (ctx: PluginContext) => ctx.storage.json<DissConfig>("config.json", CONFIG_DEFAULTS);
   const ensure = (ctx: PluginContext): Promise<void> => {
     loading ??= store(ctx).read().then(value => {state = value;}, error => {loading = undefined; throw error;});
     return loading;
@@ -172,8 +176,15 @@ export default function createDiss() {
     const {maxSentences, style} = styleFor();
     if (ctx.services.available("ai", "chat")) {
       try {
-        const prompt = `对方昵称：${name}\n对方刚说的话：${text || "(没说话，只发了媒体/表情)"}\n\n怼回去。${style}`;
-        const result = await ctx.services.call<unknown>("ai", "chat", {text: prompt, systemPrompt: PERSONA}, signal);
+        const config = await configStore(ctx).read();
+        const input: Record<string, unknown> = {
+          text: `对方昵称：${name}\n对方刚说的话：${text || "(没说话，只发了媒体/表情)"}\n\n怼回去。${style}`,
+          systemPrompt: PERSONA,
+        };
+        if (config.model) input.model = config.model;
+        if (config.tag) input.tag = config.tag;
+        if (config.reasoningEffort) input.reasoningEffort = config.reasoningEffort;
+        const result = await ctx.services.call<unknown>("ai", "chat", input, signal);
         const cleaned = cleanInsult(String(result ?? ""), name, maxSentences);
         if (cleaned) return cleaned;
       } catch { /* fall through to the local list */ }
@@ -209,6 +220,54 @@ export default function createDiss() {
     });
   };
 
+  const doAi = async (invocation: CommandInvocation, ctx: PluginContext): Promise<void> => {
+    const store = configStore(ctx);
+    const [scope, action, ...extra] = invocation.args;
+    const prefix = escape(invocation.prefix);
+    const show = async () => {
+      const current = await store.read();
+      await ctx.telegram.edit(invocation.message, [
+        "<b>Diss AI 设置</b>",
+        `模型：<code>${escape(current.model || "跟随 ai 插件当前聊天模型")}</code>`,
+        `提供商：<code>${escape(current.tag || "跟随 ai 插件当前聊天提供商")}</code>`,
+        `思考强度：<code>${escape(current.reasoningEffort || "跟随 ai 插件")}</code>`,
+        "",
+        `<code>${prefix}dissai model 模型名</code> · <code>${prefix}dissai provider tag</code>`,
+        `<code>${prefix}dissai reasoning none</code> · 用 <code>reset</code> 恢复跟随 ai 插件`,
+      ].join("\n"), {parseMode: "html"});
+    };
+    if (!scope) { await show(); return; }
+    const key = scope.toLowerCase();
+    const field: keyof DissConfig | undefined = key === "model" ? "model"
+      : key === "provider" || key === "tag" ? "tag"
+        : key === "reasoning" ? "reasoningEffort" : undefined;
+    if (!field) {
+      await ctx.telegram.edit(invocation.message, `用法：<code>${prefix}dissai model|provider|reasoning [值|reset]</code>`, {parseMode: "html"});
+      return;
+    }
+    if (!action) { await show(); return; }
+    const label = field === "model" ? "模型" : field === "tag" ? "提供商" : "思考强度";
+    if (extra.length) {
+      await ctx.telegram.edit(invocation.message, "值不能包含空格。");
+      return;
+    }
+    if (action === "reset" || action === "clear") {
+      await store.update(current => ({...current, [field]: ""}));
+      await ctx.telegram.edit(invocation.message, `已恢复跟随 ai 插件的${label}。`);
+      return;
+    }
+    if (action.length > 128 || /\s/.test(action)) {
+      await ctx.telegram.edit(invocation.message, "值无效（最长 128 字符且不能包含空格）。");
+      return;
+    }
+    if (field === "reasoningEffort" && !REASONING_VALUES.has(action)) {
+      await ctx.telegram.edit(invocation.message, `思考强度必须是：<code>${[...REASONING_VALUES].join(" | ")}</code>`, {parseMode: "html"});
+      return;
+    }
+    await store.update(current => ({...current, [field]: action}));
+    await ctx.telegram.edit(invocation.message, `已设置 Diss ${label}：<code>${escape(action)}</code>`, {parseMode: "html"});
+  };
+
   /** Show a fixed message instead of leaking transport or provider errors to the chat. */
   const guarded = (operation: (invocation: CommandInvocation, ctx: PluginContext) => Promise<void>) =>
     async (invocation: CommandInvocation, ctx: PluginContext): Promise<void> => {
@@ -237,6 +296,7 @@ export default function createDiss() {
       dislist: {description: "查看本会话锁定列表", handle: guarded(doList)},
       dissclear: {description: "清空本会话锁定", handle: guarded(doClear)},
       dishelp: {description: "查看嘴臭对线机帮助", handle: guarded(doHelp)},
+      dissai: {description: "配置自动回怼使用的 AI 模型/提供商/思考强度", handle: guarded(doAi)},
     },
     listeners: [{
       async handle(message, ctx) {

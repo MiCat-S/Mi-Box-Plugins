@@ -15,6 +15,7 @@ export function renderHelp(prefix: string): string {
     "",
     "<b>其他</b>",
     `<code>${p}diss 语录</code> 获取一条祖安语录`,
-    "自动回怼使用 ai 插件的当前聊天模型，可能产生调用费用；AI 不可用时使用本地模板。",
+    `<code>${p}dissai</code> 配置自动回怼使用的 AI 模型 / 提供商 / 思考强度`,
+    "自动回怼使用 ai 插件的提供商，可单独指定模型；可能产生调用费用。AI 不可用时使用本地模板。",
   ].join("\n");
 }
