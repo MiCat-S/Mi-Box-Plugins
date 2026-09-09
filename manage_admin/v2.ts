@@ -1,3 +1,4 @@
+import {setTimeout as sleep} from "node:timers/promises";
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
@@ -22,7 +23,18 @@ async function run(message:MessageEnvelope,args:readonly string[],prefix:string,
     const target=await resolve();if(!target){await ctx.telegram.edit(message,"请回复一条消息或提供 用户ID/用户名");return;}
     const adding=["add","set"].includes(sub);const title=(reply?args.slice(1):args.slice(2)).join(" ").slice(0,16);
     try{if(chat.className==="Channel")await client.invoke(new Api.channels.EditAdmin({channel,userId:target.input,adminRights:new Api.ChatAdminRights(adding?{banUsers:true}:{}),rank:adding?title:""}));else await client.invoke(new Api.messages.EditChatAdmin({chatId:chat.id,userId:target.input,isAdmin:adding}));
-      await ctx.telegram.edit(message,`${adding?"已设置":"已移除"}管理员: ${display(target.entity,target.id)}${adding&&title?`，头衔：<code>${escape(title)}</code>`:""}`,{parseMode:"html"});
+      let appliedRank=title,selfIsCreator=false;
+      if(adding){
+        if(chat.className==="Channel")await sleep(1200,undefined,{signal});
+        try{
+          const me=await client.getMe();
+          selfIsCreator=(await client.invoke(new Api.channels.GetParticipant({channel,participant:me.id}))).participant?.className==="ChannelParticipantCreator";
+          const refreshed=(await client.invoke(new Api.channels.GetParticipant({channel,participant:target.input}))).participant;
+          if(["ChannelParticipantAdmin","ChannelParticipantCreator"].includes(refreshed?.className))appliedRank=refreshed.rank||"";
+        }catch{signal.throwIfAborted();}
+      }
+      const rankText=adding&&title?(appliedRank===title?`，头衔：<code>${escape(title)}</code>`:`，但头衔未更新。${selfIsCreator?"可能原因：非超级群或系统暂未同步。":"可能原因：仅群主可设置头衔；或非超级群；或系统暂未同步。"}`):"";
+      await ctx.telegram.edit(message,`${adding?"已设置":"已移除"}管理员: ${display(target.entity,target.id)}${rankText}`,{parseMode:"html"});
     }catch(error){const detail=String((error as any)?.message??error);const extra=detail.includes("USER_ID_INVALID")?"\n可能原因：目标不是当前对话中的用户、匿名管理员、或数字 ID 无法解析。":"";await ctx.telegram.edit(message,`${adding?"设置":"移除"}管理员失败：<code>${escape(detail)}</code>${extra}`,{parseMode:"html"});}
   });
 }

@@ -58,7 +58,7 @@ test('lottery persists warehouse, activity and participants with string ids',asy
   const state={schemaVersion:1,activities:{},warehouses:{},settings:{minUsers:2,maxUsers:1000,timeout:60},importedLegacy:true};
   let sentId=10;const sent=[];const client={async sendMessage(peer,options){sent.push({peer,options});return{id:sentId++};},async getEntity(){return{id:'9007199254740995',firstName:'Alice'};}};const f=context(state,client),plugin=createLottery();
   const invoke=async(text,saved=false)=>plugin.commands.lottery.handle({command:'lottery',prefix:'.',args:text.split(/\s+/).slice(1),message:{...message(text),saved}},f.ctx);
-  await invoke('.lottery prize create gifts',false);await invoke('.lottery prize add gifts coupon 2',false);await invoke('.lottery create event JOIN 2 1 gifts');
+  await invoke('.lottery prize create gifts',true);await invoke('.lottery prize add gifts coupon 2',true);await invoke('.lottery create event JOIN 2 1 gifts');
   const activity=Object.values(f.json.value().activities)[0];assert.equal(activity.chatId,'-1009007199254740993');assert.equal(activity.creatorId,'9007199254740995');
   await plugin.listeners[0].handle({...message('JOIN'),outgoing:false},f.ctx);assert.equal(Object.values(f.json.value().activities)[0].participants[0].userId,'9007199254740995');
 });
@@ -91,4 +91,20 @@ test('all four artifacts load, unload and reload through the real PluginHost',as
   for(const factory of [createKeyword,createIm,createLottery,createCaptcha]){
     const first=factory();await host.load(first);assert.equal(host.snapshot().plugins,1);assert.equal((await host.unload(first.id,1000)).completed,true);await host.load(factory());assert.equal((await host.unload(first.id,1000)).completed,true);
   }
+});
+
+test('lottery keeps prize content private and allows an administrator to draw',async()=>{
+  const state={schemaVersion:1,activities:{},warehouses:{alpha:[{text:'PRIVATE-CODE-123',stock:2,order:0}]},settings:{minUsers:2,maxUsers:1000,timeout:60},importedLegacy:true};
+  const sent=[];const client={async sendMessage(peer,options){sent.push({peer,options});return{id:sent.length};},async getEntity(){return{className:'Channel',id:7n};},async invoke(){return{participant:{className:'ChannelParticipantAdmin'}};}};
+  const f=context(state,client),plugin=createLottery();
+  const run=(args,extra={})=>plugin.commands.lottery.handle({command:'lottery',prefix:'.',args,message:{...message('.lottery '+args.join(' ')),...extra}},f.ctx);
+  await run(['prize','list','alpha']);assert.match(f.edits.at(-1).text,/只能在私聊/);assert.ok(!f.edits.at(-1).text.includes('PRIVATE-CODE'));
+  await run(['prize','list','alpha'],{raw:{isPrivate:true}});assert.ok(f.edits.at(-1).text.includes('PRIVATE-CODE'));
+  await run(['create','event','JOIN','2','1','1']);const activity=Object.values(f.json.value().activities)[0];assert.equal(activity.warehouse,'alpha');
+  await f.json.update(v=>{v.activities[activity.id].participants=[{userId:'42',firstName:'Alice',joinedAt:Date.now()}];return v;});
+  sent.length=0;await run(['draw'],{senderId:'99'});
+  assert.equal(f.json.value().activities[activity.id].status,'completed');
+  assert.ok(sent.find(x=>String(x.peer)==='42').options.message.includes('PRIVATE-CODE-123'));
+  assert.ok(sent.filter(x=>String(x.peer)!=='42').every(x=>!x.options.message.includes('PRIVATE-CODE-123')));
+  await run(['winners']);assert.ok(!f.edits.at(-1).text.includes('PRIVATE-CODE-123'));
 });
