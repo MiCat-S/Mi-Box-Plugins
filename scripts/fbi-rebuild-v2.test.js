@@ -110,3 +110,68 @@ test('fbi rebuild keeps a touched chat without its stale history and drops untou
   assert.deepEqual(saved[peer(42)].msgs.map(message => message.id), [6000]);
   assert.deepEqual(saved[peer(43)].msgs.map(message => message.id), [7000]);
 });
+
+test('fbi rebuild preserves live activity and unknown metadata under a shrinking limit', async t => {
+  let entered, release;
+  const ready = new Promise(resolve => {entered = resolve;});
+  const gate = new Promise(resolve => {release = resolve;});
+  const cache = {[peer(1)]: {username: 'group1', lastActiveAt: Date.now() - 1000, custom: {keep: 'chat'},
+    msgs: [cached(1, now - 10000, {custom: 'message'})]}};
+  const f = await fixture(t, {cacheLimit: 12, cache, client: {
+    async getDialogs() { entered(); await gate; return Array.from({length: 11}, (_, index) => ({id: peer(index + 1), isGroup: true})); },
+    async *iterMessages(chat) { const id = Number(String(chat).slice(4)); yield cached(id, id === 1 ? now - 10000 : now - 100); },
+  }});
+  const rebuild = f.run('.fbi cache rebuild');
+  await ready;
+  await f.listen(1, 1, {edited: true, text: 'live edit', raw: {date: now - 10000, peerId: peer(1)}});
+  await f.host.patchSettings('fbi', {cacheLimit: 10});
+  release();
+  await rebuild;
+  const saved = (await f.read()).cache;
+  assert.equal(Object.keys(saved).length, 10);
+  assert.ok(saved[peer(1)], 'recently edited group must survive the LRU trim');
+  assert.equal(typeof saved[peer(1)].lastActiveAt, 'number');
+  assert.deepEqual(saved[peer(1)].custom, {keep: 'chat'});
+  assert.equal(saved[peer(1)].msgs[0].text, 'live edit');
+  assert.equal(saved[peer(1)].msgs[0].custom, 'message');
+});
+
+test('fbi rebuild bounds the live increment peer set to the cache limit', async t => {
+  let entered, release;
+  const ready = new Promise(resolve => {entered = resolve;});
+  const gate = new Promise(resolve => {release = resolve;});
+  const f = await fixture(t, {cacheLimit: 10, cache: {}, client: {
+    async getDialogs() { entered(); await gate; return [{id: peer(1), isGroup: true}, {id: peer(2), isGroup: true}]; },
+    async *iterMessages(chat) { yield cached(Number(String(chat).slice(4)), now - 100); },
+  }});
+  const rebuild = f.run('.fbi cache rebuild');
+  await ready;
+  for (let id = 1; id <= 12; id++) await f.listen(id, 1000 + id);
+  release();
+  await rebuild;
+  const saved = (await f.read()).cache;
+  assert.equal(Object.keys(saved).length, 10);
+  assert.ok(saved[peer(12)], 'most recent increment peer must be kept');
+  assert.ok(!saved[peer(1)] && !saved[peer(2)], 'oldest increment peers must be evicted');
+});
+
+test('fbi rebuild failure clears live increments and allows a later rebuild', async t => {
+  let entered, release;
+  const ready = new Promise(resolve => {entered = resolve;});
+  const gate = new Promise(resolve => {release = resolve;});
+  let attempt = 0;
+  const f = await fixture(t, {cache: {}, client: {
+    async getDialogs() { entered(); await gate; return [{id: peer(1), isGroup: true}]; },
+    async *iterMessages() { if (attempt++ === 0) throw new Error('history failed'); yield cached(1, now - 100); },
+  }});
+  const first = f.run('.fbi cache rebuild');
+  await ready;
+  await f.listen(5, 5000);
+  release();
+  await first;
+  assert.match(f.edits.at(-1).text, /操作失败/);
+  await f.run('.fbi cache rebuild');
+  const saved = (await f.read()).cache;
+  assert.ok(saved[peer(1)]);
+  assert.ok(!saved[peer(5)], 'a failed rebuild must release its increments');
+});

@@ -24,21 +24,26 @@ export default function createFbi(){let context:PluginContext|undefined,chats=ne
   chat.lastActiveAt=activityClock=Math.max(Date.now(),activityClock+1);
   chats.delete(peer);chats.set(peer,chat);trimGroups(chats,cacheLimit);
  };
+ const trimIncrements=()=>{while(rebuildIncrements.size>cacheLimit){const oldest=rebuildIncrements.keys().next().value;if(oldest===undefined)break;rebuildIncrements.delete(oldest);}};
  const recordIncrement=(peer:string,message:Cached)=>{
   let entries=rebuildIncrements.get(peer);
-  if(!entries){entries=new Map();rebuildIncrements.set(peer,entries);}
+  if(entries)rebuildIncrements.delete(peer);
+  else entries=new Map();
   entries.set(message.id,message);
-  // Bound the increment so a long rebuild cannot grow it without limit.
+  // Bound each peer's increment so a long rebuild cannot grow it without limit.
   if(entries.size>MAX_MESSAGES){
    let oldestId:number|undefined,oldestDate=Infinity;
    for(const [id,item] of entries)if(item.date<oldestDate||(item.date===oldestDate&&(oldestId===undefined||id<oldestId))){oldestDate=item.date;oldestId=id;}
    if(oldestId!==undefined)entries.delete(oldestId);
   }
+  rebuildIncrements.set(peer,entries);
+  // Keep the outer peer set bounded to the same limit as the live cache.
+  trimIncrements();
  };
  const applyLimit=async(state:Config)=>{
   cacheLimit=state.cacheLimit;
   for(const chat of chats.values())prune(chat);
-  trimGroups(chats,cacheLimit);await schedule();
+  trimGroups(chats,cacheLimit);trimIncrements();await schedule();
  };
  const rebuild=async(c:PluginContext)=>{
   if(rebuilding)throw new Error("缓存正在重建");
@@ -69,9 +74,15 @@ export default function createFbi(){let context:PluginContext|undefined,chats=ne
    const merged=new Map<string,Chat>(fresh);
    for(const [peer,increments] of rebuildIncrements){
     const fetched=merged.get(peer);
-    const template=fetched??chats.get(peer);
-    if(!template)continue;
-    merged.set(peer,{...template,msgs:mergeMessages(fetched?.msgs??[],increments.values())});
+    const existing=chats.get(peer);
+    if(!fetched&&!existing)continue;
+    // Keep the existing chat's unknown fields and real-time lastActiveAt;
+    // username/title may come from this fetch.
+    const base:Chat=existing??fetched!;
+    const template:Chat=fetched?{...base,
+      ...(fetched.username!==undefined?{username:fetched.username}:{}),
+      ...(fetched.title!==undefined?{title:fetched.title}:{})}:{...base};
+    merged.set(peer,{...template,msgs:mergeMessages(fetched?.msgs??[],increments.values(),existing?.msgs??[])});
    }
    chats=restore(Object.fromEntries(merged),cacheLimit).chats;
    await persist();

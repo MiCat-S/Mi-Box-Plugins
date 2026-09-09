@@ -136,13 +136,28 @@ test('oxost failed HTTP upload closes the file lifetime and keeps diagnostics pr
   await assert.rejects(fs.stat(f.downloads[0].outputFile), {code: 'ENOENT'});
 });
 
-test('oxost accepts the exact 100 MiB announced size and a missing size', async t => {
+test('oxost accepts the announced 100 MiB size and a missing size', async t => {
   for (const document of [{size: 100 * 1024 * 1024}, {size: undefined}]) {
     const f = await fixture(t, {document, fetch: async () => new Response('https://0x0.st/ok')});
     await f.run();
     assert.match(f.edits.at(-1), /0x0\.st\/ok/, JSON.stringify(document));
     assert.equal(f.requests.length, 1);
   }
+});
+
+test('oxost accepts an actual 100 MiB file-backed upload body', async t => {
+  const f = await fixture(t, {document: {size: 100 * 1024 * 1024}, download: async params => {
+    await fs.writeFile(params.outputFile, Buffer.alloc(0));
+    await fs.truncate(params.outputFile, 100 * 1024 * 1024);
+    return params.outputFile;
+  }, fetch: async (_url, init) => {
+    const blob = init.body.get('file');
+    assert.equal(blob.size, 100 * 1024 * 1024);
+    return new Response('https://0x0.st/big');
+  }});
+  await f.run();
+  assert.match(f.edits.at(-1), /0x0\.st\/big/);
+  await assert.rejects(fs.stat(f.downloads[0].outputFile), {code: 'ENOENT'});
 });
 
 test('oxost derives photo file names from a 12-byte header', async t => {
@@ -156,6 +171,27 @@ test('oxost derives photo file names from a 12-byte header', async t => {
     await f.run();
     assert.match(f.edits.at(-1), /0x0\.st\/photo/, name);
   }
+});
+
+test('oxost unload during upload request body consumption cleans the temporary file', async t => {
+  let started, file;
+  const ready = new Promise(resolve => {started = resolve;});
+  const f = await fixture(t, {download: async params => {await fs.writeFile(params.outputFile, 'document'); file = params.outputFile; return params.outputFile;},
+    fetch: async (_url, init) => {
+      const reader = init.body.get('file').stream().getReader();
+      await reader.read();
+      started();
+      await new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), {once: true}));
+      return new Response('https://0x0.st/late');
+    }});
+  const running = f.run();
+  await ready;
+  assert.equal((await f.host.unload('oxost', 1000)).completed, true);
+  await running;
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.edits.length, 1);
+  assert.doesNotMatch(f.edits.join(''), /0x0\.st\/late/);
+  await assert.rejects(fs.stat(file), {code: 'ENOENT'});
 });
 
 test('oxost unload during upload response consumption cleans the temporary file', async t => {
