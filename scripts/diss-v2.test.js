@@ -157,3 +157,31 @@ test('diss 语录 keeps the legacy quote behavior', async t => {
   assert.equal(f.edits.at(-1).text, 'usable quote');
   assert.equal(f.edits.at(-1).options.parseMode, 'html');
 });
+
+test('dissai overrides the provider, model and reasoning effort used for replies', async t => {
+  const seen = [];
+  const f = await fixture(t, {
+    reply: {id: 2, chatId: '1', senderId: String(TARGET), text: 'hi', raw: {sender: {firstName: 'Victim'}}},
+    ai: input => { seen.push(input); return '你个憨批'; },
+  });
+  await f.run('.dissai model diss-model');
+  assert.match(f.edits.at(-1).text, /已设置 Diss 模型：<code>diss-model<\/code>/);
+  await f.run('.dissai provider alt');
+  assert.match(f.edits.at(-1).text, /已设置 Diss 提供商：<code>alt<\/code>/);
+  await f.run('.dissai reasoning none');
+  assert.match(f.edits.at(-1).text, /已设置 Diss 思考强度：<code>none<\/code>/);
+  await f.run('.dissai');
+  assert.match(f.edits.at(-1).text, /diss-model/);
+  assert.match(f.edits.at(-1).text, /alt/);
+  assert.match(f.edits.at(-1).text, /none/);
+  await f.run('.diss');
+  await f.listen();
+  await waitFor(() => f.replies.length === 1);
+  assert.equal(seen[0].model, 'diss-model');
+  assert.equal(seen[0].tag, 'alt');
+  assert.equal(seen[0].reasoningEffort, 'none');
+  await f.run('.dissai reasoning bogus');
+  assert.match(f.edits.at(-1).text, /思考强度必须是/);
+  await f.run('.dissai model reset');
+  assert.match(f.edits.at(-1).text, /已恢复跟随 ai 插件的模型/);
+});

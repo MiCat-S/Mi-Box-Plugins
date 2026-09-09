@@ -4,7 +4,7 @@ import {
   InputError, modes, providerTypes, readConfig, reasoningValues, requireInput, settings,
   tierValues, updateConfig, type Config,
 } from "./v2/config";
-import {assertAllowedModel, chatText, ProviderError, translateText} from "./v2/provider";
+import {assertAllowedModel, chatText, ProviderError, translateText, type ReasoningEffort} from "./v2/provider";
 import {escape, publish, searchText, sendText} from "./v2/text";
 import {generateImages, generateVideos, messageMedia, sendMedia, type MediaInput} from "./v2/media";
 
@@ -238,22 +238,34 @@ async function handle(invocation: CommandInvocation, ctx: PluginContext): Promis
   }
 }
 
-function serviceText(input: unknown): {text: string; systemPrompt?: string} {
+interface ServiceTextInput {text: string; systemPrompt?: string; model?: string; tag?: string; reasoningEffort?: ReasoningEffort}
+function serviceText(input: unknown): ServiceTextInput {
   if (typeof input === "string") return {text: input};
   requireInput(input !== null && typeof input === "object" && !Array.isArray(input), "服务输入无效");
   const value = input as Record<string, unknown>;
   requireInput(typeof value.text === "string" && value.text.trim(), "服务文本不能为空");
   requireInput(value.systemPrompt === undefined || typeof value.systemPrompt === "string", "系统提示词无效");
-  return {text: value.text, ...(typeof value.systemPrompt === "string" ? {systemPrompt: value.systemPrompt} : {})};
+  requireInput(value.model === undefined || (typeof value.model === "string" && value.model.trim().length > 0), "模型无效");
+  requireInput(value.tag === undefined || (typeof value.tag === "string" && value.tag.trim().length > 0), "提供商无效");
+  requireInput(value.reasoningEffort === undefined || reasoningValues.includes(value.reasoningEffort as ReasoningEffort), "思考强度无效");
+  return {text: value.text,
+    ...(typeof value.systemPrompt === "string" ? {systemPrompt: value.systemPrompt} : {}),
+    ...(typeof value.model === "string" ? {model: value.model.trim()} : {}),
+    ...(typeof value.tag === "string" ? {tag: value.tag.trim()} : {}),
+    ...(typeof value.reasoningEffort === "string" ? {reasoningEffort: value.reasoningEffort as ReasoningEffort} : {})};
 }
 
 export default function createAi() {
   return definePlugin({apiVersion: 1, id: "ai", description: "AI 对话、搜索、媒体生成与配置", renderHelp: renderPluginHelp, settings,
     commands: {ai: {helpArgs: ["help","?"], description: "AI 对话、搜索与配置", handle}},
     services: {
-      chat: {description: "使用当前聊天模型生成文字", async handle(input, ctx, signal) {
+      chat: {description: "使用当前聊天模型生成文字，可指定 model/tag/reasoningEffort", async handle(input, ctx, signal) {
         const value = serviceText(input); const cfg = await readConfig(ctx, signal);
-        return chatText(cfg, ctx.http, value.text, signal, value.systemPrompt ?? cfg.prompt);
+        const tag = value.tag ?? cfg.currentChatTag;
+        requireInput(Object.hasOwn(cfg.configs, tag) && Boolean(cfg.configs[tag]), "未找到指定的 AI 提供商");
+        return chatText({...cfg, currentChatTag: tag, currentChatModel: value.model ?? cfg.currentChatModel,
+          currentChatReasoningEffort: value.reasoningEffort ?? cfg.currentChatReasoningEffort},
+        ctx.http, value.text, signal, value.systemPrompt ?? cfg.prompt);
       }},
       translate: {description: "使用当前聊天模型翻译文字", async handle(input, ctx, signal) {
         requireInput(input !== null && typeof input === "object" && !Array.isArray(input), "翻译输入无效");
