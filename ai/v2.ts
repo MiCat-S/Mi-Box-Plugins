@@ -274,6 +274,13 @@ export default function createAi() {
         requireInput(value.target === "zh-CN" || value.target === "en", "翻译语言无效");
         return translateText(await readConfig(ctx, signal), ctx.http, value.text, value.target, signal);
       }},
+      selection: {description: "只读返回当前聊天与搜索的提供商/模型选择", async handle(_input, ctx, signal) {
+        const cfg = await readConfig(ctx, signal);
+        return {
+          chat: {tag: cfg.currentChatTag, model: cfg.currentChatModel, reasoningEffort: cfg.currentChatReasoningEffort, serviceTier: cfg.currentChatServiceTier},
+          search: {tag: cfg.currentSearchTag, model: cfg.currentSearchModel, reasoningEffort: cfg.currentSearchReasoningEffort, serviceTier: cfg.currentSearchServiceTier},
+        };
+      }},
     },
   });
 }

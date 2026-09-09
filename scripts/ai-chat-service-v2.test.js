@@ -64,3 +64,14 @@ test('ai chat service rejects unknown providers and invalid reasoning effort', a
   await assert.rejects(callChat(config(), {text: 'hi', reasoningEffort: 'bogus'}), /思考强度/);
   await assert.rejects(callChat(config(), {text: 'hi', model: '   '}), /模型/);
 });
+
+test('ai selection service exposes current chat/search choices without secrets', async () => {
+  const definition = createAi();
+  const controller = new AbortController();
+  const cfg = config({currentSearchTag: 'alt', currentSearchModel: 'model-search'});
+  const context = {signal: controller.signal, storage: {json: () => ({read: async () => cfg})}};
+  const selection = await definition.services.selection.handle(null, context, controller.signal);
+  assert.deepEqual(selection.chat, {tag: 'main', model: 'model-main', reasoningEffort: 'high', serviceTier: 'auto'});
+  assert.deepEqual(selection.search, {tag: 'alt', model: 'model-search', reasoningEffort: 'auto', serviceTier: 'auto'});
+  assert.equal(JSON.stringify(selection).includes('key'), false);
+});

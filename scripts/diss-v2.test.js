@@ -23,7 +23,7 @@ async function waitFor(predicate, timeout = 2000) {
   throw new Error('timed out waiting for condition');
 }
 
-async function fixture(t, {ai, fetch, entities = new Map([['@victim', {id: TARGET}]]), reply} = {}) {
+async function fixture(t, {ai, selection, fetch, entities = new Map([['@victim', {id: TARGET}]]), reply} = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mi-box-diss-v2-')));
   const edits = [];
   const replies = [];
@@ -41,8 +41,9 @@ async function fixture(t, {ai, fetch, entities = new Map([['@victim', {id: TARGE
     async getReply() { return reply; },
     async withClient(operation, signal) { return operation(client, signal); },
   }});
-  if (ai) await host.load(definePlugin({apiVersion: 1, id: 'ai', description: 'fixture', commands: {}, services: {
-    chat: {description: 'fixture', handle(input, _ctx, signal) { signal.throwIfAborted(); return ai(input, signal); }},
+  if (ai || selection) await host.load(definePlugin({apiVersion: 1, id: 'ai', description: 'fixture', commands: {}, services: {
+    ...(ai ? {chat: {description: 'fixture', handle(input, _ctx, signal) { signal.throwIfAborted(); return ai(input, signal); }}} : {}),
+    ...(selection ? {selection: {description: 'fixture', handle() { return selection; }}} : {}),
   }}));
   await host.load(create());
   t.after(async () => { await host.shutdown(2000); await fs.rm(root, {recursive: true, force: true}); });
@@ -163,7 +164,13 @@ test('dissai overrides the provider, model and reasoning effort used for replies
   const f = await fixture(t, {
     reply: {id: 2, chatId: '1', senderId: String(TARGET), text: 'hi', raw: {sender: {firstName: 'Victim'}}},
     ai: input => { seen.push(input); return '你个憨批'; },
+    selection: {chat: {tag: 'main', model: 'model-main', reasoningEffort: 'high', serviceTier: 'auto'}},
   });
+  await f.run('.dissai');
+  assert.match(f.edits.at(-1).text, /跟随 ai 插件（当前 main \/ model-main · 思考 high）/);
+  assert.match(f.edits.at(-1).text, /auto \| none \| minimal \| low \| medium \| high \| xhigh/);
+  await f.run('.dissai help');
+  assert.match(f.edits.at(-1).text, /Diss AI 设置/);
   await f.run('.dissai model diss-model');
   assert.match(f.edits.at(-1).text, /已设置 Diss 模型：<code>diss-model<\/code>/);
   await f.run('.dissai provider alt');
