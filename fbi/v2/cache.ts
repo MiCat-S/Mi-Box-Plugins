@@ -49,3 +49,18 @@ export function upsert(chat: Chat, message: Cached): void {
   chat.msgs.unshift(message);
   prune(chat);
 }
+
+/**
+ * Merge fetched history with messages observed during a rebuild. The fetched
+ * history is the base; an increment wins for the same id. Unknown fields are
+ * preserved from whichever side supplied them and the result is newest-first.
+ */
+export function mergeMessages(base: readonly Cached[], increments: Iterable<Cached>): Cached[] {
+  const byId = new Map<number, Cached>();
+  for (const message of base) byId.set(message.id, message);
+  for (const message of increments) {
+    const previous = byId.get(message.id);
+    byId.set(message.id, previous ? {...previous, ...message} : message);
+  }
+  return [...byId.values()].sort((a, b) => b.date - a.date || b.id - a.id);
+}

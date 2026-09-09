@@ -22,7 +22,7 @@ function servers(count, {online = count, longNames = false} = {}) {
   }));
 }
 
-async function fixture(t, {data, serviceMonitor = false, serviceFetch} = {}) {
+async function fixture(t, {data, serviceMonitor = false, serviceFetch, replyFails = false} = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-nezha-list-')));
   await fs.mkdir(path.join(root, 'nezha'));
   await fs.writeFile(path.join(root, 'nezha/config-v2.json'),
@@ -31,7 +31,8 @@ async function fixture(t, {data, serviceMonitor = false, serviceFetch} = {}) {
   const host = new PluginHost({
     storageRoot: root, tempRoot: path.join(root, 'temp'), logger: {info() {}, error() {}},
     telegram: {
-      async edit(_m, text) {edits.push(text);}, async reply(_m, text) {replies.push(text);},
+      async edit(_m, text) {edits.push(text);},
+      async reply(_m, text) {if (replyFails) throw new Error('PAGE_DELIVERY_FAILED'); replies.push(text);},
       async invoke() {assert.fail('unexpected RPC');}, async getReply() {}, async withClient(fn, signal) {return fn({}, signal);},
     },
     http: {fetch: async (url, init) => {
@@ -67,10 +68,23 @@ test('nezha paginates every node instead of slicing the joined html', async t =>
   const pages = f.replies.length ? [f.edits.at(-1), ...f.replies] : [f.edits.at(-1)];
   const output = pages.join('\n');
   assert.ok(pages.length > 1, `expected multiple pages, got ${pages.length}`);
-  assert.ok(output.includes('#1'), 'first node must be present');
-  assert.ok(output.includes('#180'), 'last node must be present');
   assert.doesNotMatch(output, /slice|截断/);
-  for (const page of pages) assert.ok(balanced(page), `unbalanced tags: ${page.slice(0, 80)}`);
+  for (const page of pages) {
+    assert.ok(page.length <= 3500, `page exceeds budget: ${page.length}`);
+    assert.ok(balanced(page), `unbalanced tags: ${page.slice(0, 80)}`);
+  }
+  // Every node must survive exactly once, not just the first and last.
+  for (const server of data) assert.equal(output.split(`#${server.id}<`).length - 1, 1, `node ${server.id}`);
+  assert.ok(pages[0].endsWith(`1/${pages.length} 页`));
+});
+
+test('nezha keeps the published first page when a later page fails', async t => {
+  const data = servers(180, {online: 0, longNames: true});
+  const f = await fixture(t, {data, replyFails: true});
+  await f.run();
+  assert.match(f.edits.at(-1), /#1</);
+  assert.doesNotMatch(f.edits.at(-1), /PAGE_DELIVERY_FAILED/);
+  assert.equal(f.replies.length, 0);
 });
 
 test('nezha bounds service fan-out while still querying every online node', async t => {
