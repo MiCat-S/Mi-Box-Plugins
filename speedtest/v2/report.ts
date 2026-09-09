@@ -1,11 +1,12 @@
 import {isIP} from "node:net";
-import {readFile, stat} from "node:fs/promises";
+import {open, readFile, stat} from "node:fs/promises";
 import path from "node:path";
 import {maskIpText, type PluginContext, type CommandInvocation} from "telebox/sdk";
 import type {SpeedtestResult} from "./cli";
 import {messageOrder, type MessageType} from "./config";
 
 const CAPTION_UTF16_LIMIT = 1024;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, character =>
   ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;"})[character]!);
 const clipped = (value: unknown, length = 80): string => String(value ?? "").slice(0, length);
@@ -119,20 +120,30 @@ export async function buildReport(context: PluginContext, result: SpeedtestResul
   return maskIpText(lines.join("\n"));
 }
 
-export function resultCardSvg(result: SpeedtestResult): string {
-  const rows = [
-    "SPEEDTEST",
-    `Download: ${amount(result.download?.bandwidth, false)}`,
-    `Upload: ${amount(result.upload?.bandwidth, false)}`,
-    `Ping: ${number(result.ping?.latency, "ms")}   Jitter: ${number(result.ping?.jitter, "ms")}`,
-    `Server: ${result.server.id} / ${clipped(result.server.name, 40)}`,
-    `ISP: ${clipped(result.isp, 48)}`,
-  ].map(value => maskIpText(value));
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="480"><rect width="960" height="480" rx="24" fill="#101d32"/>${rows.map((row, i) => `<text x="40" y="${65 + i * 68}" fill="${i === 0 ? "#5eead4" : "#f8fafc"}" font-family="sans-serif" font-size="${i === 0 ? 34 : 25}">${escape(row)}</text>`).join("")}</svg>`;
-}
-async function renderImage(result: SpeedtestResult, destination: string): Promise<void> {
-  const sharp = (await import("sharp")).default;
-  await sharp(Buffer.from(resultCardSvg(result))).png().toFile(destination);
+async function downloadImage(context: PluginContext, source: URL, destination: string): Promise<void> {
+  const image = new URL(source);
+  image.pathname += ".png";
+  await context.http.withResponse(image, {method: "GET"}, async (response, signal) => {
+    if (response.status !== 200 || !response.body || !/^image\/png(?:;|$)/i.test(response.headers.get("content-type") ?? "")) throw new Error("invalid image");
+    const reader = response.body.getReader();
+    const output = await open(destination, "wx", 0o600);
+    let total = 0;
+    try {
+      for (;;) {
+        signal.throwIfAborted();
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        total += chunk.value.byteLength;
+        if (total > MAX_IMAGE_BYTES) throw new Error("image too large");
+        await output.write(chunk.value);
+      }
+      if (!total) throw new Error("empty image");
+    } finally {
+      await output.close();
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
+  }, {timeoutMs: 20_000, redirects: {allowedHosts: ["www.speedtest.net"], maxRedirects: 0}});
 }
 
 async function sticker(context: PluginContext, source: string, destination: string): Promise<void> {
@@ -200,11 +211,12 @@ export async function deliverResult(
     await context.telegram.edit(invocation.message, parts.body, {parseMode: "html", linkPreview: false});
     return;
   }
-  {
+  const source = officialResultUrl(result.result?.url);
+  if (source) {
     try {
       const delivered = await context.files.withTemp(async (directory, signal) => {
         const image = path.join(directory, "speedtest.png");
-        await renderImage(result, image);
+        await downloadImage(context, source, image);
         for (const type of order) {
           signal.throwIfAborted();
           if (type === "txt") break;
