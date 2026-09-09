@@ -1,6 +1,9 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 import type {Api} from "teleproto";
+import {openAsBlob} from "node:fs";
+import {open, stat} from "node:fs/promises";
+import path from "node:path";
 
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
@@ -52,17 +55,31 @@ export default function createOxost() {
         const reply = await context.telegram.getReply(invocation.message);
         const raw = reply?.raw as Api.Message | undefined;
         if (!raw?.media || typeof raw.downloadMedia !== "function") throw new Error("No media");
+        if (Number(raw.document?.size) > MAX_UPLOAD_BYTES) throw new Error("Media too large");
         await context.telegram.edit(invocation.message, "正在下载并上传…");
-        const data = await context.telegram.withClient(async () => raw.downloadMedia());
-        if (!Buffer.isBuffer(data) || data.length === 0 || data.length > MAX_UPLOAD_BYTES) throw new Error("Invalid media");
-        const form = new FormData();
-        form.append("file", new Blob([new Uint8Array(data)], {type: "application/octet-stream"}), uploadName(raw, data));
-        if (expiry) form.append("expires", expiry);
-        if (invocation.args.includes("secret")) form.append("secret", "1");
-        const response = await context.http.text("https://0x0.st", {
-          method: "POST", body: form, redirect: "manual", credentials: "omit",
-          headers: {"User-Agent": "MiBot-Oxost/2.0"},
-        }, {timeoutMs: 60_000, signal: context.signal, redirects:{allowedHosts:["0x0.st"],maxRedirects:2}});
+        const response = await context.files.withTemp(async directory => {
+          const file = path.join(directory, "upload.bin");
+          await context.telegram.withClient(async (_client, signal) => {
+            await raw.downloadMedia({outputFile: file, signal, progressCallback(downloaded) {
+              signal.throwIfAborted();
+              if (downloaded.greater(MAX_UPLOAD_BYTES)) throw new Error("Media too large");
+            }});
+            signal.throwIfAborted();
+          });
+          const info = await stat(file);
+          if (!info.isFile() || info.size === 0 || info.size > MAX_UPLOAD_BYTES) throw new Error("Invalid media");
+          const header = Buffer.alloc(12);
+          const handle = await open(file, "r");
+          try { await handle.read(header, 0, header.length, 0); } finally { await handle.close(); }
+          const form = new FormData();
+          form.append("file", await openAsBlob(file, {type: "application/octet-stream"}), uploadName(raw, header));
+          if (expiry) form.append("expires", expiry);
+          if (invocation.args.includes("secret")) form.append("secret", "1");
+          return context.http.text("https://0x0.st", {
+            method: "POST", body: form, redirect: "manual", credentials: "omit",
+            headers: {"User-Agent": "MiBot-Oxost/2.0"},
+          }, {timeoutMs: 60_000, signal: context.signal, redirects:{allowedHosts:["0x0.st"],maxRedirects:2}});
+        });
         await context.telegram.edit(invocation.message, `<code>${escape(resultUrl(response))}</code>`, {parseMode: "html"});
       } catch {
         if (context.signal.aborted) return;

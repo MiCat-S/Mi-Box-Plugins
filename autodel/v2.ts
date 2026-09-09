@@ -6,6 +6,7 @@ import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sd
 type State = {schemaVersion: 1; settings: Record<string, number>; importedLegacy: boolean; [key: string]: unknown};
 const defaults: State = {schemaVersion: 1, settings: {}, importedLegacy: false};
 const store = (context: PluginContext) => context.storage.json<State>("config.json", defaults);
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 function parseDuration(args: readonly string[]): number | undefined {
   const value = args.join("").trim().toLowerCase();
@@ -16,7 +17,8 @@ function parseDuration(args: readonly string[]): number | undefined {
   const multiplier = /^(s|sec|secs|second|seconds|秒)$/.test(unit) ? 1
     : /^(m|min|mins|minute|minutes|分|分钟)$/.test(unit) ? 60
       : /^(h|hr|hrs|hour|hours|时|小时)$/.test(unit) ? 3600 : 86400;
-  return Number.isSafeInteger(amount) ? amount * multiplier : undefined;
+  const seconds = amount * multiplier;
+  return Number.isSafeInteger(seconds * 1000) ? seconds : undefined;
 }
 
 async function migrate(context: PluginContext): Promise<void> {
@@ -38,11 +40,18 @@ async function migrate(context: PluginContext): Promise<void> {
   await store(context).update(value => ({...value, schemaVersion: 1, settings, importedLegacy: true}));
 }
 
-async function scheduleDelete(context: PluginContext, message: MessageEnvelope, seconds: number): Promise<void> {
-  await context.tasks.run(`autodel:${message.chatId}:${message.id}`, async signal => {
-    await sleep(seconds * 1000, undefined, {signal});
+function scheduleDelete(context: PluginContext, message: MessageEnvelope, seconds: number): Promise<void> {
+  const {chatId, id} = message;
+  return context.tasks.run(`autodel:${chatId}:${id}`, async signal => {
+    let remaining = seconds * 1000;
+    while (remaining > 0) {
+      const delay = Math.min(remaining, MAX_TIMER_DELAY_MS);
+      await sleep(delay, undefined, {signal});
+      remaining -= delay;
+    }
+    signal.throwIfAborted();
     await context.telegram.withClient(async client => {
-      await client.deleteMessages(returnBigInt(message.chatId), [message.id], {revoke: false});
+      await client.deleteMessages(returnBigInt(chatId), [id], {revoke: false});
     });
   });
 }

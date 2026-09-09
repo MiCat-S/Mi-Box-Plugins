@@ -1,10 +1,14 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import {maskIpText, definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import path from "node:path";
-import sharp from "sharp";
-import {load} from "cheerio";
+
+function sharp(input: Buffer, options: import("sharp").SharpOptions) {
+  const createImage = require("sharp") as typeof import("sharp");
+  return createImage(input, options);
+}
 
 export function privateGraph(source: string): string {
+  const {load} = require("cheerio") as typeof import("cheerio");
   const document = load(source, {xmlMode: true});
   const visit = (node: any): void => {
     if (node.type === "text") node.data = maskIpText(node.data);

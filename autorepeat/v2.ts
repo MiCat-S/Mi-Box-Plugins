@@ -7,10 +7,9 @@ import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sd
 type Trigger = {timeWindow: number; minUsers: number};
 type State = {schemaVersion: 1; enabledGroups: string[]; dailyHistory: Record<string, string[]>; lastDay: number; trigger: Trigger; [key: string]: unknown};
 type Seen = {senderId: string; text: string; time: number};
+type RuntimeState = {recent: Map<string, Seen[]>; serial: Map<string, Promise<void>>};
 const defaults: State = {schemaVersion: 1, enabledGroups: [], dailyHistory: {}, lastDay: 0, trigger: {timeWindow: 300, minUsers: 5}};
 const store = (context: PluginContext) => context.storage.json<State>("autorepeat.json", defaults);
-const recent = new Map<string, Seen[]>();
-const serial = new Map<string, Promise<void>>();
 const escape = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]!));
 const dayInShanghai = (now = Date.now()) => Math.floor((now + 8 * 3600_000) / 86400_000);
 const contentKey = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -85,7 +84,7 @@ async function allGroups(context: PluginContext): Promise<string[]> {
   });
 }
 
-async function processMessage(message: MessageEnvelope, context: PluginContext) {
+async function processMessage(message: MessageEnvelope, context: PluginContext, {recent, serial}: RuntimeState) {
   const chatId = message.chatId;
   const previous = serial.get(chatId) ?? Promise.resolve();
   const current = previous.catch(() => undefined).then(async () => {
@@ -113,7 +112,9 @@ async function processMessage(message: MessageEnvelope, context: PluginContext) 
   try { await current; } finally { if (serial.get(chatId) === current) serial.delete(chatId); }
 }
 
-export default function createPlugin() { return definePlugin({renderHelp: renderPluginHelp,
+export default function createPlugin() {
+  const runtime: RuntimeState = {recent: new Map(), serial: new Map()};
+  return definePlugin({renderHelp: renderPluginHelp,
   apiVersion: 1, id: "autorepeat", description: "在群组内达到不同用户人数阈值后自动复读相同文本。",
   commands: {autorepeat: {description: "管理群组自动复读", async handle({message, args, prefix}, context) {
     try {
@@ -162,9 +163,9 @@ export default function createPlugin() { return definePlugin({renderHelp: render
     const date = Number(raw?.date);
     if (Number.isFinite(date) && Date.now() / 1000 - date > 60) return;
     if (raw?.sender?.bot === true || raw?.sender?.className !== "User") return;
-    try { await processMessage(message, context); }
+    try { await processMessage(message, context, runtime); }
     catch (error) { if (!context.signal.aborted) context.log.error("autorepeat:listener", {error: String(error).slice(0, 300)}); }
   }}],
   async setup(context) { await store(context).update(value => normalize(value)); },
-  cleanup() { recent.clear(); serial.clear(); },
+  cleanup() { runtime.recent.clear(); runtime.serial.clear(); },
 }); }

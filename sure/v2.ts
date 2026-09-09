@@ -1,6 +1,15 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import {definePlugin, type MessageEnvelope} from "telebox/sdk";
 
+
+// Keep the group send-as boundary compatible with Core owner commands.
+function isOwnerOrGroupSendAs(message: MessageEnvelope, ownerId: string): boolean {
+  if (message.senderId === ownerId) return true;
+  const raw = message.raw as {className?: string; post?: boolean} | undefined;
+  return message.outgoing && !message.forwarded && !message.edited &&
+    raw?.className === "Message" && !raw.post && /^-100[1-9][0-9]*$/.test(message.chatId) &&
+    /^-100[1-9][0-9]*$/.test(message.senderId ?? "") && /^[1-9][0-9]*$/.test(ownerId);
+}
 
 interface SureConfig extends Record<string, unknown> {users: string[]; chats: string[]; messages: Record<string, string>;}
 const defaults: SureConfig = {users: [], chats: [], messages: {}};
@@ -9,7 +18,7 @@ export default function createSure() {
   return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "sure", description: "管理 bot 代发消息的白名单规则",
     commands: {sure: {description: "维护代发用户、对话和消息白名单", async handle(invocation, ctx) {
       const owner = await ctx.telegram.withClient(client => client.getMe());
-      if (invocation.message.senderId !== String(owner.id)) {
+      if (!isOwnerOrGroupSendAs(invocation.message, String(owner.id))) {
         await ctx.telegram.edit(invocation.message, "只有 owner 可以管理 sure 白名单");
         return;
       }

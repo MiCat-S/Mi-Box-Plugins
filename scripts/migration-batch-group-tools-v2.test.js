@@ -38,7 +38,7 @@ async function fixture(t, id, options = {}) {
 
 test('oxost uploads replied media with expiry and secret fields', async t => {
   const requests = [];
-  const raw = {media: {}, document: {attributes: [{fileName: 'report.pdf'}]}, async downloadMedia() { return Buffer.from('document'); }};
+  const raw = {media: {}, document: {attributes: [{fileName: 'report.pdf'}]}, async downloadMedia({outputFile}) { await fs.writeFile(outputFile, 'document'); return outputFile; }};
   const f = await fixture(t, 'oxost', {reply: {raw}, fetch: async (url, init) => {
     requests.push({url: String(url), init});
     return new Response('https://0x0.st/file.pdf\n');
