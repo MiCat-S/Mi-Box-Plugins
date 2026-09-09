@@ -39,15 +39,15 @@ const CONFIG = {
 
 function parseTimeString(timeStr?: string): number {
   if (!timeStr) return 0; // 无参数返回0（永久）
-  
+
   const time = timeStr.toLowerCase();
   const num = parseInt(time) || 0;
-  
+
   if (time.includes('d')) return num * 86400;
   if (time.includes('h')) return num * 3600;
   if (time.includes('m')) return num * 60;
   if (time.includes('s')) return num;
-  
+
   return 0; // 默认永久
 }
 
@@ -107,7 +107,7 @@ class UserResolver {
         chatType: this.getChatType(message),
       };
     }
-    
+
     return { user: null, uid: null, source: "unknown", resolutionError: "NO_TARGET", chatType: this.getChatType(message) };
   }
 
@@ -150,7 +150,7 @@ class UserResolver {
     } catch (error) {
       ctx.log.info("aban:operation");
     }
-    
+
     return { user: null, uid: null, source: "unknown", resolutionError: "INVALID_TARGET", chatType: this.getChatType(message) };
   }
 
@@ -533,7 +533,7 @@ class PermissionManager {
           participant: me.id
         })
       );
-      
+
       const p = participant.participant;
       if (p instanceof Api.ChannelParticipantCreator) return true;
       if (p instanceof Api.ChannelParticipantAdmin) {
@@ -568,7 +568,7 @@ class PermissionManager {
           participant: userId
         })
       );
-      
+
       const p = participant.participant;
       return (
         p instanceof Api.ChannelParticipantCreator ||
@@ -602,7 +602,7 @@ class PermissionManager {
           participant: me.id
         })
       );
-      
+
       const p = participant.participant;
       if (p instanceof Api.ChannelParticipantCreator) return true;
       if (p instanceof Api.ChannelParticipantAdmin) {
@@ -653,7 +653,7 @@ class GroupManager {
     if (cached && Array.isArray(cached) && cached.length > 0) return cached;
 
     const groups: ManagedGroup[] = [];
-    
+
     try {
       const dialogs = await this.getAllManageableDialogs(client);
 
@@ -678,7 +678,7 @@ class GroupManager {
         });
       }
       ctx.log.info("aban:operation");
-      
+
       try {
         await this.cache.set("managed_groups_v5", groups);
 
@@ -694,7 +694,7 @@ class GroupManager {
     } catch (error) {
       ctx.log.info("aban:operation");
     }
-    
+
     return groups;
   }
 
@@ -911,14 +911,14 @@ class BanManager {
       }
 
       const resolvedParticipant = participant || await client.getEntity(userId);
-      
+
       await client.invoke(
         new Api.channels.DeleteParticipantHistory({
           channel: chatId,
           participant: resolvedParticipant,
         })
       );
-      
+
       ctx.log.info("aban:operation");
       return true;
     } catch (error: any) {
@@ -962,7 +962,7 @@ class BanManager {
       sendInline: true,
       embedLinks: true,
     });
-    
+
     const limit = (await ensurePLimit())(4);
 
     const runOne = async (
@@ -1031,12 +1031,12 @@ class BanManager {
         reason: this.getErrorReason(result.reason),
       };
     });
-    
+
     let success = 0;
     let failed = 0;
     const failedGroups: string[] = [];
     const failureDetails: BatchGroupFailure[] = [];
-    
+
     results.forEach((result) => {
       if (result.success) {
         success++;
@@ -1135,11 +1135,11 @@ class BanManager {
         return { success: false, group: groups[index] };
       }
     );
-    
+
     let success = 0;
     let failed = 0;
     const failedGroups: string[] = [];
-    
+
     results.forEach((result) => {
       if (result.success) {
         success++;
@@ -1282,7 +1282,7 @@ class CommandHandlers {
 
       const groups = await GroupManager.getManagedGroups(client);
       const hasBasicGroups = groups.some((group) => group.kind === 'chat');
-      
+
       if (groups.length === 0) {
         await MessageManager.smartEdit(message, "❌ 无管理群组");
         return;
@@ -1416,7 +1416,7 @@ class CommandHandlers {
 
       const groups = await GroupManager.getManagedGroups(client);
       const hasBasicGroups = groups.some((group) => group.kind === 'chat');
-      
+
       if (groups.length === 0) {
         await MessageManager.smartEdit(message, "❌ 无管理群组");
         return;
@@ -1468,7 +1468,7 @@ class CommandHandlers {
           unresolved: true,
           unresolvedReason: 'UNKNOWN_ERROR',
         }));
-        
+
         const elapsed = (Date.now() - startTime) / 1000;
 
         if (!unresolved && failed > 0) {
@@ -1484,7 +1484,7 @@ class CommandHandlers {
           ? ` | ℹ️ 基础群不支持跨群解封语义，仅会跳过`
           : '';
         const result = `✅ 在${success}个频道/群组中解封该用户 ${htmlEscape(display)}${failureSummary}${capabilityNote} | ⏱️${elapsed.toFixed(1)}s`;
-        
+
         await MessageManager.smartEdit(status, result, 30);
       };
 
