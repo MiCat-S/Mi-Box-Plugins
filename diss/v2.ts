@@ -1,58 +1,252 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
-import {setTimeout as delay} from "node:timers/promises";
-const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
-const help = `<b>儒雅随和语录</b>\n<code>diss</code> 获取一条语录`;
-async function readQuote(response: Response, signal: AbortSignal): Promise<string> {
-  if (response.status !== 200 || !response.body) throw new Error("语录服务不可用");
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  let complete = false;
-  let cancellation: Promise<void> | undefined;
-  const cancel = () => cancellation ??= reader.cancel();
-  const abort = () => { void cancel().catch(() => undefined); };
-  signal.addEventListener("abort", abort, {once: true});
-  try {
-    while (true) {
-      signal.throwIfAborted();
-      const part = await reader.read();
-      signal.throwIfAborted();
-      if (part.done) {complete = true; break;}
-      total += part.value.byteLength;
-      if (total > 16 * 1024) throw new Error("语录响应过大");
-      chunks.push(part.value);
-    }
-    const text = new TextDecoder("utf-8", {fatal: true}).decode(Buffer.concat(chunks, total)).trim();
-    if (!text || text.length > 4000) throw new Error("语录内容无效");
-    return text;
-  } finally {
-    signal.removeEventListener("abort", abort);
-    try {if (!complete) await cancel();} finally {reader.releaseLock();}
-  }
+import {definePlugin, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import type {Api} from "teleproto";
+import {INSULTS, PERSONA, cleanInsult, pick, styleFor} from "./v2/insults";
+import {fetchQuote} from "./v2/quote";
+
+type TargetInfo = {name: string; lockedAt: number; hits: number};
+type State = Record<string, Record<string, TargetInfo>>;
+
+const COOLDOWN_MS = 2_500;
+const QUOTE_ARGS = new Set(["语录", "quote", "yulu", "saying"]);
+const escape = (value: string): string =>
+  String(value).replace(/[&<>"]/g, character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"})[character]!);
+
+function nameOf(message: MessageEnvelope | undefined): string {
+  if (!message) return "";
+  const sender = (message.raw as {sender?: {firstName?: string; lastName?: string; title?: string; username?: string}} | undefined)?.sender;
+  if (!sender) return "";
+  const name = `${sender.firstName ?? ""} ${sender.lastName ?? ""}`.trim();
+  if (name) return name;
+  if (sender.title) return String(sender.title);
+  if (sender.username) return `@${sender.username}`;
+  return "";
 }
+
 export default function createDiss() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "diss", description: "获取儒雅随和语录", commands: {
-    diss: {helpArgs: ["help","h"], description: "获取一条语录", async handle(invocation, ctx: PluginContext) {
-      if (invocation.args[0] === "help" || invocation.args[0] === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
+  let state: State = {};
+  let loading: Promise<void> | undefined;
+  let self: {id: string; username: string} | undefined;
+  const cooldown = new Map<string, number>();
+  const inFlight = new Set<string>();
+
+  const store = (ctx: PluginContext) => ctx.storage.json<State>("state.json", {});
+  const ensure = (ctx: PluginContext): Promise<void> => {
+    loading ??= store(ctx).read().then(value => {state = value;}, error => {loading = undefined; throw error;});
+    return loading;
+  };
+
+  const selfInfo = async (ctx: PluginContext): Promise<{id: string; username: string}> => {
+    if (self) return self;
+    const me = await ctx.telegram.withClient(client => client.getMe());
+    self = {id: String(me.id), username: String(me.username ?? "")};
+    return self;
+  };
+
+  const mutate = async (ctx: PluginContext, change: (current: State) => State): Promise<void> => {
+    await ensure(ctx);
+    state = await store(ctx).update(current => change(current));
+  };
+
+  const resolveUsername = async (ctx: PluginContext, username: string): Promise<{id: string; name: string} | undefined> => {
+    if (!/^[A-Za-z0-9_]{3,64}$/.test(username)) return undefined;
+    try {
+      const entity = await ctx.telegram.withClient(client => client.getEntity(`@${username}`));
+      const id = (entity as {id?: unknown} | undefined)?.id;
+      if (id == null) return undefined;
+      return {id: String(id), name: `@${username}`};
+    } catch {
+      return undefined;
+    }
+  };
+
+  const resolveTarget = async (invocation: CommandInvocation, ctx: PluginContext): Promise<{id: string; name: string} | undefined> => {
+    const raw = invocation.message.raw as Api.Message | undefined;
+    const text = raw?.message ?? invocation.message.text;
+    for (const entity of raw?.entities ?? []) {
+      if (entity.className === "MessageEntityMentionName" && entity.userId != null) {
+        const name = text.slice(entity.offset, entity.offset + entity.length).replace(/^@/, "");
+        return {id: String(entity.userId), name: name || `用户${entity.userId}`};
+      }
+      if (entity.className === "MessageEntityMention") {
+        const username = text.slice(entity.offset, entity.offset + entity.length).replace(/^@/, "");
+        const resolved = await resolveUsername(ctx, username);
+        if (resolved) return resolved;
+      }
+    }
+    const mentioned = text.match(/@([A-Za-z0-9_]{3,64})/);
+    if (mentioned) {
+      const resolved = await resolveUsername(ctx, mentioned[1]);
+      if (resolved) return resolved;
+    }
+    const numeric = text.match(/(?:^|\s)(\d{5,16})(?:\s|$)/);
+    if (numeric) return {id: numeric[1], name: `用户${numeric[1]}`};
+    const reply = await ctx.telegram.getReply(invocation.message);
+    if (reply?.senderId) return {id: reply.senderId, name: nameOf(reply) || `用户${reply.senderId}`};
+    return undefined;
+  };
+
+  const doLock = async (invocation: CommandInvocation, ctx: PluginContext): Promise<void> => {
+    const target = await resolveTarget(invocation, ctx);
+    if (!target) {
+      await ctx.telegram.edit(invocation.message,
+        `📢 用法：回复对方的消息发 <code>${escape(invocation.prefix)}diss</code>，或 <code>${escape(invocation.prefix)}diss @对方</code>。`,
+        {parseMode: "html"});
+      return;
+    }
+    const me = await selfInfo(ctx);
+    if (target.id === me.id || target.id === invocation.message.senderId) {
+      await ctx.telegram.edit(invocation.message, "❌ 锁定目标无效（不能锁自己）。", {parseMode: "html"});
+      return;
+    }
+    const chat = invocation.message.chatId;
+    await mutate(ctx, current => {
+      const chats = {...current};
+      const map = {...(chats[chat] ?? {})};
+      map[target.id] = {name: target.name || `用户${target.id}`, lockedAt: Date.now(), hits: map[target.id]?.hits ?? 0};
+      chats[chat] = map;
+      return chats;
+    });
+    await ctx.telegram.edit(invocation.message,
+      `🔫 已锁定 <b>${escape(target.name)}</b>（<code>${escape(target.id)}</code>），TA 一张嘴就喷死 TA。`,
+      {parseMode: "html"});
+  };
+
+  const doUnlock = async (invocation: CommandInvocation, ctx: PluginContext): Promise<void> => {
+    const target = await resolveTarget(invocation, ctx);
+    if (!target) {
+      await ctx.telegram.edit(invocation.message,
+        `📢 用法：回复对方的消息发 <code>${escape(invocation.prefix)}undiss</code>，或 <code>${escape(invocation.prefix)}undiss @对方</code>。`,
+        {parseMode: "html"});
+      return;
+    }
+    const chat = invocation.message.chatId;
+    await mutate(ctx, current => {
+      const chats = {...current};
+      const map = {...(chats[chat] ?? {})};
+      delete map[target.id];
+      if (Object.keys(map).length) chats[chat] = map; else delete chats[chat];
+      return chats;
+    });
+    await ctx.telegram.edit(invocation.message,
+      `🔓 已解锁 <b>${escape(target.name)}</b>，放过 TA 了。`, {parseMode: "html"});
+  };
+
+  const doList = async (invocation: CommandInvocation, ctx: PluginContext): Promise<void> => {
+    await ensure(ctx);
+    const entries = Object.entries(state[invocation.message.chatId] ?? {});
+    if (!entries.length) {
+      await ctx.telegram.edit(invocation.message, "📭 当前会话暂无锁定目标。");
+      return;
+    }
+    const lines = entries.map(([id, info]) => `• <b>${escape(info.name)}</b> <code>${escape(id)}</code> · 已喷 ${info.hits} 次`);
+    await ctx.telegram.edit(invocation.message,
+      `🔫 本会话已锁定 ${entries.length} 人：\n${lines.join("\n")}`, {parseMode: "html"});
+  };
+
+  const doClear = async (invocation: CommandInvocation, ctx: PluginContext): Promise<void> => {
+    const chat = invocation.message.chatId;
+    await mutate(ctx, current => {
+      const chats = {...current};
+      delete chats[chat];
+      return chats;
+    });
+    await ctx.telegram.edit(invocation.message, "🧹 本会话锁定已全部清除。");
+  };
+
+  const doHelp = async (invocation: CommandInvocation, ctx: PluginContext): Promise<void> => {
+    await ctx.telegram.edit(invocation.message, renderPluginHelp(invocation.prefix), {parseMode: "html"});
+  };
+
+  const doQuote = async (invocation: CommandInvocation, ctx: PluginContext): Promise<void> => {
+    try {
+      await ctx.telegram.edit(invocation.message, "🔄 正在获取语录…");
+      const text = await fetchQuote(ctx, ctx.signal);
+      await ctx.telegram.edit(invocation.message, escape(text), {parseMode: "html", linkPreview: false});
+    } catch {
+      if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, "语录获取失败，请稍后重试");
+    }
+  };
+
+  const buildInsult = async (ctx: PluginContext, signal: AbortSignal, text: string, name: string): Promise<string> => {
+    const {maxSentences, style} = styleFor();
+    if (ctx.services.available("ai", "chat")) {
       try {
-        await ctx.telegram.edit(invocation.message, "正在获取语录…");
-        let text: string | undefined;
-        for (let attempt = 0; attempt < 5; attempt++) {
-          ctx.signal.throwIfAborted();
-          try {
-            text = await ctx.http.withResponse("https://api.oddfar.com/yl/q.php?c=1009&encode=text",
-              {headers: {"user-agent": "Mi Box"}}, readQuote, {timeoutMs: 10000, redirects:{allowedHosts:["api.oddfar.com"],maxRedirects:2}});
-            break;
-          } catch {
-            ctx.signal.throwIfAborted();
-            if (attempt < 4) await delay(1000, undefined, {signal: ctx.signal});
-          }
+        const prompt = `对方昵称：${name}\n对方刚说的话：${text || "(没说话，只发了媒体/表情)"}\n\n怼回去。${style}`;
+        const result = await ctx.services.call<unknown>("ai", "chat", {text: prompt, systemPrompt: PERSONA}, signal);
+        const cleaned = cleanInsult(String(result ?? ""), name, maxSentences);
+        if (cleaned) return cleaned;
+      } catch { /* fall through to the local list */ }
+    }
+    return pick(INSULTS).replace(/\{name\}/g, name || "憨批");
+  };
+
+  const autoReply = (message: MessageEnvelope, info: TargetInfo, ctx: PluginContext): void => {
+    const senderId = message.senderId;
+    if (!senderId) return;
+    const key = `${message.chatId}:${senderId}`;
+    const now = Date.now();
+    if (inFlight.has(key) || (cooldown.get(key) ?? 0) > now) return;
+    cooldown.set(key, now + COOLDOWN_MS);
+    if (cooldown.size > 512) for (const [entry, until] of cooldown) if (until <= now) cooldown.delete(entry);
+    inFlight.add(key);
+    void ctx.tasks.run("diss:reply", async signal => {
+      try {
+        const insult = await buildInsult(ctx, signal, message.text, info.name || `用户${senderId}`);
+        signal.throwIfAborted();
+        if (!insult) return;
+        await ctx.telegram.reply(message, escape(insult), {parseMode: "html"});
+        await mutate(ctx, current => {
+          const chats = {...current};
+          const map = {...(chats[message.chatId] ?? {})};
+          const stored = map[senderId];
+          if (stored) map[senderId] = {...stored, hits: (stored.hits ?? 0) + 1};
+          chats[message.chatId] = map;
+          return chats;
+        });
+      } catch { /* cancelled or delivery failed; keep listening */ }
+      finally { inFlight.delete(key); }
+    });
+  };
+
+  /** Show a fixed message instead of leaking transport or provider errors to the chat. */
+  const guarded = (operation: (invocation: CommandInvocation, ctx: PluginContext) => Promise<void>) =>
+    async (invocation: CommandInvocation, ctx: PluginContext): Promise<void> => {
+      try { await operation(invocation, ctx); }
+      catch (error) {
+        ctx.log.error("diss.command_failed", {kind: error instanceof Error ? error.name : "unknown"});
+        if (!ctx.signal.aborted) {
+          try { await ctx.telegram.edit(invocation.message, "❌ 操作失败，请稍后重试"); } catch { /* delivery failed too */ }
         }
-        ctx.signal.throwIfAborted();
-        if (!text) throw new Error("语录服务不可用");
-        await ctx.telegram.edit(invocation.message, esc(text), {parseMode:"html", linkPreview: false});
-      } catch { if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, "语录获取失败，请稍后重试"); }
-    }},
-  }});
+      }
+    };
+
+  return definePlugin({
+    renderHelp: renderPluginHelp,
+    apiVersion: 1,
+    id: "diss",
+    description: "锁定目标后自动回怼的嘴臭对线机",
+    commands: {
+      diss: {description: "锁定目标，TA 一说话就自动回怼", helpArgs: ["help", "h"],
+        handle: guarded(async (invocation, ctx) => {
+          const first = invocation.args[0]?.toLowerCase();
+          if (first && QUOTE_ARGS.has(first)) { await doQuote(invocation, ctx); return; }
+          await doLock(invocation, ctx);
+        })},
+      undiss: {description: "解锁目标", handle: guarded(doUnlock)},
+      dislist: {description: "查看本会话锁定列表", handle: guarded(doList)},
+      dissclear: {description: "清空本会话锁定", handle: guarded(doClear)},
+      dishelp: {description: "查看嘴臭对线机帮助", handle: guarded(doHelp)},
+    },
+    listeners: [{
+      async handle(message, ctx) {
+        if (message.outgoing || message.saved) return;
+        if (!message.senderId || !message.text.trim()) return;
+        await ensure(ctx);
+        const info = state[message.chatId]?.[message.senderId];
+        if (!info) return;
+        autoReply(message, info, ctx);
+      },
+    }],
+  });
 }
