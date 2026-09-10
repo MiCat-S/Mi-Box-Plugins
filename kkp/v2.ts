@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes, TelegramClient} from "teleproto";
 
 const BOT = "@SeSe3000Bot";
@@ -58,12 +57,14 @@ export default function createKkp() {
     await previous.catch(() => undefined);
     try { return await operation(); } finally { release(); }
   };
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "kkp", description: "通过 Telegram 机器人获取随机视频",
-    commands: {kkp: {helpArgs: ["help","h"], description: "获取随机视频", async handle(invocation, context) {
+  const command: CommandDefinition = {
+    args: "", examples: [{args: ""}],
+    help: [{heading: "说明：", body: "与 @SeSe3000Bot 交互获取随机视频并发送到当前对话；视频和说明使用剧透标记。请先在机器人会话点击 Start。"}],
+    helpArgs: ["help","h"], description: "获取随机视频", async handle(invocation, context) {
       const sub = invocation.args[0]?.toLowerCase() ?? "";
       if (sub === "help" || sub === "h") {
         await context.telegram.edit(invocation.message,
-          `<b>随机视频</b>\n<code>${escape(invocation.prefix)}kkp</code>`, {parseMode: "html"}); return;
+          help(invocation.prefix), {parseMode: "html"}); return;
       }
       if (sub) { await context.telegram.edit(invocation.message, `未知参数：<code>${escape(sub)}</code>`, {parseMode: "html"}); return; }
       await context.telegram.edit(invocation.message, "正在获取随机视频…");
@@ -100,7 +101,10 @@ export default function createKkp() {
         context.log.error("kkp_failed");
         await context.telegram.edit(invocation.message, "获取视频失败或超时，请确认已在机器人会话中点击 Start");
       }
-    }}},
+    }};
+  const help = (prefix: string) => renderCommandHelp("kkp", command, {prefix, title: "🎲 随机色色视频获取"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "kkp", description: "通过 Telegram 机器人获取随机视频",
+    commands: {kkp: command},
     cleanup() { tail = Promise.resolve(); },
   });
 }

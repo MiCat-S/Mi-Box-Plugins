@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition} from "telebox/sdk";
 
 const MAX_EXPR_LENGTH = 120;
 const MAX_ABS_RESULT = Number.MAX_SAFE_INTEGER;
@@ -78,34 +77,44 @@ class Parser {
 }
 
 function escape(value: string): string {
-  return value.replace(/[&<>\"]/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"})[char]!);
+  return value.replace(/[&<>"]/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"})[char]!);
 }
 
 function format(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toPrecision(12).replace(/\.?(0+)(?:e|$)/, "").replace(/e\+/, "e");
 }
 
-const help = (prefix: string) => `<b>计算器</b>\n<code>${escape(prefix)}calc 2+2*5</code>\n<code>${escape(prefix)}calc (10-3)*4</code>\n支持括号、小数和负数。`;
+const calcCommand: CommandDefinition = {
+  description: "计算四则运算表达式",
+  helpArgs: ["help", "h"],
+  args: "表达式",
+  arguments: [{name: "表达式", required: true, description: "支持 + - * /、括号、小数与负数，最长 120 字符"}],
+  examples: [{args: "2+2*5", description: "→ 12"}, {args: "(10-3)*4", description: "→ 28"}, {args: "-(2-5)/3", description: "→ 1"}, {args: "3+7", description: "→ 10"}, {args: "8/2+5", description: "→ 9"}],
+  help: [
+    {heading: "说明：", body: "执行安全的四则运算表达式，支持括号、小数以及负数。"},
+  ],
+  async handle(invocation, ctx) {
+    const expression = invocation.args.join(" ").trim();
+    if (!expression || expression.toLowerCase() === "help" || expression.toLowerCase() === "h") {
+      await ctx.telegram.edit(invocation.message, renderCommandHelp("calc", calcCommand, {prefix: invocation.prefix, title: "🧮 计算器插件"}), {parseMode: "html"});
+      return;
+    }
+    if (expression.length > MAX_EXPR_LENGTH) {
+      await ctx.telegram.edit(invocation.message, `<b>计算失败</b>\n表达式长度不能超过 <code>${MAX_EXPR_LENGTH}</code> 个字符`, {parseMode: "html"});
+      return;
+    }
+    try {
+      const result = new Parser(expression).parse();
+      await ctx.telegram.edit(invocation.message, `<b>计算结果</b>\n<code>${escape(expression)}</code> = <code>${format(result)}</code>`, {parseMode: "html"});
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "表达式无效";
+      await ctx.telegram.edit(invocation.message, `<b>计算失败</b>\n<code>${escape(expression)}</code>\n${escape(message)}`, {parseMode: "html"});
+    }
+  },
+};
 
 export default function createCalc() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "calc", description: "安全计算四则运算表达式",
-    commands: {calc: {helpArgs: ["help","h"], description: "计算四则运算表达式", async handle(invocation, ctx) {
-      const expression = invocation.args.join(" ").trim();
-      if (!expression || expression.toLowerCase() === "help" || expression.toLowerCase() === "h") {
-        await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
-        return;
-      }
-      if (expression.length > MAX_EXPR_LENGTH) {
-        await ctx.telegram.edit(invocation.message, `<b>计算失败</b>\n表达式长度不能超过 <code>${MAX_EXPR_LENGTH}</code> 个字符`, {parseMode: "html"});
-        return;
-      }
-      try {
-        const result = new Parser(expression).parse();
-        await ctx.telegram.edit(invocation.message, `<b>计算结果</b>\n<code>${escape(expression)}</code> = <code>${format(result)}</code>`, {parseMode: "html"});
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "表达式无效";
-        await ctx.telegram.edit(invocation.message, `<b>计算失败</b>\n<code>${escape(expression)}</code>\n${escape(message)}`, {parseMode: "html"});
-      }
-    }}},
-  });
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "calc", description: "安全计算四则运算表达式",
+    renderHelp: prefix => renderCommandHelp("calc", calcCommand, {prefix, title: "🧮 计算器插件"}),
+    commands: {calc: calcCommand}});
 }

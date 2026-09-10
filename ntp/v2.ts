@@ -1,8 +1,6 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type CommandInvocation, definePlugin, type PluginContext} from "telebox/sdk";
 
 const HOST = "time.cloudflare.com";
-const HELP = "<b>NTP 对时</b>\n<code>ntp</code> 查看时间偏差\n<code>ntp s</code> 尝试设置系统时间（需要系统权限）";
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"})[c]!);
 const fmt = (ms: number) => `${ms >= 0 ? "+" : "-"}${Math.abs(ms) >= 1000 ? `${(Math.abs(ms) / 1000).toFixed(3)}s` : `${Math.abs(ms).toFixed(1)}ms`}`;
 const dateCN = (ms: number) => new Date(ms).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"});
@@ -20,12 +18,7 @@ async function query(ctx: PluginContext) {
   }, {timeoutMs: 5000, redirects: {allowedHosts: [HOST], maxRedirects: 1}});
 }
 
-export default function createNtp() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "ntp", description: "查询网络时间偏差并尝试校准系统时间",
-    resources: {processes: {concurrency: 1, queueCapacity: 1, timeoutMs: 5000, maxOutputBytes: 64 * 1024}},
-    commands: {ntp: {description: "查询或校准系统时间", async handle(invocation, ctx) {
-      const mode = (invocation.args[0] ?? "").toLowerCase();
-      if (mode && mode !== "s") { await ctx.telegram.edit(invocation.message, HELP, {parseMode: "html"}); return; }
+async function execute(invocation: CommandInvocation, ctx: PluginContext, mode: "" | "s") {
       await ctx.telegram.edit(invocation.message, mode === "s" ? "🔧 正在获取网络时间…" : "⏳ 正在查询网络时间…");
       try {
         const result = await query(ctx);
@@ -44,6 +37,21 @@ export default function createNtp() {
       } catch (error) {
         if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, `❌ ${mode === "s" ? "对时" : "查询"}失败，请稍后重试`);
       }
-    }}},
-  });
+}
+const command: CommandDefinition = {
+  description: "查询或校准系统时间", args: "", examples: [{args: ""}],
+  subcommandsCaseSensitive: false,
+  subcommands: {s: {description: "获取网络时间并尝试设置系统时间", args: "", examples: [{args: "s"}],
+    help: [{heading: "权限：", body: "Linux/macOS 通过 /bin/date 设置系统时间，需要服务进程具有相应系统权限。"}],
+    handle: (invocation, ctx) => execute(invocation, ctx, "s")}},
+  help: [{heading: "时间来源：", body: "通过 time.cloudflare.com 的 HTTPS Date 响应头估算往返延迟和本地时间偏差；该接口的时间精度有限。显示本地及估算服务器时间；无参数仅查询。"}],
+  async handle(invocation, ctx) {
+    if (invocation.args.length) { await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }
+    await execute(invocation, ctx, "");
+  },
+};
+const help = (prefix: string) => renderCommandHelp("ntp", command, {prefix, title: "🕒 网络对时"});
+export default function createNtp() {
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "ntp", description: "查询网络时间偏差并尝试校准系统时间", renderHelp: help,
+    resources: {processes: {concurrency: 1, queueCapacity: 1, timeoutMs: 5000, maxOutputBytes: 64 * 1024}}, commands: {ntp: command}});
 }

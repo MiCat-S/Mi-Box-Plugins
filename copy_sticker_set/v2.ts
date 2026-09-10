@@ -1,6 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
-import type {Api as ApiTypes} from "teleproto";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext} from "telebox/sdk";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
@@ -34,15 +32,27 @@ function parse(args: readonly string[]): {name: string; title?: string; limit: n
   return {name, title: joined || undefined, limit};
 }
 
-function help(prefix: string): string {
-  return `<b>复制贴纸包</b>\n<code>${escape(prefix)}copy_sticker_set 贴纸包 [新标题] [limit=数量]</code>\n` +
-    `贴纸包可填写短名称或 t.me/addstickers 链接，数量范围 1–120。`;
-}
-
-export default function createCopyStickerSet() {
-  const command = {description: "将现有贴纸包复制到自己的账户", async handle(invocation: any, context: PluginContext) {
+const copyCommand: CommandDefinition = {
+  description: "将现有贴纸包复制到自己的账户",
+  args: "贴纸包 [新标题] [limit=数量]",
+  arguments: [
+    {name: "贴纸包", required: true, description: "短名称或 t.me/addstickers 链接"},
+    {name: "新标题", description: "可选，新贴纸包标题，最长 64 字符"},
+    {name: "limit=数量", description: "可选，复制数量 1–120，默认 100"},
+  ],
+  examples: [
+    {args: "https://t.me/addstickers/example", description: "使用链接"},
+    {args: "example_stickers", description: "使用短名称"},
+    {args: "example_stickers 我的专属贴纸包", description: "指定新标题"},
+    {args: "example_stickers 我的专属贴纸包 limit=80", description: "限制复制数量"},
+  ],
+  help: [
+    {heading: "说明：", body: "贴纸包可填写短名称或 t.me/addstickers 链接，支持静态和动态贴纸包；如不指定名称，将使用原贴纸包名称；平台限制：最多允许 120 张。"},
+    {heading: "别名：", body: "<code>{prefix}css</code> 与 copy_sticker_set 相同。"},
+  ],
+  async handle(invocation, context) {
     const input = parse(invocation.args);
-    if (!input) { await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }
+    if (!input) { await context.telegram.edit(invocation.message, renderCommandHelp("copy_sticker_set", copyCommand, {prefix: invocation.prefix, title: "复制贴纸包"}), {parseMode: "html"}); return; }
     await context.telegram.edit(invocation.message, "正在读取贴纸包…");
     try {
       await context.telegram.withClient(async client => {
@@ -74,7 +84,11 @@ export default function createCopyStickerSet() {
       context.log.error("copy_sticker_set_failed");
       await context.telegram.edit(invocation.message, "贴纸包复制失败，请确认贴纸包存在且账户允许创建新贴纸包");
     }
-  }};
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "copy_sticker_set", description: "复制 Telegram 贴纸包",
-    commands: {copy_sticker_set: command, css: command}});
+  },
+};
+
+export default function createCopyStickerSet() {
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "copy_sticker_set", description: "复制 Telegram 贴纸包",
+    renderHelp: prefix => renderCommandHelp("copy_sticker_set", copyCommand, {prefix, title: "复制贴纸包"}),
+    commands: {copy_sticker_set: copyCommand, css: copyCommand}});
 }

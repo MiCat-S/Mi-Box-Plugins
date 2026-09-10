@@ -1,6 +1,5 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as sleep} from "node:timers/promises";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type CommandInvocation, definePlugin, type PluginContext} from "telebox/sdk";
 import {curlCffi, probeCurlCffi, validatePythonPath} from "./v2/curl-cffi";
 
 type Data = Record<string, unknown> & {
@@ -22,21 +21,6 @@ const headers = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
   origin: "https://www.nodeseek.com", referer: "https://www.nodeseek.com/board", "Content-Type": "application/json",
 };
-const help = `🍗 <b>NodeSeek 自动签到</b>
-
-<b>用法：</b>
-• <code>.nodeseek set &lt;cookie&gt;</code> 设置/更新登录 Cookie
-• <code>.nodeseek now</code> 立即手动签到一次
-• <code>.nodeseek status</code> 查看 Cookie 与签到状态
-• <code>.nodeseek auto on</code> 开启每日自动签到（8:00~8:59 随机一次）
-• <code>.nodeseek auto off</code> 关闭每日自动签到
-• <code>.nodeseek help</code> 显示本帮助
-
-<b>获取 Cookie：</b>
-浏览器登录 nodeseek.com 后按 F12 打开开发者工具 → Network → 刷新页面 → 任意请求的 Request Headers 中复制完整 Cookie 字段值。
-
-Cookie 保存在本机 assets/nodeseek/data.json。登录失效后请重新设置 Cookie。遇到 Cloudflare/WAF 挑战时使用已有 Python 的 curl_cffi 浏览器指纹回退；可在面板配置 Python 绝对路径，留空时优先使用插件数据目录的旧 venv，其次从本地 PATH 查找。`;
-
 const escape = (text: string): string => text.replace(/[&<>"']/g, character => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 })[character]!);
@@ -185,38 +169,47 @@ async function persist(ctx: PluginContext, cookie: string, info: Result, signal:
 export default function createNodeSeek({signRandom = true}: {signRandom?: boolean} = {}) {
   let signing = false;
   let dailyRunning = false;
-  return definePlugin({renderHelp: renderPluginHelp,
-    apiVersion: 1, id: "nodeseek", description: "NodeSeek 论坛每日签到，领取鸡腿",
-    commands: {nodeseek: {helpOnEmpty: true, helpArgs: ["help"], description: "NodeSeek 签到、Cookie 与自动签到设置", async handle({message, args}, ctx) {
-      const edit = (text: string, html = false) => {
-        ctx.signal.throwIfAborted();
-        return ctx.telegram.edit(message, text, html ? {parseMode: "html"} : {});
-      };
-      try {
-        ctx.signal.throwIfAborted();
-        const sub = (args[0] || "").toLowerCase();
-        if (!sub || sub === "help" || !["set", "now", "status", "auto"].includes(sub)) {
-          await edit(help, true); return;
-        }
-        if (sub === "set") {
-          const cookie = args.slice(1).join(" ");
+  type Edit = (text: string, html?: boolean) => Promise<void>;
+  const guarded = (operation: (i: CommandInvocation, ctx: PluginContext, edit: Edit) => Promise<void>): CommandDefinition["handle"] => async (i, ctx) => {
+    const edit: Edit = async (text, html = false) => {
+      ctx.signal.throwIfAborted();
+      await ctx.telegram.edit(i.message, text, html ? {parseMode: "html"} : {});
+    };
+    try { ctx.signal.throwIfAborted(); await operation(i, ctx, edit); }
+    catch {
+      ctx.signal.throwIfAborted();
+      ctx.log.error("nodeseek.command.failed");
+      try { await edit("❌ 出错了：NodeSeek 操作失败，请检查配置或稍后重试"); }
+      catch { ctx.signal.throwIfAborted(); throw new Error("NodeSeek message delivery failed"); }
+    }
+  };
+  const auto = (enabled: boolean): CommandDefinition["handle"] => guarded(async (_i, ctx, edit) => {
+    await store(ctx).update(data => ({...data, autoEnabled: enabled}), ctx.signal);
+    await edit(enabled ? "✅ 已开启每日自动签到" : "⏹️ 已关闭每日自动签到");
+  });
+  const command: CommandDefinition = {
+    helpOnEmpty: true, helpArgs: ["help"], description: "NodeSeek 签到、Cookie 与自动签到设置", subcommandsCaseSensitive: false,
+    subcommands: {
+      set: {description: "设置或更新登录 Cookie", args: "Cookie", examples: [{args: "set ns_xxx=xxx; other=xxx"}],
+        help: [{heading: "获取 Cookie：", body: "浏览器登录 nodeseek.com，按 F12 打开开发者工具 → Network → 刷新页面 → 从请求的 Request Headers 复制完整 Cookie 字段值。Cookie 保存在本机 assets/nodeseek/data.json，失效后重新登录并设置。"}],
+        handle: guarded(async ({args}, ctx, edit) => {
+          const cookie = args.join(" ");
           if (cookie.length < 20) {
             await edit("❌ 请提供有效的 Cookie，例如：\n<code>.nodeseek set ns_xxx=xxx; other=xxx</code>", true); return;
           }
           await store(ctx).update(data => ({...data, cookie, lastDoneDate: ""}), ctx.signal);
           await edit("🍪 Cookie 已保存，可以用 <code>.nodeseek now</code> 测试签到了", true);
           return;
-        }
-        if (sub === "auto") {
-          const mode = (args[1] || "").toLowerCase();
-          if (mode !== "on" && mode !== "off") {
-            await edit("用法：<code>.nodeseek auto on</code> 或 <code>.nodeseek auto off</code>", true); return;
-          }
-          await store(ctx).update(data => ({...data, autoEnabled: mode === "on"}), ctx.signal);
-          await edit(mode === "on" ? "✅ 已开启每日自动签到" : "⏹️ 已关闭每日自动签到"); return;
-        }
+
+        })},
+      auto: {description: "设置每日自动签到", subcommands: {
+        on: {description: "开启自动签到", args: "", handle: auto(true)},
+        off: {description: "关闭自动签到", args: "", handle: auto(false)},
+      }, examples: [{args: "auto on"}, {args: "auto off"}],
+        help: [{heading: "执行时间：", body: "按服务进程本地时区，每天 8:00–8:59 随机执行一次，结果发送到收藏夹。"}],
+        handle: guarded(async (_i, _ctx, edit) => { await edit("用法：<code>.nodeseek auto on</code> 或 <code>.nodeseek auto off</code>", true); })},
+      status: {description: "查看 Cookie、签到状态与 Python 回退环境", args: "", examples: [{args: "status"}], handle: guarded(async (_i, ctx, edit) => {
         const data = await store(ctx).read(ctx.signal);
-        if (sub === "status") {
           const fallback = await probeCurlCffi(ctx, ctx.signal);
           await edit([
             `🍪 Cookie：${data.cookie ? "已设置" : "未设置"}`,
@@ -225,7 +218,10 @@ export default function createNodeSeek({signRandom = true}: {signRandom?: boolea
             `📝 最近一次结果：${redact(data.lastResult || "无", data.cookie || "")}`,
             `🛡️ Cloudflare fallback：${fallback}`,
           ].join("\n")); return;
-        }
+
+      })},
+      now: {description: "立即手动签到一次", args: "", examples: [{args: "now"}], handle: guarded(async (_i, ctx, edit) => {
+        const data = await store(ctx).read(ctx.signal);
         if (!data.cookie) {
           await edit("⚠️ 还没有设置 Cookie，先用 <code>.nodeseek set &lt;cookie&gt;</code> 设置", true); return;
         }
@@ -237,16 +233,16 @@ export default function createNodeSeek({signRandom = true}: {signRandom?: boolea
           await persist(ctx, data.cookie, info, ctx.signal);
           await edit(`${icons[info.result]} <b>${titles[info.result]}</b>\n${escape(info.msg)}${info.diag ? `\n\n<code>${escape(info.diag)}</code>` : ""}`, true);
         } finally { signing = false; }
-      } catch {
-        ctx.signal.throwIfAborted();
-        ctx.log.error("nodeseek.command.failed");
-        try { await edit("❌ 出错了：NodeSeek 操作失败，请检查配置或稍后重试"); }
-        catch {
-          ctx.signal.throwIfAborted();
-          throw new Error("NodeSeek message delivery failed");
-        }
-      }
-    }}},
+
+      })},
+    },
+    help: [{heading: "说明：", body: "签到逻辑参考 xinycai/nodeseek_signin，直接调用 NodeSeek 签到接口领取鸡腿。遇到 Cloudflare/WAF 挑战时尝试已有 Python 的 curl_cffi 浏览器指纹回退；可在插件设置填写 Python 绝对路径，留空时优先使用插件数据目录的旧 venv，其次本地 PATH。"}],
+    handle: guarded(async (i, _ctx, edit) => { await edit(help(i.prefix), true); }),
+  };
+  const help = (prefix: string) => renderCommandHelp("nodeseek", command, {prefix, title: "🍗 NodeSeek 自动签到"});
+  return definePlugin({renderHelp: help,
+    apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "nodeseek", description: "NodeSeek 论坛每日签到，领取鸡腿",
+    commands: {nodeseek: command},
     jobs: {nodeseek_daily_checkin: {
       cron: "0 8 * * *", description: "NodeSeek 每日自动签到（8:00~8:59 内随机执行一次）",
       async handle(ctx, callerSignal) {

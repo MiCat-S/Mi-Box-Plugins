@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {setTimeout as sleep} from "node:timers/promises";
 
 const escape=(v:unknown)=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]!);
@@ -20,4 +19,6 @@ async function run(message:MessageEnvelope,ctx:PluginContext){
     void ctx.tasks.run(`paolu:cleanup:${message.chatId}:${sent.id}`,async scoped=>{await sleep(10000,undefined,{signal:scoped});await ctx.telegram.withClient(c=>c.deleteMessages(chat,[sent.id],{revoke:true}));}).catch(()=>undefined);
   });
 }
-export default function createPaolu(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"paolu",description:"删除群内消息并禁言所有成员",commands:{paolu:{description:"群组一键跑路",ignoreEdited:true,async handle({message},ctx){try{await run(message,ctx);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ 操作失败: ${escape((error as any)?.message??error)}`,{parseMode:"html"});}}}}});}
+export default function createPaolu(){const command: CommandDefinition = {"args":"","examples":[{"args":""}],"help":[{"heading":"操作范围：","body":"删除群内消息并尝试禁言所有成员，需要当前账号具有封禁成员和删除消息权限。完成回执在 10 秒后删除。删除操作不可逆。"}],description:"群组一键跑路",ignoreEdited:true,async handle({message},ctx){try{await run(message,ctx);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ 操作失败: ${escape((error as any)?.message??error)}`,{parseMode:"html"});}}};
+  const help = (prefix: string) => renderCommandHelp("paolu", command, {prefix, title: "⚠️ 一键跑路"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION,id:"paolu",description:"删除群内消息并禁言所有成员",commands:{paolu:command}});}

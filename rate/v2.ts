@@ -1,18 +1,8 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, ui, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, ui, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {FIAT_CURRENCIES, CRYPTO_CURRENCIES} from "./v2/currencies";
 import {RateFailure, reason, request} from "./v2/http";
 
-function help(prefix: string): ui.Html {
-  const line = (args: string | readonly string[], detail: string): ui.Html =>
-    ui.concat(ui.text("• "), ui.command(prefix, "rate", args), ui.text(` - ${detail}\n`));
-  return ui.concat(
-    ui.bold("🚀 智能汇率查询助手"), ui.text("\n\n"), ui.bold("📊 使用示例"), ui.text("\n"),
-    line("BTC", "比特币美元价"), line(["ETH", "CNY"], "以太坊人民币价"),
-    line(["CNY", "TRY"], "人民币兑土耳其里拉"), line(["BTC", "CNY", "0.5"], "0.5个BTC换算"),
-    line(["CNY", "USDT", "7000"], "7000元换USDT"),
-  );
-}
+
 
 const htmlOptions = {parseMode: "html", linkPreview: false} as const;
 
@@ -165,11 +155,7 @@ export default function createRate() {
     throw new RateFailure(`法币汇率服务不可用：${last}`);
   }
 
-  return definePlugin({
-    apiVersion: 1, id: "rate", description: "加密货币汇率查询与数量换算", renderHelp: renderPluginHelp,
-    cleanup() { fiatCache.clear(); dynamicFiats = undefined; },
-    commands: {
-      rate: {helpArgs: ["help","h"], description: "智能汇率查询与数量换算", async handle({message, args, prefix}, context) {
+  const command: CommandDefinition = {"args":"源货币 [目标货币] [数量]","arguments":[{"name":"货币","description":"支持法币与加密货币代码及内置英文别名，不区分大小写；目标货币默认 USD"},{"name":"数量","description":"默认 1，可与货币代码交换位置"}],"examples":[{"args":"BTC","description":"比特币美元价"},{"args":"ETH CNY","description":"以太坊人民币价"},{"args":"CNY TRY","description":"人民币兑土耳其里拉"},{"args":"BTC CNY 0.5","description":"0.5 个 BTC 换算"},{"args":"CNY USDT 7000","description":"7000 元换 USDT"}],"help":[{"heading":"说明：","body":"显示汇率、换算结果与数据更新时间，报价查询失败时提供 Google 搜索链接。"}],helpArgs: ["help","h"], description: "智能汇率查询与数量换算", async handle({message, args, prefix}, context) {
         context.signal.throwIfAborted();
         if (active >= 4) {
           try { await edit(context, message, feedback("error", "汇率查询繁忙", "请稍后重试")); }
@@ -281,7 +267,13 @@ export default function createRate() {
           try { await edit(context, message, ui.concat(feedback("error", "操作失败", messageText), fallback)); }
           catch { if (!context.signal.aborted) context.log.error("rate.message.failed"); }
         } finally { active--; }
-      }},
+      }};
+  const help = (prefix: string) => renderCommandHelp("rate", command, {prefix, title: "🚀 智能汇率查询助手"});
+  return definePlugin({
+    apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "rate", description: "加密货币汇率查询与数量换算", renderHelp: help,
+    cleanup() { fiatCache.clear(); dynamicFiats = undefined; },
+    commands: {
+      rate: command,
     },
   });
 }

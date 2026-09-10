@@ -116,7 +116,6 @@ test('eatgif validates and renders the remote catalog without loading native med
 });
 
 test('all four artifacts load, unload and reload through the real PluginHost', async () => {
-  require(path.join(core, 'scripts/build-v2.cjs')).build();
   const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-host-media-'));
   const unavailable = async () => { throw new Error('offline'); };

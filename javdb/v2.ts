@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext} from "telebox/sdk";
 import type {Api} from "teleproto";
 
 type Item = {code: string; link: URL; title: string; thumb?: URL; score: string};
@@ -104,12 +103,19 @@ function coverCaption(code: string, title: string): string {
   return `<b>${escape(code)}</b>${separator}${escape(boundedTitle)}`;
 }
 
-export default function createJavdb() {
-  const command = {description: "查询 JavDB 番号资料", async handle(invocation: any, context: PluginContext) {
+const command: CommandDefinition = {
+    description: "查询 JavDB 番号资料",
+    args: "番号",
+    arguments: [{name: "番号", description: "例如 ABP-123；空格会自动转换为连字符"}],
+    examples: [{args: "ABP-123"}, {args: "SSIS-001"}, {args: "start 128", description: "自动转为 START-128"}],
+    help: [
+      {heading: "说明：", body: "从 JavDB 搜索番号并显示标题、导演、系列、日期、时长、演员、标签与评分，并尝试发送带剧透标记的封面（60 秒后自动删除）。附带 JavDB 和 MissAV 在线观看链接。"},
+      {heading: "别名：", body: "<code>{prefix}av</code> · <code>{prefix}jav</code> · <code>{prefix}jd</code> 与 <code>{prefix}javdb</code> 相同。"},
+    ],
+    async handle(invocation: any, context: PluginContext) {
     const raw = invocation.args.join(" ").trim();
     if (!raw || /^(h|help)$/i.test(raw)) {
-      await context.telegram.edit(invocation.message,
-        `<b>JavDB 番号查询</b>\n<code>${invocation.prefix}javdb ABP-123</code>\n空格会自动转换为连字符。`, {parseMode: "html"}); return;
+      await context.telegram.edit(invocation.message, renderCommandHelp("javdb", command, {prefix: invocation.prefix, title: "🔞 JavDB 番号查询"}), {parseMode: "html"}); return;
     }
     const code = raw.replace(/\s+/g, "-").toUpperCase();
     if (!/^[A-Z0-9]{1,20}-[A-Z0-9]{1,20}$/.test(code)) { await context.telegram.edit(invocation.message, "番号格式无效"); return; }
@@ -154,7 +160,10 @@ export default function createJavdb() {
       context.log.error("javdb_failed");
       await context.telegram.edit(invocation.message, "番号查询失败，请稍后重试");
     }
-  }};
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "javdb", description: "查询 JavDB 番号资料",
+  },
+};
+export default function createJavdb() {
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "javdb", description: "查询 JavDB 番号资料",
+    renderHelp: prefix => renderCommandHelp("javdb", command, {prefix, title: "🔞 JavDB 番号查询"}),
     commands: {javdb: command, av: command, jav: command, jd: command}});
 }

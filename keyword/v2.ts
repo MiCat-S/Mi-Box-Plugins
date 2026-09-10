@@ -1,6 +1,5 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as sleep} from "node:timers/promises";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, requireSdkFeatures, renderCommandHelp, type CommandDefinition, type CommandInvocation, type SubcommandDefinition, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {returnBigInt} from "teleproto/Helpers";
 
 type Task = {id:number; chatId:string; key:string; response:string; include:boolean; regexp:boolean; exact:boolean; caseSensitive:boolean; ignoreForward:boolean; reply:boolean; deleteSource:boolean; banSeconds:number; restrictSeconds:number; deleteReplyAfter:number; deleteSourceAfter:number};
@@ -56,14 +55,135 @@ async function apply(ctx:PluginContext,message:MessageEnvelope,task:Task){
   if(task.deleteReplyAfter&&sentId)void delayedDelete(ctx,message.chatId,sentId,task.deleteReplyAfter,`keyword:reply:${message.chatId}:${sentId}`).catch(e=>{if(!ctx.signal.aborted)ctx.log.error("keyword:delete-reply",{error:err(e).slice(0,300)});});
 }
 
-const help=(prefix:string)=>`<b>关键词回复</b>\n<code>${prefix}keyword list [all]</code>\n<code>${prefix}keyword rm 1,2</code>\n<code>${prefix}keyword alias 群ID|rm</code>\n添加格式：关键词、回复、选项、动作和延迟用单独一行 <code>+++</code> 分隔。`;
+// Fails explicitly instead of silently ignoring the listener filter on an older host.
+requireSdkFeatures("messageFilter");
 
-const keywordPlugin=definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"keyword",description:"按聊天配置关键词回复、删除和成员处置",commands:{keyword:{helpArgs: ["h","help"], helpOnEmpty: true, description:"管理关键词回复",async handle({message,args,prefix},ctx){try{
-  const state=await store(ctx).read(),action=args[0]?.toLowerCase();
-  if(!action||action==="h"||action==="help"){await ctx.telegram.edit(message,help(prefix),{parseMode:"html"});return;}
-  if(action==="list"){const all=args[1]==="all",items=all?state.tasks:state.tasks.filter(t=>t.chatId===message.chatId);await ctx.telegram.edit(message,items.length?items.map(t=>`<code>${t.id}</code> - <code>${esc(t.key)}</code>${all?` - <code>${esc(t.chatId)}</code>`:""} - ${esc(t.response)}`).join("\n"):all?"当前没有任何关键词任务":"当前聊天没有任何关键词任务",{parseMode:"html"});return;}
-  if(action==="rm"){const ids=(args[1]??"").split(",").map(Number);if(!ids.length||ids.some(x=>!Number.isSafeInteger(x)))throw new Error("请输入正确的任务 ID");let removed=0;await store(ctx).update(value=>({...value,tasks:value.tasks.filter(t=>ids.includes(t.id)?(removed++,false):true)}));await ctx.telegram.edit(message,`已删除 <code>${removed}</code> 个任务。`,{parseMode:"html"});return;}
-  if(action==="alias"){const target=args[1];if(!target){await ctx.telegram.edit(message,state.aliases[message.chatId]?`当前群组继承自：<code>${esc(state.aliases[message.chatId])}</code>`:"当前群组没有继承设置",{parseMode:"html"});return;}await store(ctx).update(value=>{const aliases={...value.aliases};if(target==="rm")delete aliases[message.chatId];else aliases[message.chatId]=String(target);return{...value,aliases};});await ctx.telegram.edit(message,target==="rm"?"已删除继承设置":`已添加继承：<code>${esc(target)}</code>`,{parseMode:"html"});return;}
-  const raw=message.text.slice(message.text.indexOf(" ")+1);const task=parseTask(raw,state.nextId,message.chatId);await store(ctx).update(value=>({...value,nextId:Math.max(value.nextId,task.id+1),tasks:[...value.tasks,task]}));await ctx.telegram.edit(message,`已添加关键词任务，ID 为 <code>${task.id}</code>。`,{parseMode:"html"});
-}catch(e){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`操作失败：<code>${esc(err(e))}</code>`,{parseMode:"html"});}}}},listeners:[{edited:false,ignoreCommands:false,async handle(message,ctx){if(message.outgoing||!message.text)return;const state=await store(ctx).read();const inherited=state.aliases[message.chatId];const ordered=[...(inherited?state.tasks.filter(t=>t.chatId===inherited):[]),...state.tasks.filter(t=>t.chatId===message.chatId)];for(const task of ordered){ctx.signal.throwIfAborted();if(matches(task,message))await apply(ctx,message,task);}}}],async setup(ctx){await migrate(ctx);}});
+const guarded = (operation: (invocation: CommandInvocation, ctx: PluginContext, state: State) => Promise<void>): CommandDefinition["handle"] => async (invocation, ctx) => {
+  try { await operation(invocation, ctx, await store(ctx).read()); }
+  catch (e) { if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, `操作失败：<code>${esc(err(e))}</code>`, {parseMode: "html"}); }
+};
+const list = (all: boolean): CommandDefinition["handle"] => guarded(async (invocation, ctx, state) => {
+  const items = all ? state.tasks : state.tasks.filter(t => t.chatId === invocation.message.chatId);
+  await ctx.telegram.edit(invocation.message, items.length ? items.map(t => `<code>${t.id}</code> - <code>${esc(t.key)}</code>${all ? ` - <code>${esc(t.chatId)}</code>` : ""} - ${esc(t.response)}`).join("\n") : all ? "当前没有任何关键词任务" : "当前聊天没有任何关键词任务", {parseMode: "html"});
+});
+const removeAlias: SubcommandDefinition = {description: "删除当前聊天的继承设置", args: "", examples: [{args: "rm"}], handle: guarded(async (invocation, ctx) => {
+  await store(ctx).update(value => { const aliases = {...value.aliases}; delete aliases[invocation.message.chatId]; return {...value, aliases}; });
+  await ctx.telegram.edit(invocation.message, "已删除继承设置", {parseMode: "html"});
+})};
+const command: CommandDefinition = {
+  description: "管理关键词回复", helpArgs: ["h", "help"], helpOnEmpty: true, args: "[关键词任务全文]", subcommandsCaseSensitive: false,
+  subcommands: {
+    list: {description: "查看当前聊天任务", args: "", examples: [{args: "list"}], subcommandsCaseSensitive: true,
+      subcommands: {all: {description: "查看所有聊天的关键词任务", args: "", examples: [{args: "all"}], handle: list(true)}}, handle: list(false)},
+    rm: {description: "批量删除指定 ID 的任务", args: "ID[,ID...]", examples: [{args: "rm 1,2,3"}], handle: guarded(async (invocation, ctx) => {
+      const ids = (invocation.args[0] ?? "").split(",").map(Number);
+      if (!ids.length || ids.some(x => !Number.isSafeInteger(x))) throw new Error("请输入正确的任务 ID");
+      let removed = 0;
+      await store(ctx).update(value => ({...value, tasks: value.tasks.filter(t => ids.includes(t.id) ? (removed++, false) : true)}));
+      await ctx.telegram.edit(invocation.message, `已删除 <code>${removed}</code> 个任务。`, {parseMode: "html"});
+    })},
+    alias: {description: "查看或设置当前聊天继承的群 ID", args: "[群ID]", examples: [{args: "alias"}, {args: "alias 123456"}],
+      subcommandsCaseSensitive: true, subcommands: {rm: removeAlias},
+      handle: guarded(async (invocation, ctx, state) => {
+        const target = invocation.args[0], chatId = invocation.message.chatId;
+        if (!target) { await ctx.telegram.edit(invocation.message, state.aliases[chatId] ? `当前群组继承自：<code>${esc(state.aliases[chatId])}</code>` : "当前群组没有继承设置", {parseMode: "html"}); return; }
+        await store(ctx).update(value => ({...value, aliases: {...value.aliases, [chatId]: String(target)}}));
+        await ctx.telegram.edit(invocation.message, `已添加继承：<code>${esc(target)}</code>`, {parseMode: "html"});
+      })},
+  },
+  help: [{heading: "完整任务格式与示例：", body: `<b>📝 添加关键词任务格式：</b>
+<code>{prefix}keyword 关键词内容
++++
+回复消息内容
++++
+匹配选项
++++
+执行动作
++++
+延迟删除秒数
++++
+原消息延迟删除秒数</code>
+
+<b>🎯 匹配选项（第3段，空格分隔）：</b>
+• <code>include</code> - 包含匹配（默认）
+• <code>exact</code> - 精确匹配
+• <code>regexp</code> - 正则表达式匹配
+• <code>case</code> - 区分大小写
+• <code>ignore_forward</code> - 忽略转发消息
+
+<b>⚡ 执行动作（第4段，空格分隔）：</b>
+• <code>reply</code> - 回复消息（默认）
+• <code>delete</code> - 删除触发消息
+• <code>ban300</code> - 封禁用户300秒
+• <code>restrict600</code> - 限制用户600秒
+
+<b>🔤 消息变量：</b>
+• <code>$mention</code> - @提及用户
+• <code>$code_id</code> - 用户ID
+• <code>$code_name</code> - 用户姓名
+• <code>$delay_delete</code> - 延迟删除时间
+
+<b>📖 使用示例：</b>
+
+<b>1. 简单关键词回复：</b>
+<code>{prefix}keyword 你好
++++
+欢迎！$mention</code>
+
+<b>2. 精确匹配+删除原消息：</b>
+<code>{prefix}keyword 违规词汇
++++
+⚠️ 请注意言辞！
++++
+exact case
++++
+reply delete</code>
+
+<b>3. 正则表达式+延迟删除：</b>
+<code>{prefix}keyword \\d{11}
++++
+🚫 请勿发送手机号码
++++
+regexp
++++
+reply delete
++++
+10
++++
+0</code>
+
+<b>4. 封禁用户：</b>
+<code>{prefix}keyword 广告
++++
+🚫 检测到广告，用户已被封禁
++++
+include
++++
+reply delete ban3600</code>
+
+<b>💡 高级功能：</b>
+• <b>继承机制：</b>可以让当前群组继承其他群组的关键词设置
+• <b>延迟删除：</b>支持定时删除回复消息和原消息
+• <b>批量管理：</b>支持批量删除多个任务
+• <b>灵活匹配：</b>支持包含、精确、正则三种匹配模式
+
+<b>⚠️ 注意事项：</b>
+• 封禁和限制功能需要当前账号有管理员权限
+• 正则表达式按原文输入，例如 \\d 表示数字
+• 继承功能会同时检查当前群组和继承群组的关键词
+• 任务ID在删除后不会重复使用
+
+`}],
+  handle: guarded(async ({message, args, prefix}, ctx, state) => {
+    const action = args[0]?.toLowerCase();
+    if (!action || action === "h" || action === "help") { await ctx.telegram.edit(message, help(prefix), {parseMode: "html"}); return; }
+    const raw = message.text.slice(message.text.indexOf(" ") + 1);
+    const task = parseTask(raw, state.nextId, message.chatId);
+    await store(ctx).update(value => ({...value, nextId: Math.max(value.nextId, task.id + 1), tasks: [...value.tasks, task]}));
+    await ctx.telegram.edit(message, `已添加关键词任务，ID 为 <code>${task.id}</code>。`, {parseMode: "html"});
+  }),
+};
+const help = (prefix: string) => renderCommandHelp("keyword", command, {prefix, title: "🔧 关键词回复插件"});
+const keywordPlugin = definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "keyword", description: "按聊天配置关键词回复、删除和成员处置", renderHelp: help, commands: {keyword: command},
+listeners:[{edited:false,ignoreCommands:false,direction:"incoming",async handle(message,ctx){if(!message.text)return;const state=await store(ctx).read();const inherited=state.aliases[message.chatId];const ordered=[...(inherited?state.tasks.filter(t=>t.chatId===inherited):[]),...state.tasks.filter(t=>t.chatId===message.chatId)];for(const task of ordered){ctx.signal.throwIfAborted();if(matches(task,message))await apply(ctx,message,task);}}}],async setup(ctx){await migrate(ctx);}});
 export default function createKeyword(){return keywordPlugin;}

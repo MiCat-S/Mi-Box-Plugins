@@ -62,7 +62,7 @@ test('portball validates reply and duration before native access', async t => {
   const f = await fixture(t, 'portball', {client: {async getEntity() { accessed = true; }}});
   await f.run('.portball 20s');
   assert.equal(accessed, false);
-  assert.match(f.edits.at(-1).text, /最短 60 秒/);
+  assert.match(f.edits.at(-1).text, /60 秒至 366 天/);
 });
 
 test('isalive renders escaped identity, online state and last message', async t => {

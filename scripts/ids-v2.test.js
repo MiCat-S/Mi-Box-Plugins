@@ -107,7 +107,7 @@ test('ids builds a pure default SDK factory with declared protocol dependencies'
   const first = createPlugin();
   assert.notEqual(first, createPlugin());
   assert.equal(first.id, 'ids');
-  assert.equal(first.apiVersion, 1);
+  assert.equal(first.apiVersion, 2);
   assert.deepEqual(Object.keys(first.commands), ['ids']);
   assert.deepEqual(manifest.imports, ['telebox/sdk', 'teleproto', 'teleproto/Helpers.js']);
   assert.equal(first.setup, undefined);
@@ -142,7 +142,7 @@ test('ids help/h uses invocation prefix and never calls native methods', async t
   for (const target of ['help', 'h']) await f.run('!!ids ' + target);
   assert.equal(f.calls.length, 0);
   assert.equal(f.replyReads.length, 0);
-  assert.match(f.edits[0].text, /!!ids @用户名/);
+  assert.match(f.edits[0].text, /!!ids @username/);
   assert.match(f.edits[0].text, /注册时间估算/);
   assert.equal(f.edits[0].text, f.edits[1].text);
   assert.deepEqual(f.edits[0].options, {parseMode: 'html', linkPreview: false});

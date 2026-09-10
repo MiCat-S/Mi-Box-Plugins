@@ -1,8 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {createHash} from "node:crypto";
 import {setTimeout as sleep} from "node:timers/promises";
 import {returnBigInt} from "teleproto/Helpers";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 type Trigger = {timeWindow: number; minUsers: number};
 type State = {schemaVersion: 1; enabledGroups: string[]; dailyHistory: Record<string, string[]>; lastDay: number; trigger: Trigger; [key: string]: unknown};
@@ -31,11 +30,9 @@ function normalize(value: unknown): State {
     trigger: {timeWindow: Number.isInteger(timeWindow) && timeWindow > 0 && timeWindow <= 86400 ? timeWindow : 300,
       minUsers: Number.isInteger(minUsers) && minUsers > 1 && minUsers <= 1000 ? minUsers : 5}};
 }
-
 async function updateState(context: PluginContext, transform: (state: State) => State) {
   return store(context).update(value => transform(normalize(value)));
 }
-
 async function edit(context: PluginContext, message: MessageEnvelope, text: string, html = false, expire = true) {
   await context.telegram.edit(message, text, html ? {parseMode: "html", linkPreview: false} : {});
   if (!expire) return;
@@ -48,7 +45,6 @@ async function edit(context: PluginContext, message: MessageEnvelope, text: stri
     }
   });
 }
-
 async function resolveGroup(context: PluginContext, message: MessageEnvelope, identifier?: string): Promise<{id: string; title: string}> {
   return context.telegram.withClient(async client => {
     let target: any = identifier;
@@ -73,7 +69,6 @@ async function resolveGroup(context: PluginContext, message: MessageEnvelope, id
     return {id, title: String(entity.title ?? `群组 ${id}`)};
   });
 }
-
 async function allGroups(context: PluginContext): Promise<string[]> {
   return context.telegram.withClient(async client => {
     const groups = new Set<string>();
@@ -83,14 +78,13 @@ async function allGroups(context: PluginContext): Promise<string[]> {
     return [...groups];
   });
 }
-
 async function processMessage(message: MessageEnvelope, context: PluginContext, {recent, serial}: RuntimeState) {
   const chatId = message.chatId;
   const previous = serial.get(chatId) ?? Promise.resolve();
   const current = previous.catch(() => undefined).then(async () => {
     const now = Date.now(), today = dayInShanghai(now);
     let repeat = false;
-    const state = await updateState(context, value => {
+    await updateState(context, value => {
       if (value.lastDay !== today) value = {...value, lastDay: today, dailyHistory: {}};
       if (!value.enabledGroups.includes(chatId)) return value;
       const windowStart = now - value.trigger.timeWindow * 1000;
@@ -114,58 +108,85 @@ async function processMessage(message: MessageEnvelope, context: PluginContext, 
 
 export default function createPlugin() {
   const runtime: RuntimeState = {recent: new Map(), serial: new Map()};
-  return definePlugin({renderHelp: renderPluginHelp,
-  apiVersion: 1, id: "autorepeat", description: "在群组内达到不同用户人数阈值后自动复读相同文本。",
-  commands: {autorepeat: {description: "管理群组自动复读", async handle({message, args, prefix}, context) {
-    try {
-      const action = args[0]?.toLowerCase();
-      if (action === "allon") {
-        await edit(context, message, "🔄 正在扫描所有群组...", false, false);
-        const ids = await allGroups(context); await updateState(context, state => ({...state, enabledGroups: [...new Set([...state.enabledGroups, ...ids])]}));
-        await edit(context, message, `✅ 已开启 ${ids.length} 个群组的自动复读`); return;
-      }
-      if (action === "alloff") { await updateState(context, state => ({...state, enabledGroups: []})); await edit(context, message, "✅ 已关闭所有群组的自动复读"); return; }
-      if (action === "set") {
-        const timeWindow = Number(args[1]), minUsers = Number(args[2]);
-        if (!Number.isInteger(timeWindow) || timeWindow < 1 || timeWindow > 86400 || !Number.isInteger(minUsers) || minUsers < 2 || minUsers > 1000) {
-          await edit(context, message, `❌ 参数错误\n使用格式: <code>${prefix}autorepeat set [1-86400秒] [2-1000人]</code>`, true); return;
-        }
-        await updateState(context, state => ({...state, trigger: {timeWindow, minUsers}}));
-        await edit(context, message, `✅ 触发条件已更新\n时间窗口: ${timeWindow}秒\n最少人数: ${minUsers}人`); return;
-      }
-      if (action === "list") {
-        const state = await store(context).read(), page = Math.max(1, Number(args[1]) || 1), ids = state.enabledGroups, pages = Math.max(1, Math.ceil(ids.length / 20));
-        if (!ids.length) { await edit(context, message, "📝 当前没有开启自动复读的群组"); return; }
-        const rows: string[] = [];
-        for (const id of ids.slice((page - 1) * 20, page * 20)) {
-          try { const title = await context.telegram.withClient(async client => String((await client.getEntity(returnBigInt(id)) as any).title ?? id)); rows.push(`• <b>${escape(title)}</b> (<code>${escape(id)}</code>)`); }
-          catch { rows.push(`• <code>${escape(id)}</code> (无法获取信息)`); }
-        }
-        await edit(context, message, `📝 <b>已开启自动复读群组 (${ids.length})</b>\n<b>第 ${Math.min(page, pages)}/${pages} 页</b>\n\n${rows.join("\n")}`, true); return;
-      }
-      if (["on", "off"].includes(action)) {
-        const group = await resolveGroup(context, message, args[1]);
-        await updateState(context, state => ({...state, enabledGroups: action === "on" ? [...new Set([...state.enabledGroups, group.id])] : state.enabledGroups.filter(id => id !== group.id)}));
-        await edit(context, message, `${action === "on" ? "✅ 已开启" : "❌ 已关闭"} <b>${escape(group.title)}</b> 的自动复读`, true); return;
-      }
+  const guard = (run: (invocation: CommandInvocation, context: PluginContext) => Promise<void>) =>
+    async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+      try { await run(invocation, context); }
+      catch (error) { if (!context.signal.aborted) await edit(context, invocation.message, `❌ 操作失败: <code>${escape(error instanceof Error ? error.message : error)}</code>`, true); }
+    };
+  const allon = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+    await edit(context, invocation.message, "🔄 正在扫描所有群组...", false, false);
+    const ids = await allGroups(context);
+    await updateState(context, state => ({...state, enabledGroups: [...new Set([...state.enabledGroups, ...ids])]}));
+    await edit(context, invocation.message, `✅ 已开启 ${ids.length} 个群组的自动复读`);
+  };
+  const alloff = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+    await updateState(context, state => ({...state, enabledGroups: []}));
+    await edit(context, invocation.message, "✅ 已关闭所有群组的自动复读");
+  };
+  const set = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+    const timeWindow = Number(invocation.args[0]), minUsers = Number(invocation.args[1]);
+    if (!Number.isInteger(timeWindow) || timeWindow < 1 || timeWindow > 86400 || !Number.isInteger(minUsers) || minUsers < 2 || minUsers > 1000) {
+      await edit(context, invocation.message, `❌ 参数错误\n使用格式: <code>${invocation.prefix}autorepeat set [1-86400秒] [2-1000人]</code>`, true); return;
+    }
+    await updateState(context, state => ({...state, trigger: {timeWindow, minUsers}}));
+    await edit(context, invocation.message, `✅ 触发条件已更新\n时间窗口: ${timeWindow}秒\n最少人数: ${minUsers}人`);
+  };
+  const list = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+    const state = await store(context).read(), page = Math.max(1, Number(invocation.args[0]) || 1), ids = state.enabledGroups, pages = Math.max(1, Math.ceil(ids.length / 20));
+    if (!ids.length) { await edit(context, invocation.message, "📝 当前没有开启自动复读的群组"); return; }
+    const rows: string[] = [];
+    for (const id of ids.slice((page - 1) * 20, page * 20)) {
+      try { const title = await context.telegram.withClient(async client => String((await client.getEntity(returnBigInt(id)) as any).title ?? id)); rows.push(`• <b>${escape(title)}</b> (<code>${escape(id)}</code>)`); }
+      catch { rows.push(`• <code>${escape(id)}</code> (无法获取信息)`); }
+    }
+    await edit(context, invocation.message, `📝 <b>已开启自动复读群组 (${ids.length})</b>\n<b>第 ${Math.min(page, pages)}/${pages} 页</b>\n\n${rows.join("\n")}`, true);
+  };
+  const toggle = (on: boolean) => async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+    const group = await resolveGroup(context, invocation.message, invocation.args[0]);
+    await updateState(context, state => ({...state, enabledGroups: on ? [...new Set([...state.enabledGroups, group.id])] : state.enabledGroups.filter(id => id !== group.id)}));
+    await edit(context, invocation.message, `${on ? "✅ 已开启" : "❌ 已关闭"} <b>${escape(group.title)}</b> 的自动复读`, true);
+  };
+  const autorepeat: CommandDefinition = {
+    description: "管理群组自动复读",
+    args: "[on|off] [群组]",
+    arguments: [{name: "on|off", description: "开启或关闭当前/指定群组"}, {name: "群组", description: "群组ID / @群组名 / https://t.me/群组名"}],
+    examples: [{args: ""}, {args: "on"}, {args: "off @group"}, {args: "list"}, {args: "set 300 5"}],
+    help: [
+      {heading: "高级用法：", body: "• 在群组内直接使用 <code>{prefix}autorepeat on/off</code> 切换当前群组\n• 从目标群组转发消息后，回复该消息并使用 <code>{prefix}autorepeat on/off</code> 可切换该群组状态\n• <code>set</code> 自定义触发条件，默认 300 秒内 5 人"},
+      {heading: "复读规则：", body: "• 触发条件：默认5分钟内有5位不同用户发送完全相同的内容\n• 每日限制：同一群组内，相同内容每天只会自动复读一次 (UTC+8 0点重置)\n• 忽略规则：匿名消息、非文本消息、自己发送的消息、机器人消息会被忽略"},
+    ],
+    subcommandsCaseSensitive: false,
+    subcommands: {
+      allon: {description: "开启全部群组自动复读", args: "", examples: [{args: "allon"}], handle: guard(allon)},
+      alloff: {description: "关闭全部群组自动复读", args: "", examples: [{args: "alloff"}], handle: guard(alloff)},
+      set: {description: "自定义触发条件", args: "[时间] [人数]", arguments: [{name: "时间", required: true, description: "1-86400 秒"}, {name: "人数", required: true, description: "2-1000 人"}], examples: [{args: "set 300 5"}], handle: guard(set)},
+      list: {description: "查看已开启的群组", args: "[页码]", examples: [{args: "list"}], handle: guard(list)},
+      on: {description: "开启当前或指定群组", args: "[群组]", examples: [{args: "on"}], handle: guard(toggle(true))},
+      off: {description: "关闭当前或指定群组", args: "[群组]", examples: [{args: "off"}], handle: guard(toggle(false))},
+    },
+    handle: guard(async (invocation, context) => {
       try {
-        const group = await resolveGroup(context, message);
+        const group = await resolveGroup(context, invocation.message);
         const state = await store(context).read();
-        await edit(context, message, `🤖 <b>${escape(group.title)}</b>\n群组ID: <code>${escape(group.id)}</code>\n状态: ${state.enabledGroups.includes(group.id) ? "✅ 已开启" : "❌ 已关闭"}\n触发条件: ${state.trigger.timeWindow}秒内${state.trigger.minUsers}人`, true); return;
+        await edit(context, invocation.message, `🤖 <b>${escape(group.title)}</b>\n群组ID: <code>${escape(group.id)}</code>\n状态: ${state.enabledGroups.includes(group.id) ? "✅ 已开启" : "❌ 已关闭"}\n触发条件: ${state.trigger.timeWindow}秒内${state.trigger.minUsers}人`, true);
       } catch {
-        await edit(context, message, `<b>自动复读</b>\n<code>${prefix}autorepeat on|off [群组]</code>\n<code>${prefix}autorepeat allon|alloff|list</code>\n<code>${prefix}autorepeat set [秒] [人数]</code>`, true);
+        await edit(context, invocation.message, renderCommandHelp("autorepeat", autorepeat, {prefix: invocation.prefix}), true);
       }
-    } catch (error) { if (!context.signal.aborted) await edit(context, message, `❌ 操作失败: <code>${escape(error instanceof Error ? error.message : error)}</code>`, true); }
-  }}},
-  listeners: [{edited: false, ignoreCommands: true, async handle(message, context) {
-    if (message.outgoing || !message.senderId || !message.text || message.forwarded) return;
-    const raw: any = message.raw;
-    const date = Number(raw?.date);
-    if (Number.isFinite(date) && Date.now() / 1000 - date > 60) return;
-    if (raw?.sender?.bot === true || raw?.sender?.className !== "User") return;
-    try { await processMessage(message, context, runtime); }
-    catch (error) { if (!context.signal.aborted) context.log.error("autorepeat:listener", {error: String(error).slice(0, 300)}); }
-  }}],
-  async setup(context) { await store(context).update(value => normalize(value)); },
-  cleanup() { runtime.recent.clear(); runtime.serial.clear(); },
-}); }
+    }),
+  };
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "autorepeat", description: "在群组内达到不同用户人数阈值后自动复读相同文本。",
+    renderHelp: prefix => renderCommandHelp("autorepeat", autorepeat, {prefix, title: "自动复读插件使用说明"}),
+    commands: {autorepeat},
+    listeners: [{edited: false, ignoreCommands: true, direction: "incoming", ignoreForwarded: true, async handle(message, context) {
+      if (!message.senderId || !message.text) return;
+      const raw: any = message.raw;
+      const date = Number(raw?.date);
+      if (Number.isFinite(date) && Date.now() / 1000 - date > 60) return;
+      if (raw?.sender?.bot === true || raw?.sender?.className !== "User") return;
+      try { await processMessage(message, context, runtime); }
+      catch (error) { if (!context.signal.aborted) context.log.error("autorepeat:listener", {error: String(error).slice(0, 300)}); }
+    }}],
+    async setup(context) { await store(context).update(value => normalize(value)); },
+    cleanup() { runtime.recent.clear(); runtime.serial.clear(); },
+  });
+}

@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 const MAX_INPUT = 16_384;
 const MAX_DISPLAY = 3_000;
@@ -7,8 +6,6 @@ const MAX_DISPLAY = 3_000;
 function escape(value: string): string {
   return value.replace(/[&<>\"]/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"})[char]!);
 }
-
-const help = (prefix: string) => `<b>编码解码工具</b>\n<code>${escape(prefix)}b64encode 文本</code> Base64 编码\n<code>${escape(prefix)}b64decode 文本</code> Base64 解码\n<code>${escape(prefix)}urlencode 文本</code> URL 编码\n<code>${escape(prefix)}urldecode 文本</code> URL 解码\n也可回复消息后直接使用命令。`;
 
 function decodeBase64(input: string): string {
   const compact = input.replace(/\s+/g, "");
@@ -45,25 +42,35 @@ async function inputText(ctx: PluginContext, message: MessageEnvelope, args: rea
   return reply?.text?.trim() ?? "";
 }
 
+const codec = (operation: string, label: string): CommandDefinition => ({
+  description: label,
+  args: "[文本]",
+  arguments: [{name: "文本", description: "要处理的文本；省略时读取回复消息的文本"}],
+  examples: operation === "b64encode" ? [{args: "Hello World"}] : operation === "b64decode" ? [{args: "SGVsbG8gV29ybGQ="}] : operation === "urlencode" ? [{args: "你好世界"}] : [{args: "%E4%BD%A0%E5%A5%BD%E4%B8%96%E7%95%8C"}],
+  help: [{heading: "说明：", body: "输入上限 16384 字符；支持回复消息后直接使用命令。输出超过 3000 字符时自动分段发送。"}],
+  async handle(invocation, ctx) { await handle(invocation, ctx, operation, label); },
+});
+const encodeCommand: CommandDefinition = {
+  description: "查看编码解码帮助",
+  helpOnEmpty: true,
+  args: "",
+  examples: [{args: ""}],
+  help: [{heading: "说明：", body: "回复消息后可直接使用各编码/解码命令处理消息文本。"}],
+  async handle({message, prefix}, ctx) { await ctx.telegram.edit(message, renderGuide(prefix), {parseMode: "html"}); },
+};
+const commands = {
+  encode: encodeCommand,
+  b64encode: codec("b64encode", "Base64 编码"),
+  b64decode: codec("b64decode", "Base64 解码"),
+  urlencode: codec("urlencode", "URL 编码"),
+  urldecode: codec("urldecode", "URL 解码"),
+} satisfies Record<string, CommandDefinition>;
+const renderGuide = (prefix: string): string => Object.entries(commands).map(([name, command], index) => renderCommandHelp(name, command, {prefix, ...(index === 0 ? {title: "🔐 编码解码工具集"} : {title: ""})})).join("\n\n");
+
 export default function createEncode() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "encode", description: "Base64 与 URL 编码解码工具",
-    commands: {
-      encode: {helpOnEmpty: true, description: "查看编码解码帮助", async handle({message, prefix}, ctx) {
-        await ctx.telegram.edit(message, help(prefix), {parseMode: "html"});
-      }},
-      b64encode: {description: "Base64 编码", async handle(invocation, ctx) {
-        await handle(invocation, ctx, "b64encode", "Base64 编码");
-      }},
-      b64decode: {description: "Base64 解码", async handle(invocation, ctx) {
-        await handle(invocation, ctx, "b64decode", "Base64 解码");
-      }},
-      urlencode: {description: "URL 编码", async handle(invocation, ctx) {
-        await handle(invocation, ctx, "urlencode", "URL 编码");
-      }},
-      urldecode: {description: "URL 解码", async handle(invocation, ctx) {
-        await handle(invocation, ctx, "urldecode", "URL 解码");
-      }},
-    },
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "encode", description: "Base64 与 URL 编码解码工具",
+    renderHelp: renderGuide,
+    commands,
   });
 }
 

@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin} from "telebox/sdk";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
@@ -72,13 +71,12 @@ function convert(text: string): string {
 }
 
 export default function createYinglish() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "yinglish", description: "将文字转换为随机非主流风格",
-    commands: {yinglish: {helpArgs: ["help","h"], description: "转换参数或回复消息中的文字", async handle(invocation, context) {
+  const command: CommandDefinition = {"args":"[文本]","examples":[{"args":"你好世界"},{"args":"","description":"回复一条文字消息转换"}],"help":[{"heading":"转换规则：","body":"将中文、英文分词后随机转换为非主流风格文本；每次结果可能不同。最多 4000 字符，保留其他字符并对部分标点进行替换。"}],helpArgs: ["help","h"], description: "转换参数或回复消息中的文字", async handle(invocation, context) {
       let input = invocation.args.join(" ").trim();
       if (!input && invocation.message.replyToId !== undefined) input = (await context.telegram.getReply(invocation.message))?.text.trim() ?? "";
       if (!input || ["help", "h"].includes(input.toLowerCase())) {
         await context.telegram.edit(invocation.message,
-          `<b>文字风格转换</b>\n<code>${escape(invocation.prefix)}yinglish 文本</code>\n也可以回复文字消息后使用。`, {parseMode: "html"});
+          help(invocation.prefix), {parseMode: "html"});
         return;
       }
       if (input.length > 4000) {
@@ -86,6 +84,9 @@ export default function createYinglish() {
         return;
       }
       await context.telegram.edit(invocation.message, escape(convert(input)), {parseMode: "html"});
-    }}},
+    }};
+  const help = (prefix: string) => renderCommandHelp("yinglish", command, {prefix, title: "💋 文字风格转换"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "yinglish", description: "将文字转换为随机非主流风格",
+    commands: {yinglish: command},
   });
 }

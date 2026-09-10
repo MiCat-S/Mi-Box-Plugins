@@ -1,9 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin} from "telebox/sdk";
 import {CustomFile} from "teleproto/client/uploads";
 
 const url = "https://api.52vmy.cn/api/wl/moyu";
-const help = `<b>摸鱼日报</b>\n<code>moyu</code> 获取今日摸鱼日报`;
 async function body(response: Response, signal: AbortSignal): Promise<Buffer> {
   if (response.status !== 200 || !response.body) throw new Error("图片服务不可用");
   const reader = response.body.getReader();
@@ -32,9 +30,11 @@ async function body(response: Response, signal: AbortSignal): Promise<Buffer> {
   }
 }
 export default function createMoyu() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "moyu", description: "获取摸鱼日报", commands: {
-    moyu: {description: "获取摸鱼日报", async handle(invocation, ctx) {
-      if (invocation.args.length) { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
+  const command: CommandDefinition = {
+    args: "", examples: [{args: ""}],
+    help: [{heading: "说明：", body: "获取今日摸鱼日报图片，附带日期与每日提醒，单张最多 8 MiB。发送成功后删除命令消息。"}],
+    description: "获取摸鱼日报", async handle(invocation, ctx) {
+      if (invocation.args.length) { await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode:"html"}); return; }
       let sent = false;
       try {
         await ctx.telegram.edit(invocation.message, "开摸…");
@@ -59,6 +59,9 @@ export default function createMoyu() {
         if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message,
           sent ? "摸鱼日报已发送，命令消息删除失败" : "获取摸鱼日报失败，请稍后重试");
       }
-    }},
+    }};
+  const help = (prefix: string) => renderCommandHelp("moyu", command, {prefix, title: "🐟 摸鱼日报"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "moyu", description: "获取摸鱼日报", commands: {
+    moyu: command,
   }});
 }

@@ -1,9 +1,8 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext} from "telebox/sdk";
 import {access, appendFile, rm, stat, unlink, writeFile} from "node:fs/promises";
 import {constants, createWriteStream} from "node:fs";
 import path from "node:path";
 import {ZipArchive} from "archiver";
-import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 const FFMPEG = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"] as const;
@@ -125,19 +124,23 @@ async function createArchive(source: string, target: string, signal: AbortSignal
   }
 }
 
-function help(prefix: string): string { return `回复贴纸后发送 <code>${prefix.replace(/[&<>]/g, "") }getstickers</code>，将整包转换并打包为 ZIP`; }
 
-export default function createGetStickers() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "getstickers", description: "下载并打包整个贴纸包",
-    resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 180_000, maxOutputBytes: 256 * 1024}}, commands: {
-      getstickers: {description: "下载回复贴纸所属的贴纸包", async handle(invocation, context) {
+const getstickersCommand: CommandDefinition = {
+  description: "下载回复贴纸所属的贴纸包",
+  args: "",
+  examples: [{args: "", description: "回复任意贴纸后发送"}],
+  help: [
+    {heading: "说明：", body: "从回复的贴纸识别贴纸包，下载全部贴纸并用 FFmpeg 自动转换为 gif（方便微信使用），支持 webp、tgs、mp4；生成 pack.txt 与全部资源后打包为 ZIP 发送。单包最多 200 张。贴纸包很大时处理时间较长。"},
+    {heading: "依赖安装：", body: "运行环境为 Linux 或 macOS。FFmpeg：macOS <code>brew install ffmpeg</code>，Linux <code>sudo apt install ffmpeg</code>。tgs 转换需 Python lottie：<code>python3 -m pip install 'lottie[all]'</code>。转换失败的贴纸会保留原始文件并记录在 pack.txt。"},
+  ],
+  async handle(invocation, context) {
         try {
           const reply = invocation.message.replyToId === undefined ? undefined : await context.telegram.getReply(invocation.message);
           const source = (reply?.raw ?? invocation.message.raw) as ApiTypes.Message | undefined;
           await context.telegram.withClient(async client => {
             const {Api} = await import("teleproto");
             const document = stickerDocument(source, Api);
-            if (!document) {await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});return;}
+            if (!document) {await context.telegram.edit(invocation.message, renderCommandHelp("getstickers", getstickersCommand, {prefix: invocation.prefix, title: "🧩 贴纸包打包下载"}), {parseMode: "html"});return;}
             const inputSet = stickerSet(document, Api);
             if (!inputSet) throw new Error("Sticker set required");
             const result: any = await client.invoke(new Api.messages.GetStickerSet({stickerset: inputSet, hash: 0}));
@@ -183,6 +186,12 @@ export default function createGetStickers() {
           context.log.error("getstickers_failed");
           await context.telegram.edit(invocation.message, "贴纸包下载失败，请确认消息包含属于贴纸包的贴纸");
         }
-      }},
-    }});
+  },
+};
+export default function createGetStickers() {
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "getstickers", description: "下载并打包整个贴纸包",
+    resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 180_000, maxOutputBytes: 256 * 1024}},
+    renderHelp: prefix => renderCommandHelp("getstickers", getstickersCommand, {prefix, title: "🧩 贴纸包打包下载"}),
+    commands: {getstickers: getstickersCommand},
+  });
 }

@@ -34,12 +34,43 @@ test('sets, lists and cancels chat/global durations with precise string ids', as
   assert.match(f.edits.at(-1), /不能少于5秒/);
 });
 
-test('only schedules outgoing non-command messages and ignores edits through host metadata', async () => {
+test('declares outgoing-only, non-command, non-edit listener admission', async () => {
   const f = fixture({schemaVersion: 1, settings: {'-1009007199254740993': 5}, importedLegacy: true});
-  await f.listen({outgoing: false});
-  await f.listen({outgoing: true});
+  const listener = f.plugin.listeners[0];
+  assert.equal(listener.direction, 'outgoing');
+  assert.equal(listener.ignoreCommands, true);
+  assert.equal(listener.edited, false);
+  await f.listen();
   assert.equal(f.tasks.length, 1);
   assert.match(f.tasks[0].label, /-1009007199254740993:2/);
+});
+
+test('host filters direction, commands and edits before the autodel listener schedules work', async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'autodel-host-')));
+  await fs.mkdir(path.join(root, 'autodel'));
+  // The listener honors stored seconds directly; a short value keeps the fixture fast.
+  await fs.writeFile(path.join(root, 'autodel', 'config.json'), JSON.stringify(
+    {schemaVersion: 1, settings: {'-1009007199254740993': 0.05}, importedLegacy: true}));
+  const deletes = [];
+  let notifyDelete;
+  const deleted = new Promise(resolve => {notifyDelete = resolve;});
+  const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}}, telegram: {
+    async edit() {}, async reply() {}, async invoke() {}, async getReply() {},
+    async withClient(operation, signal) {
+      return operation({async deleteMessages(_peer, ids) {deletes.push(ids); notifyDelete();}}, signal);
+    },
+  }});
+  t.after(async () => {assert.equal((await host.shutdown(2000)).completed, true); await fs.rm(root, {recursive: true, force: true});});
+  await host.load(create());
+  const base = {chatId: '-1009007199254740993', senderId: '9', text: 'plain'};
+  await host.dispatchListeners({...base, id: 1, outgoing: false});
+  await host.dispatchListeners({...base, id: 2, outgoing: true, text: '.autodel 5s'});
+  await host.dispatchListeners({...base, id: 3, outgoing: true, edited: true});
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.deepEqual(deletes, [], 'filtered messages must produce no work');
+  await host.dispatchListeners({...base, id: 4, outgoing: true});
+  await deleted;
+  assert.deepEqual(deletes, [[4]]);
 });
 
 test('compiled plugin loads, cancels delayed work and unloads through PluginHost', async t => {

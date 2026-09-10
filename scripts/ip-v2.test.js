@@ -92,7 +92,7 @@ test('ip candidate exports a pure factory and imports only the SDK and native in
   const first = createIp(), second = createIp();
   assert.notEqual(first, second);
   assert.equal(first.id, 'ip');
-  assert.equal(first.apiVersion, 1);
+  assert.equal(first.apiVersion, 2);
   assert.deepEqual(Object.keys(first.commands), ['ip']);
   assert.deepEqual(manifest.imports, ['node:net', 'node:url', 'telebox/sdk']);
   assert.equal(first.setup, undefined);
@@ -104,17 +104,7 @@ test('ip candidate exports a pure factory and imports only the SDK and native in
 test('empty input preserves help, examples and HTML mode without provider requests', async t => {
   const {run, edits, requests, replyReads} = await fixture(t);
   await run('.ip');
-  assert.equal(edits[0].text, `📍 <b>IP查询插件</b>
-
-<b>使用方法：</b>
-• <code>ip &lt;IP地址&gt;</code>
-• <code>ip &lt;域名&gt;</code>
-• 回复包含IP/域名的消息后使用 <code>ip</code>
-
-<b>示例：</b>
-• <code>ip 8.8.8.8</code>
-• <code>ip google.com</code>
-• <code>ip 2001:4860:4860::8888</code>`);
+  for (const value of ['.ip 8.8.8.8', '.ip google.com', '.ip 2001:4860:4860::8888', 'IPv4/IPv6', '回复']) assert.ok(edits[0].text.includes(value), value);
   assert.deepEqual(edits[0].options, {parseMode: 'html'});
   assert.equal(replyReads.length, 1);
   assert.equal(requests.length, 0);
@@ -197,7 +187,7 @@ test('blank replies and reply-read failures preserve help without exposing trans
   for (const reply of ['', ' \n\t ', async () => { throw new Error('secret reply credentials'); }]) {
     const {run, edits, requests, logs} = await fixture(t, {reply});
     await run('.ip');
-    assert.match(edits.at(-1).text, /使用方法/);
+    assert.match(edits.at(-1).text, /\.ip 8\.8\.8\.8/);
     assert.equal(requests.length, 0);
     assert.doesNotMatch(JSON.stringify({edits, logs}), /secret reply/);
   }

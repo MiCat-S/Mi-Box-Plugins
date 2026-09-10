@@ -189,7 +189,7 @@ test('pure synchronous factory and lazy load use only candidate/helper/SDK sourc
   assert.equal(typeof first.then, 'undefined');
   assert.notEqual(first, second);
   assert.equal(first.id, 'nodeseek');
-  assert.equal(first.apiVersion, 1);
+  assert.equal(first.apiVersion, 2);
   assert.deepEqual(Object.keys(first.commands), ['nodeseek']);
   assert.equal(first.setup, undefined);
   assert.equal(first.cleanup, undefined);
@@ -199,6 +199,7 @@ test('pure synchronous factory and lazy load use only candidate/helper/SDK sourc
   // the candidate. Keep this exact set so a new eager dependency is reviewed.
   const allowedInputs = [
     '../TeleBox-Core/src/v2/branding.ts',
+    '../TeleBox-Core/src/v2/commands.ts',
     '../TeleBox-Core/src/v2/ip-privacy.ts',
     '../TeleBox-Core/src/v2/sdk.ts',
     '../TeleBox-Core/src/v2/ui/document.ts',
@@ -207,7 +208,6 @@ test('pure synchronous factory and lazy load use only candidate/helper/SDK sourc
     '../TeleBox-Core/src/v2/ui/text.ts',
     'nodeseek/v2.ts',
     'nodeseek/v2/curl-cffi.ts',
-    'nodeseek/v2/help.ts',
   ].map(file => path.resolve(__dirname, '..', file)).sort();
   assert.deepEqual(inputs, allowedInputs);
   assert.doesNotMatch(inputs.join('\n'), /compiler|teleproto|http|python/i);

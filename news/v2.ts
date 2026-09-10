@@ -1,6 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
-const help = `<b>每日新闻</b>\n<code>news</code> 获取新闻、历史、成语和诗词`;
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
 type Data = {
   newsList?: {title: string; url: string}[];
@@ -74,9 +72,11 @@ function pages(data: Data): string[] {
   return result;
 }
 export default function createNews() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "news", description: "每日新闻资讯", commands: {
-    news: {helpArgs: ["help","h"], description: "获取每日新闻资讯", async handle(invocation, ctx) {
-      if (invocation.args[0] === "help" || invocation.args[0] === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
+  const command: CommandDefinition = {
+    args: "", examples: [{args: "", description: "获取完整每日资讯包"}],
+    help: [{heading: "内容：", body: "每日新闻、历史上的今天、天天成语、慧语香风（名人名言）、诗歌天地。数据来自 news.topurl.cn，内容较长时自动分段发送。"}],
+    helpArgs: ["help","h"], description: "获取每日新闻资讯", async handle(invocation, ctx) {
+      if (invocation.args[0] === "help" || invocation.args[0] === "h") { await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode:"html"}); return; }
       if (invocation.args.length) {
         await ctx.telegram.edit(invocation.message, "未知参数，请使用 news help 查看帮助"); return;
       }
@@ -90,6 +90,9 @@ export default function createNews() {
           else await ctx.telegram.reply(invocation.message, page, {parseMode:"html", linkPreview:false});
         }
       } catch { if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, "今日资讯获取失败，请稍后重试"); }
-    }},
+    }};
+  const help = (prefix: string) => renderCommandHelp("news", command, {prefix, title: "🗞️ 每日新闻"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "news", description: "每日新闻资讯", commands: {
+    news: command,
   }});
 }

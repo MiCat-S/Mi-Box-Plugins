@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext, type SubcommandDefinition} from "telebox/sdk";
 
 const MASK = "••••••••";
 type Config = {schemaVersion: number; git_email: string; git_username: string; git_token: string; git_api_base_url: string; [key: string]: unknown};
@@ -55,68 +54,105 @@ async function output(invocation: any, context: PluginContext, text: string): Pr
   for (const part of parts.slice(1)) await context.telegram.reply(invocation.message, part, {parseMode: "html", linkPreview: false});
 }
 
-const help = (prefix: string) => `<b>Git PR 管理</b>\n<code>${prefix}git login 邮箱 用户名 Token</code>\n` +
-  `<code>${prefix}git repos</code>\n<code>${prefix}git prs owner/repo</code>\n` +
-  `<code>${prefix}git merge owner/repo 编号</code>\n<code>${prefix}git mergeall owner/repo</code>`;
-
 export default function createGitPr() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "git_PR", description: "通过 Git API 管理 Pull Request",
-    async setup(context) { await store(context).update(normalize); },
-    commands: {git: {helpArgs: ["help","h"], helpOnEmpty: true, description: "列出和合并 Git Pull Request", async handle(invocation: any, context: PluginContext) {
-      const sub = (invocation.args[0] ?? "help").toLowerCase();
-      if (["help", "h"].includes(sub)) { await output(invocation, context, help(invocation.prefix)); return; }
-      try {
-        if (sub === "login") {
-          if (!invocation.message.saved) { await context.telegram.edit(invocation.message, "Git Token 仅限在收藏夹中设置"); return; }
-          const [email, username, token] = invocation.args.slice(1);
-          if (!email || !username || !token || token.length > 500) throw new Error("格式：git login 邮箱 用户名 Token");
-          await store(context).update(source => ({...normalize(source), git_email: email, git_username: username, git_token: token}));
-          await context.telegram.edit(invocation.message, "登录信息已保存"); return;
-        }
-        const config = normalize(await store(context).read());
-        if (sub === "repos") {
-          const values = await api(context, config, "GET", "/user/repos?per_page=100");
-          if (!Array.isArray(values)) throw new Error("仓库列表格式无效");
-          const names = values.filter(value => value?.permissions?.push || value?.permissions?.admin || value?.permissions?.maintain)
-            .map(value => typeof value?.full_name === "string" ? value.full_name : "").filter(Boolean).slice(0, 100);
-          await output(invocation, context, names.length ? `<b>有编辑权限的仓库</b>\n\n${names.map(value => `• <code>${escape(value)}</code>`).join("\n")}` : "未找到有编辑权限的仓库"); return;
-        }
-        if (sub === "prs") {
-          const [owner, name] = repo(invocation.args[1] ?? "");
-          const values = await api(context, config, "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls?state=open&per_page=50`);
-          if (!Array.isArray(values)) throw new Error("PR 列表格式无效");
-          const lines = values.slice(0, 50).map(value => `• <b>#${Number(value?.number) || 0}</b> ${escape(String(value?.title ?? "").slice(0, 500))}\n  作者：<code>${escape(value?.user?.login ?? "")}</code>`);
-          await output(invocation, context, lines.length ? `<b>待处理的 PR</b>\n\n${lines.join("\n\n")}` : "没有待处理的 PR"); return;
-        }
-        if (sub === "merge") {
-          const [owner, name] = repo(invocation.args[1] ?? ""); const number = Number(invocation.args[2]);
-          if (!Number.isSafeInteger(number) || number < 1) throw new Error("PR 编号必须是正整数");
-          const result = await api(context, config, "PUT", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/merge`, {});
-          if (result?.merged !== true) throw new Error(String(result?.message || "PR 当前无法合并").slice(0, 300));
-          await context.telegram.edit(invocation.message, `成功合并 PR #${number}`); return;
-        }
-        if (sub === "mergeall") {
-          const [owner, name] = repo(invocation.args[1] ?? "");
-          const values = await api(context, config, "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls?state=open&per_page=100`);
-          if (!Array.isArray(values)) throw new Error("PR 列表格式无效");
-          let success = 0; const failures: string[] = [];
-          for (const item of values.slice().sort((a, b) => Number(a?.number) - Number(b?.number))) {
-            context.signal.throwIfAborted(); const number = Number(item?.number);
-            if (!Number.isSafeInteger(number) || number < 1) continue;
-            try { const result = await api(context, config, "PUT", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/merge`, {});
-              if (result?.merged !== true) throw new Error("not merged"); success++; }
-            catch { failures.push(`#${number}`); }
-          }
-          await output(invocation, context, `<b>批量合并完成</b>\n成功：${success}\n失败：${failures.length}${failures.length ? `（${failures.join("、")}）` : ""}`); return;
-        }
-        await output(invocation, context, help(invocation.prefix));
-      } catch (error) {
-        if (context.signal.aborted) return;
-        context.log.error("git_pr_failed");
-        const message = error instanceof Error ? error.message : "操作失败";
-        await context.telegram.edit(invocation.message, `操作失败：${escape(message.slice(0, 500))}`, {parseMode: "html"});
+  const guard = (operation: (invocation: any, context: PluginContext) => Promise<void>) => async (invocation: any, context: PluginContext) => {
+    try { await operation(invocation, context); }
+    catch (error) {
+      if (context.signal.aborted) return;
+      context.log.error("git_pr_failed");
+      const message = error instanceof Error ? error.message : "操作失败";
+      await context.telegram.edit(invocation.message, `操作失败：${escape(message.slice(0, 500))}`, {parseMode: "html"});
+    }
+  };
+  const login: SubcommandDefinition = {
+    description: "登录 Git（仅收藏夹）", args: "邮箱 用户名 Token",
+    arguments: [{name: "邮箱", required: true}, {name: "用户名", required: true}, {name: "Token", required: true, description: "最长 500 字符"}],
+    examples: [{args: "login me@example.com octocat ghp_xxx"}],
+    handle: guard(async (invocation, context) => {
+      if (!invocation.message.saved) { await context.telegram.edit(invocation.message, "Git Token 仅限在收藏夹中设置"); return; }
+      const [email, username, token] = invocation.args;
+      if (!email || !username || !token || token.length > 500) throw new Error("格式：git login 邮箱 用户名 Token");
+      await store(context).update(source => ({...normalize(source), git_email: email, git_username: username, git_token: token}));
+      await context.telegram.edit(invocation.message, "登录信息已保存");
+    }),
+  };
+  const repos: SubcommandDefinition = {
+    description: "列出有编辑权限的仓库", args: "", examples: [{args: "repos"}],
+    handle: guard(async (invocation, context) => {
+      const config = normalize(await store(context).read());
+      const values = await api(context, config, "GET", "/user/repos?per_page=100");
+      if (!Array.isArray(values)) throw new Error("仓库列表格式无效");
+      const names = values.filter(value => value?.permissions?.push || value?.permissions?.admin || value?.permissions?.maintain)
+        .map(value => typeof value?.full_name === "string" ? value.full_name : "").filter(Boolean).slice(0, 100);
+      await output(invocation, context, names.length ? `<b>有编辑权限的仓库</b>\n\n${names.map(value => `• <code>${escape(value)}</code>`).join("\n")}` : "未找到有编辑权限的仓库");
+    }),
+  };
+  const prs: SubcommandDefinition = {
+    description: "列出仓库的 PR", args: "owner/repo", arguments: [{name: "owner/repo", required: true}],
+    examples: [{args: "prs octocat/Hello-World"}],
+    handle: guard(async (invocation, context) => {
+      const config = normalize(await store(context).read());
+      const [owner, name] = repo(invocation.args[0] ?? "");
+      const values = await api(context, config, "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls?state=open&per_page=50`);
+      if (!Array.isArray(values)) throw new Error("PR 列表格式无效");
+      const lines = values.slice(0, 50).map(value => `• <b>#${Number(value?.number) || 0}</b> ${escape(String(value?.title ?? "").slice(0, 500))}\n  作者：<code>${escape(value?.user?.login ?? "")}</code>`);
+      await output(invocation, context, lines.length ? `<b>待处理的 PR</b>\n\n${lines.join("\n\n")}` : "没有待处理的 PR");
+    }),
+  };
+  const merge: SubcommandDefinition = {
+    description: "合并 PR", args: "owner/repo 编号",
+    arguments: [{name: "owner/repo", required: true}, {name: "编号", required: true, description: "正整数"}],
+    examples: [{args: "merge octocat/Hello-World 42"}],
+    handle: guard(async (invocation, context) => {
+      const config = normalize(await store(context).read());
+      const [owner, name] = repo(invocation.args[0] ?? ""); const number = Number(invocation.args[1]);
+      if (!Number.isSafeInteger(number) || number < 1) throw new Error("PR 编号必须是正整数");
+      const result = await api(context, config, "PUT", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/merge`, {});
+      if (result?.merged !== true) throw new Error(String(result?.message || "PR 当前无法合并").slice(0, 300));
+      await context.telegram.edit(invocation.message, `成功合并 PR #${number}`);
+    }),
+  };
+  const mergeall: SubcommandDefinition = {
+    description: "按序号合并所有可合并的 PR", args: "owner/repo", arguments: [{name: "owner/repo", required: true}],
+    examples: [{args: "mergeall octocat/Hello-World"}],
+    handle: guard(async (invocation, context) => {
+      const config = normalize(await store(context).read());
+      const [owner, name] = repo(invocation.args[0] ?? "");
+      const values = await api(context, config, "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls?state=open&per_page=100`);
+      if (!Array.isArray(values)) throw new Error("PR 列表格式无效");
+      let success = 0; const failures: string[] = [];
+      for (const item of values.slice().sort((a, b) => Number(a?.number) - Number(b?.number))) {
+        context.signal.throwIfAborted(); const number = Number(item?.number);
+        if (!Number.isSafeInteger(number) || number < 1) continue;
+        try { const result = await api(context, config, "PUT", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}/merge`, {});
+          if (result?.merged !== true) throw new Error("not merged"); success++; }
+        catch { failures.push(`#${number}`); }
       }
-    }}},
+      await output(invocation, context, `<b>批量合并完成</b>\n成功：${success}\n失败：${failures.length}${failures.length ? `（${failures.join("、")}）` : ""}`);
+    }),
+  };
+  const gitCommand: CommandDefinition = {
+    description: "列出和合并 Git Pull Request",
+    helpArgs: ["help", "h"],
+    helpOnEmpty: true,
+    subcommandsCaseSensitive: false,
+    subcommands: {login, repos, prs, merge, mergeall},
+    examples: [{args: "login 邮箱 用户名 Token"}, {args: "repos"}, {args: "prs owner/repo"}, {args: "merge owner/repo 42"}, {args: "mergeall owner/repo"}],
+    help: [
+      {heading: "说明：", body: "通过 GitHub 兼容 API 管理 Pull Request；登录信息仅限收藏夹设置。可配置自定义 Git API 地址。"},
+      {heading: "密钥配置：", body: "涉及 API Key、Token 或其他登录凭据的设置命令请在收藏夹中执行。"},
+    ],
+    async handle(invocation, context) {
+      const sub = (invocation.args[0] ?? "help").toLowerCase();
+      const show = () => output(invocation, context, renderCommandHelp("git", gitCommand, {prefix: invocation.prefix, title: "⚙️ Git PR 管理插件"}));
+      if (sub === "help" || sub === "h") { await show(); return; }
+      await guard(async () => { await store(context).read(); await show(); })(invocation, context);
+    },
+  };
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "git_PR", description: "通过 Git API 管理 Pull Request",
+    async setup(context) { await store(context).update(normalize); },
+    renderHelp: prefix => renderCommandHelp("git", gitCommand, {prefix, title: "⚙️ Git PR 管理插件"}),
+    commands: {git: gitCommand},
     settings: context => ({id: "git_PR", title: "Git PR 管理", description: "Git API 与访问令牌", category: "插件配置", icon: "🔀",
       getSchema: () => [{key: "git_token", label: "Access Token", type: "password", secret: true},
         {key: "git_api_base_url", label: "Git API 地址", type: "string", required: true}],

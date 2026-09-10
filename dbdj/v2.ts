@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition} from "telebox/sdk";
 import type {Api} from "teleproto";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
@@ -20,60 +19,72 @@ function sample<T>(values: T[], count: number): T[] {
   return copy.slice(0, count);
 }
 
+const dbdjCommand: CommandDefinition = {
+  description: "从近期发言者中随机抽取用户",
+  helpOnEmpty: true,
+  args: "消息数 人数 [文案]",
+  arguments: [
+    {name: "消息数", required: true, description: "扫描的最近消息数，1–1000"},
+    {name: "人数", required: true, description: "抽取人数，1–100"},
+    {name: "文案", description: "可选；附在结果后的提示语"},
+  ],
+  examples: [{args: "50 2 恭喜发财"}],
+  help: [{heading: "说明：", body: "从当前对话最近 N 条消息的发送者中随机抽取指定人数；会跳过机器人、已注销、诈骗和虚假账户。"}],
+  async handle(invocation, context) {
+    const scanCount = positive(invocation.args[0], 1000);
+    const pickCount = positive(invocation.args[1], 100);
+    if (!scanCount || !pickCount) {
+      await context.telegram.edit(invocation.message, renderCommandHelp("dbdj", dbdjCommand, {prefix: invocation.prefix, title: "点兵点将"}), {parseMode: "html"});
+      return;
+    }
+    const note = invocation.args.slice(2).join(" ").trim();
+    const started = Date.now();
+    try {
+      await context.telegram.edit(invocation.message, "点兵点将…");
+      await context.telegram.withClient(async (client, signal) => {
+        const raw = invocation.message.raw as Api.Message | undefined;
+        if (!raw?.peerId) throw new Error("Missing peer");
+        const messages = await client.getMessages(raw.peerId, {limit: scanCount, offsetId: Math.max(0, invocation.message.id - 1)});
+        const ids = new Map<string, unknown>();
+        for (const message of messages) {
+          signal.throwIfAborted();
+          const fromId = (message as Api.Message).fromId;
+          const id = fromId && "userId" in fromId ? fromId.userId : undefined;
+          if (id !== undefined) ids.set(String(id), id);
+        }
+        const candidates: Array<{id: string; name: string}> = [];
+        for (const [id, nativeId] of ids) {
+          signal.throwIfAborted();
+          try {
+            const entity = await client.getEntity(nativeId as never) as Api.User;
+            if (entity.bot || entity.deleted || entity.fake || entity.scam) continue;
+            const name = entity.username ? `@${escape(entity.username)}` : escape(`${entity.firstName ?? ""} ${entity.lastName ?? ""}`.trim() || id);
+            candidates.push({id, name});
+          } catch { context.log.error("dbdj_entity_skipped"); }
+        }
+        if (!candidates.length) {
+          await context.telegram.reply(invocation.message, `最近 ${scanCount} 条消息中没有可抽取的有效用户`, {parseMode: "html"});
+        } else {
+          const winners = sample(candidates, Math.min(pickCount, candidates.length));
+          const mentions = winners.map(user => `<a href="tg://user?id=${escape(user.id)}">${user.name}</a>`).join("、");
+          const probability = (winners.length / candidates.length * 100).toFixed(2);
+          const suffix = note ? ` ${escape(note)}` : "";
+          await context.telegram.reply(invocation.message,
+            `<b>点兵点将</b>\n${mentions}${suffix}\n\n扫描 ${scanCount} 条 · 有效 ${candidates.length} 人 · 选中 ${winners.length} 人 · 概率 ${probability}% · ${(Date.now() - started) / 1000}s`,
+            {parseMode: "html", linkPreview: false});
+        }
+        if (typeof raw.delete === "function") await raw.delete({revoke: true});
+      });
+    } catch {
+      if (context.signal.aborted) return;
+      context.log.error("dbdj_failed");
+      await context.telegram.edit(invocation.message, "点兵点将失败，请稍后重试");
+    }
+  },
+};
+
 export default function createDbdj() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "dbdj", description: "从近期发言者中随机抽取用户",
-    commands: {dbdj: {helpOnEmpty: true, description: "从近期发言者中随机抽取用户", async handle(invocation, context) {
-      const scanCount = positive(invocation.args[0], 1000);
-      const pickCount = positive(invocation.args[1], 100);
-      if (!scanCount || !pickCount) {
-        await context.telegram.edit(invocation.message,
-          `<b>点兵点将</b>\n<code>${escape(invocation.prefix)}dbdj 消息数 人数 [文案]</code>\n例如：<code>${escape(invocation.prefix)}dbdj 50 2 恭喜发财</code>`,
-          {parseMode: "html"});
-        return;
-      }
-      const note = invocation.args.slice(2).join(" ").trim();
-      const started = Date.now();
-      try {
-        await context.telegram.edit(invocation.message, "点兵点将…");
-        await context.telegram.withClient(async (client, signal) => {
-          const raw = invocation.message.raw as Api.Message | undefined;
-          if (!raw?.peerId) throw new Error("Missing peer");
-          const messages = await client.getMessages(raw.peerId, {limit: scanCount, offsetId: Math.max(0, invocation.message.id - 1)});
-          const ids = new Map<string, unknown>();
-          for (const message of messages) {
-            signal.throwIfAborted();
-            const fromId = (message as Api.Message).fromId;
-            const id = fromId && "userId" in fromId ? fromId.userId : undefined;
-            if (id !== undefined) ids.set(String(id), id);
-          }
-          const candidates: Array<{id: string; name: string}> = [];
-          for (const [id, nativeId] of ids) {
-            signal.throwIfAborted();
-            try {
-              const entity = await client.getEntity(nativeId as never) as Api.User;
-              if (entity.bot || entity.deleted || entity.fake || entity.scam) continue;
-              const name = entity.username ? `@${escape(entity.username)}` : escape(`${entity.firstName ?? ""} ${entity.lastName ?? ""}`.trim() || id);
-              candidates.push({id, name});
-            } catch { context.log.error("dbdj_entity_skipped"); }
-          }
-          if (!candidates.length) {
-            await context.telegram.reply(invocation.message, `最近 ${scanCount} 条消息中没有可抽取的有效用户`, {parseMode: "html"});
-          } else {
-            const winners = sample(candidates, Math.min(pickCount, candidates.length));
-            const mentions = winners.map(user => `<a href="tg://user?id=${escape(user.id)}">${user.name}</a>`).join("、");
-            const probability = (winners.length / candidates.length * 100).toFixed(2);
-            const suffix = note ? ` ${escape(note)}` : "";
-            await context.telegram.reply(invocation.message,
-              `<b>点兵点将</b>\n${mentions}${suffix}\n\n扫描 ${scanCount} 条 · 有效 ${candidates.length} 人 · 选中 ${winners.length} 人 · 概率 ${probability}% · ${(Date.now() - started) / 1000}s`,
-              {parseMode: "html", linkPreview: false});
-          }
-          if (typeof raw.delete === "function") await raw.delete({revoke: true});
-        });
-      } catch {
-        if (context.signal.aborted) return;
-        context.log.error("dbdj_failed");
-        await context.telegram.edit(invocation.message, "点兵点将失败，请稍后重试");
-      }
-    }}},
-  });
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "dbdj", description: "从近期发言者中随机抽取用户",
+    renderHelp: prefix => renderCommandHelp("dbdj", dbdjCommand, {prefix, title: "点兵点将"}),
+    commands: {dbdj: dbdjCommand}});
 }

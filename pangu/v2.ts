@@ -1,6 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext, type CommandInvocation, type MessageEnvelope} from "telebox/sdk";
-const help = `<b>盘古之白</b>\n<code>pangu</code> 当前状态\n<code>pangu 文本</code> 格式化中英文间距\n<code>pangu on/off</code> 当前会话开关\n<code>pangu reset</code> 当前会话恢复跟随全局\n<code>pangu global on/off</code> 全局开关\n<code>pangu whitelist add/remove/list</code> 白名单\n<code>pangu blacklist add/remove/list</code> 黑名单\n<code>pangu stats</code> 统计`;
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type SubcommandDefinition, definePlugin, type PluginContext, type CommandInvocation, type MessageEnvelope} from "telebox/sdk";
 type Data = {legacyImported?: boolean; chats: Record<string, boolean>; globalMode: boolean; whitelist: string[]; blacklist: string[]; stats: {formattedMessages: number; lastFormatted: number | null}};
 const normalize = (data: Partial<Data>): Data => ({
   chats: {}, globalMode: false, whitelist: [], blacklist: [], ...data,
@@ -40,62 +38,79 @@ function spacing(input: string): string {
   }).join("");
 }
 export default function createPangu() {
-  const command = async (invocation: CommandInvocation, ctx: PluginContext) => {
-    const args = invocation.args;
-    const sub = args[0]?.toLowerCase();
-    if (!sub) {
+  const showHelp: CommandDefinition["handle"] = async (i, ctx) => { await ctx.telegram.edit(i.message, help(i.prefix), {parseMode: "html"}); };
+  const toggle = (enabled: boolean, global = false): SubcommandDefinition => ({
+    description: `${enabled ? "开启" : "关闭"}${global ? "全局" : "当前会话"}自动格式化`, args: "",
+    ...(!global ? {aliases: enabled ? ["enable", "true"] : ["disable", "false"]} : {}),
+    async handle(i, ctx) {
+      if (global) {
+        await store(ctx).update(data => ({...data, globalMode: enabled}));
+        await ctx.telegram.edit(i.message, `全局格式化已${enabled ? "开启" : "关闭"}`);
+      } else {
+        await store(ctx).update(data => ({...data, chats: {...data.chats, [i.message.chatId]: enabled}}));
+        await ctx.telegram.edit(i.message, enabled ? "当前会话已开启自动格式化" : "当前会话已关闭自动格式化");
+      }
+    },
+  });
+  const membership = (target: "whitelist" | "blacklist"): SubcommandDefinition => ({
+    description: target === "whitelist" ? "管理白名单" : "管理黑名单", aliases: [target === "whitelist" ? "wl" : "bl"],
+    subcommands: {
+      list: {description: "查看聊天名单", args: "", async handle(i, ctx) {
+        const data = await store(ctx).read(); await ctx.telegram.edit(i.message, `${target}: ${data[target].join(", ") || "空"}`);
+      }},
+      ...Object.fromEntries(["add", "remove"].map(action => [action, {
+        description: action === "add" ? "添加当前会话" : "移除当前会话", args: "",
+        async handle(i, ctx) {
+          const chatId = i.message.chatId;
+          await store(ctx).update(data => {
+            const list = [...data[target]], index = list.indexOf(chatId);
+            if (action === "add" && index < 0) list.push(chatId);
+            if (action === "remove" && index >= 0) list.splice(index, 1);
+            return {...data, [target]: list};
+          });
+          await ctx.telegram.edit(i.message, `${target === "whitelist" ? "白名单" : "黑名单"}已更新`);
+        },
+      } satisfies SubcommandDefinition])),
+    }, handle: showHelp,
+  });
+  const command: CommandDefinition = {
+    description: "格式化中英文间距", helpArgs: ["help", "h"], args: "[文本]", subcommandsCaseSensitive: false,
+    examples: [{args: "", description: "查看当前状态"}, {args: "你好World2026", description: "手动格式化文本"}],
+    subcommands: {
+      on: toggle(true), off: toggle(false),
+      reset: {description: "当前会话恢复跟随全局", args: "", async handle(i, ctx) {
+        await store(ctx).update(data => { const chats = {...data.chats}; delete chats[i.message.chatId]; return {...data, chats}; });
+        await ctx.telegram.edit(i.message, "当前会话已恢复跟随全局");
+      }},
+      global: {description: "设置全局格式化开关", aliases: ["g"], subcommands: {on: toggle(true, true), off: toggle(false, true)}, handle: showHelp},
+      stats: {description: "查看格式化消息数量、启用会话和名单统计", aliases: ["stat"], args: "", async handle(invocation, ctx) {
+      const db = store(ctx);
+      const data = await db.read();
+      await ctx.telegram.edit(invocation.message, `格式化消息: ${data.stats.formattedMessages}\n启用会话: ${Object.values(data.chats).filter(Boolean).length}\n全局模式: ${data.globalMode ? "开启" : "关闭"}\n白名单: ${data.whitelist.length}\n黑名单: ${data.blacklist.length}`, {parseMode:"html"}); return;
+
+      }},
+      whitelist: membership("whitelist"), blacklist: membership("blacklist"),
+    },
+    help: [{heading: "格式与范围：", body: "在 CJK 中文、字母、数字和符号之间添加间距，并保护 HTTP/HTTPS 链接。手动文本最多 16000 字符，保留多行；自动处理自己发出的消息及收藏夹消息，包括编辑消息，忽略命令。"},
+      {heading: "优先级：", body: "白名单非空时，只有白名单中的聊天启用，名单命中即格式化；白名单为空时先排除黑名单，再使用会话开关，会话未设置时跟随全局。reset 恢复跟随全局；全局默认关闭。"}],
+    async handle(invocation, ctx) {
+      if (!invocation.args[0]) {
       const data = await store(ctx).read();
       const chat = data.chats[invocation.message.chatId];
       const active = data.whitelist.length ? data.whitelist.includes(invocation.message.chatId) :
         !data.blacklist.includes(invocation.message.chatId) && (chat ?? data.globalMode);
       await ctx.telegram.edit(invocation.message, `盘古之白\n当前生效: ${active ? "开启" : "关闭"}\n会话设置: ${chat === undefined ? "跟随全局" : chat ? "开启" : "关闭"}\n全局模式: ${data.globalMode ? "开启" : "关闭"}\n已格式化: ${data.stats.formattedMessages}`); return;
-    }
-    if (sub === "reset") {
-      await store(ctx).update(data => {
-        const chats = {...data.chats}; delete chats[invocation.message.chatId];
-        return {...data, chats};
-      });
-      await ctx.telegram.edit(invocation.message, "当前会话已恢复跟随全局"); return;
-    }
-    if (["on", "off", "enable", "disable", "true", "false"].includes(sub)) {
-      const db = store(ctx);
-      const enabled = ["on", "enable", "true"].includes(sub);
-      await db.update(data => ({...data, chats: {...data.chats, [invocation.message.chatId]: enabled}}));
-      await ctx.telegram.edit(invocation.message, enabled ? "当前会话已开启自动格式化" : "当前会话已关闭自动格式化"); return;
-    }
-    if (sub === "global" || sub === "g") {
-      const db = store(ctx);
-      const value = args[1]?.toLowerCase();
-      if (value !== "on" && value !== "off") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
-      await db.update(data => ({...data, globalMode: value === "on"}));
-      await ctx.telegram.edit(invocation.message, `全局格式化已${value === "on" ? "开启" : "关闭"}`); return;
-    }
-    if (sub === "stats" || sub === "stat") {
-      const db = store(ctx);
-      const data = await db.read();
-      await ctx.telegram.edit(invocation.message, `格式化消息: ${data.stats.formattedMessages}\n启用会话: ${Object.values(data.chats).filter(Boolean).length}\n全局模式: ${data.globalMode ? "开启" : "关闭"}\n白名单: ${data.whitelist.length}\n黑名单: ${data.blacklist.length}`, {parseMode:"html"}); return;
-    }
-    if (sub === "whitelist" || sub === "wl" || sub === "blacklist" || sub === "bl") {
-      const db = store(ctx);
-      const target = sub.startsWith("white") || sub === "wl" ? "whitelist" : "blacklist";
-      const action = args[1]?.toLowerCase();
-      if (!["add", "remove", "list"].includes(action)) { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
-      if (action === "list") { const data = await db.read(); await ctx.telegram.edit(invocation.message, `${target}: ${(data[target] as string[]).join(", ") || "空"}`); return; }
-      const chatId = invocation.message.chatId;
-      await db.update(data => {
-        const list = [...data[target]];
-        const index = list.indexOf(chatId);
-        if (action === "add" && index < 0) list.push(chatId);
-        if (action === "remove" && index >= 0) list.splice(index, 1);
-        return {...data, [target]: list};
-      });
-      await ctx.telegram.edit(invocation.message, `${target === "whitelist" ? "白名单" : "黑名单"}已更新`); return;
-    }
+
+      }
+    const args = invocation.args, sub = args[0]?.toLowerCase();
     const text = invocation.message.text?.replace(/^\S+\s*/, "") ?? args.join(" ");
-    if (!text || sub === "help" || sub === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
+    if (!text || sub === "help" || sub === "h") { await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode:"html"}); return; }
     await format(ctx, invocation.message, text);
+
+    },
   };
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "pangu", description: "格式化中英文间距",
+  const help = (prefix: string) => renderCommandHelp("pangu", command, {prefix, title: "📝 盘古之白"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "pangu", description: "格式化中英文间距",
     async setup(ctx) {
       const db = rawStore(ctx);
       if ((await db.read()).legacyImported) return;
@@ -109,10 +124,11 @@ export default function createPangu() {
       }));
     },
     listeners: [{
+    direction: "outgoing", includeSaved: true,
     ignoreCommands: true,
     edited: true,
     handle: async (message, ctx) => {
-      if (!message.text.trim() || !(message.outgoing || message.saved)) return;
+      if (!message.text.trim()) return;
       const data = await store(ctx).read();
       if (data.whitelist.length > 0) {
         if (!data.whitelist.includes(message.chatId)) return;
@@ -126,7 +142,7 @@ export default function createPangu() {
       await store(ctx).update(current => ({...current, stats: {...current.stats, formattedMessages: current.stats.formattedMessages + 1, lastFormatted: Date.now()}}));
     },
   }], commands: {
-    pangu: {helpArgs: ["help","h"], description: "格式化中英文间距", handle: command},
+    pangu: command,
   }});
 }
 async function format(ctx: PluginContext, message: MessageEnvelope, text: string) {

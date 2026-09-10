@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
@@ -32,13 +31,20 @@ function attributes(user: ApiTypes.User): string[] {
   return values.length ? values : ["普通用户"];
 }
 
-export default function createIsAlive() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "isalive", description: "查询用户在线状态及本群最后发言",
-    commands: {isalive: {helpArgs: ["help","h"], description: "查询用户在线状态及本群最后发言", async handle(invocation, context) {
+const isaliveCommand: CommandDefinition = {
+  description: "查询用户在线状态及本群最后发言",
+  helpArgs: ["help", "h"],
+  args: "用户名或 UID",
+  arguments: [{name: "用户名或 UID", description: "用户名（可带或不带 @）或用户 ID；留空显示帮助"}],
+  examples: [{args: "@username"}, {args: "123456789"}],
+  help: [
+    {heading: "说明：", body: "查询用户在线状态、账号属性以及该用户在当前群组的最后发言时间；使用 UID 时需要账号曾与该用户交互。"},
+    {heading: "定时查询：", body: "可配合 acron 每天定时查询；将群 ID 与用户名替换为目标：<pre>{prefix}acron cmd 0 0 12 * * * &lt;群ID&gt; 每日状态查询\n{prefix}isalive @username</pre>"},
+  ],
+  async handle(invocation, context) {
       const input = invocation.args.join(" ").trim();
       if (!input || ["help", "h"].includes(input.toLowerCase())) {
-        await context.telegram.edit(invocation.message,
-          `<b>用户状态查询</b>\n<code>${escape(invocation.prefix)}isalive 用户名或 UID</code>`, {parseMode: "html"});
+        await context.telegram.edit(invocation.message, renderCommandHelp("isalive", isaliveCommand, {prefix: invocation.prefix, title: "🫀 用户状态查询"}), {parseMode: "html"});
         return;
       }
       try {
@@ -78,6 +84,11 @@ export default function createIsAlive() {
         context.log.error("isalive_query_failed");
         await context.telegram.edit(invocation.message, "无法解析该用户；使用 UID 时需要曾与该用户交互");
       }
-    }}},
+    },
+};
+export default function createIsAlive() {
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "isalive", description: "查询用户在线状态及本群最后发言",
+    renderHelp: prefix => renderCommandHelp("isalive", isaliveCommand, {prefix, title: "🫀 用户状态查询"}),
+    commands: {isalive: isaliveCommand},
   });
 }

@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 type LockData = {schemaVersion: 1; lockedSeats: Record<string, string[]>};
 type CacheEntry = {updatedAt: number; avgPerDay?: number; name?: string; username?: string | null};
@@ -22,7 +21,6 @@ async function resolveTarget(ctx: PluginContext, message: MessageEnvelope, value
     return {entity,title:entity.title||"未命名对话",username:entity.username ? `@${entity.username}` : null,channel:entity.className === "Channel",key:String(entity.id)};
   });
 }
-
 async function admins(ctx: PluginContext, target: Target): Promise<any[]> {
   return ctx.telegram.withClient(async (client:any) => {
     const {Api}=await import("teleproto");
@@ -30,7 +28,6 @@ async function admins(ctx: PluginContext, target: Target): Promise<any[]> {
     return list.filter(user => user?.className === "User" && !user.bot && (target.channel || ["ChatParticipantAdmin","ChatParticipantCreator"].includes(user.participant?.className)));
   });
 }
-
 async function stats(ctx: PluginContext, target: Target): Promise<Stat[]> {
   const users = await admins(ctx,target), lockSet = new Set((await locks(ctx).read()).lockedSeats[target.key] || []), saved = await cache(ctx).read();
   return ctx.telegram.withClient(async (client:any) => {
@@ -45,11 +42,9 @@ async function stats(ctx: PluginContext, target: Target): Promise<Stat[]> {
     return result.sort((a,b)=>b.avg-a.avg||b.last-a.last||a.name.localeCompare(b.name,"zh-CN"));
   });
 }
-
 function header(target:Target, title:string, total:number, unlocked?:number){return `${title}\n目标对话: <b>${escape(target.title)}</b>${target.username?` <code>${escape(target.username)}</code>`:""}\n管理员数量: <code>${total}</code>${unlocked===undefined?"":` | 未锁席位: <code>${unlocked}</code>`}`;}
 function line(stat:Stat,index:number){return `${index+1}. ${userDisplay(stat)}\n   头衔 <code>${escape(stat.rank)}</code> · 周日均 <code>${stat.avgText}</code> · 最后发言 <code>${stat.lastText}</code> · 锁定 <code>${stat.locked?"是":"否"}</code>`;}
 async function send(ctx:PluginContext,message:MessageEnvelope,text:string){const chunks:string[]=[];let current="";for(const row of text.split("\n")){if(`${current}\n${row}`.length>3500){chunks.push(current);current=row;}else current+=`${current?"\n":""}${row}`;}if(current)chunks.push(current);await ctx.telegram.edit(message,chunks[0],{parseMode:"html",linkPreview:false});for(const chunk of chunks.slice(1))await ctx.telegram.reply(message,chunk,{parseMode:"html",linkPreview:false});}
-
 async function seat(ctx:PluginContext,message:MessageEnvelope,action:"lock"|"unlock",args:readonly string[]){
   if(!args.length){await ctx.telegram.edit(message,`❌ 参数不足\n\n用法: <code>${escape(message.text.split(/\s/)[0])} ${action} 用户1,用户2 [对话id/@username]</code>`,{parseMode:"html"});return;}
   const tokens=[...args];let targetArg:string|undefined;if(tokens.length>1&&(/^@/.test(tokens.at(-1)!)||/^-?\d+$/.test(tokens.at(-1)!))&&!tokens.slice(0,-1).join(" ").includes(tokens.at(-1)!))targetArg=tokens.pop();
@@ -59,13 +54,92 @@ async function seat(ctx:PluginContext,message:MessageEnvelope,action:"lock"|"unl
   await send(ctx,message,`${action==="lock"?"🔒 席位锁定完成":"🔓 席位取消锁定完成"}\n成功: <code>${success.length}</code>\n失败: <code>${fail.length}</code>${fail.length?`\n${fail.map(v=>`• ${escape(v)}`).join("\n")}`:""}`);
 }
 
-async function command(message:MessageEnvelope,args:readonly string[],ctx:PluginContext,prefix:string){const action=args[0]?.toLowerCase();if(!action||["help","h"].includes(action)){await ctx.telegram.edit(message,`👮 <b>管理员席位管理</b>\n\n<code>${escape(prefix)}admin_board ls [对话]</code>\n<code>${escape(prefix)}admin_board tail [人数] [对话]</code>\n<code>${escape(prefix)}admin_board rm 人数 [对话]</code>\n<code>${escape(prefix)}admin_board lock/unlock 用户 [对话]</code>\n<code>${escape(prefix)}admin_board clear [对话]</code>`,{parseMode:"html"});return;}
-  if(action==="lock"||action==="unlock"){await seat(ctx,message,action,args.slice(1));return;}const targetArg=action==="tail"||action==="rm"?(args[1]&&/^\d+$/.test(args[1])?args.slice(2).join(" "):args.slice(1).join(" ")):args.slice(1).join(" ");const target=await resolveTarget(ctx,message,targetArg||undefined);
-  if(action==="clear"){const prefixKey=`${target.key}:`;const before=await cache(ctx).read();const count=Object.keys(before.values).filter(key=>key.startsWith(prefixKey)).length;await cache(ctx).update(data=>({...data,values:Object.fromEntries(Object.entries(data.values).filter(([key])=>!key.startsWith(prefixKey)))}));await ctx.telegram.edit(message,`🧹 <b>缓存已清理</b>\n清理条目: <code>${count}</code>`,{parseMode:"html"});return;}
-  if(!["ls","tail","rm"].includes(action))throw new Error(`不支持的动作: ${action}`);if(action==="rm"&&(!args[1]||!/^[1-9]\d*$/.test(args[1]))){await ctx.telegram.edit(message,"❌ 参数不足\n\nrm 的人数参数是必填正整数。",{parseMode:"html"});return;}if(action==="tail"&&args[1]&&/^\d+$/.test(args[1])&&!/^[1-9]\d*$/.test(args[1])){await ctx.telegram.edit(message,"❌ 参数错误\n\ntail 的人数参数必须是正整数",{parseMode:"html"});return;}
-  await ctx.telegram.edit(message,`📊 正在统计管理员排序简表...\n目标: <b>${escape(target.title)}</b>`,{parseMode:"html"});const all=await stats(ctx,target);
-  if(action==="ls"){await send(ctx,message,`${header(target,"📊 <b>管理员排序简表</b>",all.length)}\n\n${all.map(line).join("\n")}`);return;}const limit=args[1]&&/^\d+$/.test(args[1])?Number(args[1]):10;const candidates=all.filter(item=>!item.locked);const selected=candidates.slice(-limit).reverse();if(action==="tail"){await send(ctx,message,`${header(target,"📉 <b>未锁席位倒数榜</b>",all.length,candidates.length)}\n\n${selected.map(line).join("\n")||"暂无未锁定席位的管理员。"}`);return;}
-  const success:Stat[]=[],fail:string[]=[];await ctx.telegram.withClient(async(client:any)=>{const {Api}=await import("teleproto");for(const stat of selected.filter(item=>!item.creator)){try{const user=await client.getInputEntity(stat.user);if(target.channel){const channel=await client.getInputEntity(target.entity);await client.invoke(new Api.channels.EditAdmin({channel,userId:user,adminRights:new Api.ChatAdminRights({}),rank:""}));}else await client.invoke(new Api.messages.EditChatAdmin({chatId:target.entity.id,userId:user,isAdmin:false}));success.push(stat);}catch(error){fail.push(`${stat.name}（${errorText(error)}）`);}}});await send(ctx,message,`✂️ <b>尾部管理员清理完成</b>\n目标人数: <code>${limit}</code>\n实际候选: <code>${selected.length}</code>\n成功: <code>${success.length}</code>\n失败: <code>${fail.length}</code>${fail.length?`\n${fail.map(v=>`• ${escape(v)}`).join("\n")}`:""}`);
+export default function createAdminBoard(){
+  const guard = (run: (invocation: CommandInvocation, ctx: PluginContext) => Promise<void>) =>
+    async (invocation: CommandInvocation, ctx: PluginContext): Promise<void> => {
+      try { await run(invocation, ctx); }
+      catch (error) { if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, `❌ <b>执行失败</b>\n\n${escape(errorText(error))}`, {parseMode:"html"}); }
+    };
+  const lock = guard(async (invocation, ctx) => seat(ctx, invocation.message, "lock", invocation.args));
+  const unlock = guard(async (invocation, ctx) => seat(ctx, invocation.message, "unlock", invocation.args));
+  const clear = guard(async (invocation, ctx) => {
+    const target = await resolveTarget(ctx, invocation.message, invocation.args.join(" ") || undefined);
+    const prefixKey = `${target.key}:`;
+    const before = await cache(ctx).read();
+    const count = Object.keys(before.values).filter(key => key.startsWith(prefixKey)).length;
+    await cache(ctx).update(data => ({...data, values: Object.fromEntries(Object.entries(data.values).filter(([key]) => !key.startsWith(prefixKey)))}));
+    await ctx.telegram.edit(invocation.message, `🧹 <b>缓存已清理</b>\n清理条目: <code>${count}</code>`, {parseMode:"html"});
+  });
+  const ls = guard(async (invocation, ctx) => {
+    const target = await resolveTarget(ctx, invocation.message, invocation.args.join(" ") || undefined);
+    await ctx.telegram.edit(invocation.message, `📊 正在统计管理员排序简表...\n目标: <b>${escape(target.title)}</b>`, {parseMode:"html"});
+    const all = await stats(ctx, target);
+    await send(ctx, invocation.message, `${header(target, "📊 <b>管理员排序简表</b>", all.length)}\n\n${all.map(line).join("\n")}`);
+  });
+  const tail = guard(async (invocation, ctx) => {
+    const numericArg = invocation.args[0] && /^\d+$/.test(invocation.args[0]);
+    const count = numericArg ? Number(invocation.args[0]) : 10;
+    const targetArg = numericArg ? invocation.args.slice(1).join(" ") : invocation.args.join(" ");
+    const target = await resolveTarget(ctx, invocation.message, targetArg || undefined);
+    if (numericArg && !/^[1-9]\d*$/.test(invocation.args[0]!)) {
+      await ctx.telegram.edit(invocation.message, "❌ 参数错误\n\ntail 的人数参数必须是正整数", {parseMode:"html"}); return;
+    }
+    await ctx.telegram.edit(invocation.message, `📊 正在统计管理员排序简表...\n目标: <b>${escape(target.title)}</b>`, {parseMode:"html"});
+    const all = await stats(ctx, target);
+    const candidates = all.filter(item => !item.locked);
+    const selected = candidates.slice(-count).reverse();
+    await send(ctx, invocation.message, `${header(target, "📉 <b>未锁席位倒数榜</b>", all.length, candidates.length)}\n\n${selected.map(line).join("\n")||"暂无未锁定席位的管理员。"}`);
+  });
+  const rm = guard(async (invocation, ctx) => {
+    const numericArg = invocation.args[0] && /^\d+$/.test(invocation.args[0]);
+    const targetArg = numericArg ? invocation.args.slice(1).join(" ") : invocation.args.join(" ");
+    const target = await resolveTarget(ctx, invocation.message, targetArg || undefined);
+    if (!invocation.args[0] || !/^[1-9]\d*$/.test(invocation.args[0])) {
+      await ctx.telegram.edit(invocation.message, "❌ 参数不足\n\nrm 的人数参数是必填正整数。", {parseMode:"html"}); return;
+    }
+    const limit = Number(invocation.args[0]);
+    await ctx.telegram.edit(invocation.message, `📊 正在统计管理员排序简表...\n目标: <b>${escape(target.title)}</b>`, {parseMode:"html"});
+    const all = await stats(ctx, target);
+    const candidates = all.filter(item => !item.locked);
+    const selected = candidates.slice(-limit).reverse();
+    const success:Stat[]=[],fail:string[]=[];
+    await ctx.telegram.withClient(async(client:any)=>{const {Api}=await import("teleproto");for(const stat of selected.filter(item=>!item.creator)){try{const user=await client.getInputEntity(stat.user);if(target.channel){const channel=await client.getInputEntity(target.entity);await client.invoke(new Api.channels.EditAdmin({channel,userId:user,adminRights:new Api.ChatAdminRights({}),rank:""}));}else await client.invoke(new Api.messages.EditChatAdmin({chatId:target.entity.id,userId:user,isAdmin:false}));success.push(stat);}catch(error){fail.push(`${stat.name}（${errorText(error)}）`);}}});
+    await send(ctx, invocation.message, `✂️ <b>尾部管理员清理完成</b>\n目标人数: <code>${limit}</code>\n实际候选: <code>${selected.length}</code>\n成功: <code>${success.length}</code>\n失败: <code>${fail.length}</code>${fail.length?`\n${fail.map(v=>`• ${escape(v)}`).join("\n")}`:""}`);
+  });
+  const adminBoard: CommandDefinition = {
+    description: "管理员席位管理",
+    helpArgs: ["help", "h"],
+    helpOnEmpty: true,
+    args: "ls|tail|rm|lock|unlock|clear",
+    subcommandsCaseSensitive: false,
+    subcommands: {
+      ls: {group: "排序简表", description: "查看当前对话管理员排序简表", args: "[对话id/@username]", examples: [{args: "ls"}, {args: "ls @group"}], handle: ls},
+      tail: {group: "排序简表", description: "查看未锁定席位的倒数 N 人", args: "[人数] [对话id/@username]", examples: [{args: "tail"}, {args: "tail 20"}, {args: "tail 20 @group"}], handle: tail},
+      rm: {group: "排序简表", description: "一键下掉倒数 N 个未锁定席位管理员", args: "人数 [对话id/@username]", arguments: [{name: "人数", required: true, description: "正整数"}], examples: [{args: "rm 3"}, {args: "rm 3 @group"}], handle: rm},
+      lock: {group: "席位锁定", description: "锁定席位", args: "@用户名/用户id [对话id/@username]", examples: [{args: "lock @u1,@u2"}, {args: "lock 123456789"}], handle: lock},
+      unlock: {group: "席位锁定", description: "取消锁定席位", args: "@用户名/用户id [对话id/@username]", examples: [{args: "unlock @u1，@u2"}], handle: unlock},
+      clear: {group: "缓存", description: "清理周日均/用户信息缓存", args: "[对话id/@username]", examples: [{args: "clear"}, {args: "clear @group"}], handle: clear},
+    },
+    help: [
+      {heading: "说明：", body: "• <code>ls</code> 是紧凑排行版；<code>tail</code> 只列出未锁定席位的倒数 N 人，默认 <code>10</code>\n• <code>rm</code> 只会下掉未锁定席位，人数参数必填且必须是正整数\n• <code>周日均</code> 和用户信息默认缓存 1 天\n• 用户和对话都只支持 <code>@username</code> 或 <code>id</code>；多个用户请用英文逗号或中文逗号分隔"},
+      {heading: "ls 输出字段：", body: "用户名 / 名称 / ID / 头衔 / 周日均 / 是否已锁定 / 娱乐文案"},
+    ],
+    async handle(invocation, ctx) {
+      const action = invocation.args[0]?.toLowerCase();
+      if (!action || ["help", "h"].includes(action)) {
+        await ctx.telegram.edit(invocation.message, renderCommandHelp("admin_board", adminBoard, {prefix: invocation.prefix}), {parseMode:"html"});
+        return;
+      }
+      try {
+        // Original order resolved the target before reporting an unsupported action.
+        await resolveTarget(ctx, invocation.message, invocation.args.slice(1).join(" ") || undefined);
+        await ctx.telegram.edit(invocation.message, `❌ <b>执行失败</b>\n\n不支持的动作: ${escape(action)}`, {parseMode:"html"});
+      } catch (error) {
+        if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, `❌ <b>执行失败</b>\n\n${escape(errorText(error))}`, {parseMode:"html"});
+      }
+    },
+  };
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "admin_board", description: "管理员活跃度排行、席位锁定和尾部管理员清理",
+    renderHelp: prefix => renderCommandHelp("admin_board", adminBoard, {prefix, title: "👮 管理员席位管理"}),
+    commands: {admin_board: adminBoard}});
 }
-
-export default function createAdminBoard(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"admin_board",description:"管理员活跃度排行、席位锁定和尾部管理员清理",commands:{admin_board:{helpArgs: ["help","h"], helpOnEmpty: true, description:"管理员席位管理",async handle({message,args,prefix},ctx){try{await command(message,args,ctx,prefix);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ <b>执行失败</b>\n\n${escape(errorText(error))}`,{parseMode:"html"});}}}}});}

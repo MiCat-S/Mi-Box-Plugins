@@ -1,8 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 
 const escape = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
-const help = `<b>天气查询</b>\n<code>weather 北京</code>\n<code>weather New York</code>`;
+
 const cities: Record<string, string> = {北京:"Beijing",上海:"Shanghai",广州:"Guangzhou",深圳:"Shenzhen",成都:"Chengdu",杭州:"Hangzhou",武汉:"Wuhan",西安:"Xi'an",重庆:"Chongqing",南京:"Nanjing",天津:"Tianjin",苏州:"Suzhou",长沙:"Changsha",郑州:"Zhengzhou",青岛:"Qingdao",大连:"Dalian",厦门:"Xiamen",香港:"Hong Kong",澳门:"Macau",台北:"Taipei",东京:"Tokyo",大阪:"Osaka",京都:"Kyoto",首尔:"Seoul",曼谷:"Bangkok",新加坡:"Singapore",吉隆坡:"Kuala Lumpur",雅加达:"Jakarta",伦敦:"London",巴黎:"Paris",柏林:"Berlin",罗马:"Rome",纽约:"New York",洛杉矶:"Los Angeles",旧金山:"San Francisco",芝加哥:"Chicago",多伦多:"Toronto",悉尼:"Sydney",墨尔本:"Melbourne"};
 const codes: Record<number, [string, string]> = {0:["☀️","晴朗"],1:["🌤️","大部晴朗"],2:["⛅","部分多云"],3:["☁️","阴天"],45:["🌫️","有雾"],48:["🌫️","沉积雾凇"],51:["🌦️","轻度细雨"],53:["🌦️","中度细雨"],55:["🌦️","密集细雨"],56:["🌨️","轻度冻雨"],57:["🌨️","密集冻雨"],61:["🌧️","轻度降雨"],63:["🌧️","中度降雨"],65:["🌧️","强降雨"],66:["🌨️","轻度冻雨"],67:["🌨️","强冻雨"],71:["❄️","轻度降雪"],73:["❄️","中度降雪"],75:["❄️","强降雪"],77:["🌨️","雪粒"],80:["🌦️","轻度阵雨"],81:["🌧️","中度阵雨"],82:["⛈️","强阵雨"],85:["🌨️","轻度阵雪"],86:["🌨️","强阵雪"],95:["⛈️","雷暴"],96:["⛈️","轻度冰雹雷暴"],99:["⛈️","强冰雹雷暴"]};
 const windDirection = (degree: unknown) => {
@@ -36,10 +35,9 @@ async function get(ctx: PluginContext, url: string, params: Record<string, strin
   return ctx.http.json(target.toString(), {}, {timeoutMs: 10000, redirects:{allowedHosts:[target.hostname],maxRedirects:2}});
 }
 export default function createWeather() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "weather", description: "查询城市天气", commands: {
-    weather: {helpArgs: ["help","h"], helpOnEmpty: true, description: "查询城市天气", async handle(invocation, ctx) {
+  const command: CommandDefinition = {"args":"城市名","examples":[{"args":"北京"},{"args":"beijing"},{"args":"New York"},{"args":"东京"}],"help":[{"heading":"查询内容：","body":"使用无需 API 密钥的 Open-Meteo 查询全球城市当前天气和当日最高/最低温度，显示湿度、风向风速、气压、云量和当地日出日落。支持内置常用中文城市名和英文名，取地理查询第一个匹配结果；城市名最多 80 字符。"},{"heading":"天气提醒：","body":"按温度、风速、降水量和天气代码生成高温、低温、大风、强降水或雷暴提示。"}],helpArgs: ["help","h"], helpOnEmpty: true, description: "查询城市天气", async handle(invocation, ctx) {
       const city = invocation.args.join(" ").trim();
-      if (!city || city.toLowerCase() === "help" || city.toLowerCase() === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
+      if (!city || city.toLowerCase() === "help" || city.toLowerCase() === "h") { await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode:"html"}); return; }
       if (!validCity(city)) { await ctx.telegram.edit(invocation.message, "请输入有效的城市名"); return; }
       try {
         await ctx.telegram.edit(invocation.message, `🔍 正在查询 <b>${escape(city)}</b>…`, {parseMode:"html"});
@@ -51,6 +49,9 @@ export default function createWeather() {
         const label = [place.name, place.admin1, place.country].filter(Boolean).join(", ");
         await ctx.telegram.edit(invocation.message, format(label, place, data), {parseMode:"html"});
       } catch (error) { if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, "天气查询失败，请稍后重试"); }
-    }},
+    }};
+  const help = (prefix: string) => renderCommandHelp("weather", command, {prefix, title: "🌤️ 天气查询"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "weather", description: "查询城市天气", commands: {
+    weather: command,
   }});
 }

@@ -1,12 +1,10 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type CommandInvocation, type SubcommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 import {returnBigInt} from "teleproto/Helpers";
 
 interface Task { task_id: number; cid: string; msg: string; interval: boolean; cron: boolean; pause: boolean; time_limit: number; hour: string; minute: string; second: string; current_count: number; dueAt?: string; delivery?: "pending" | "prepared" | "sent"; }
 interface State extends Record<string, unknown> { schemaVersion: number; tasks: Task[]; timezone: string; }
 const defaults: State = {schemaVersion: 1, tasks: [], timezone: "Asia/Shanghai"};
 const escape = (value: string) => value.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]!);
-const help = (prefix: string) => `<b>定时发送消息插件</b>\n<code>${prefix}sendat 时间 | 消息内容</code>\n<code>${prefix}sendat list/rm/pause/resume</code>`;
 const validZone = (zone: string) => {try {new Intl.DateTimeFormat("en", {timeZone: zone}).format(); return true;} catch {return false;}};
 function nextShanghai(hour: number, minute: number, second: number): string { const parts = new Intl.DateTimeFormat("en-CA", {timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"}).formatToParts(new Date()); const get = (type: string) => parts.find(part => part.type === type)!.value; let due = new Date(`${get("year")}-${get("month")}-${get("day")}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}+08:00`); if (due <= new Date()) due = new Date(due.getTime() + 86_400_000); return due.toISOString(); }
 
@@ -52,18 +50,53 @@ export default function createSendAt() {
     if (remove) { await disposers.get(id)?.(); disposers.delete(id); }
   });
   const register = async (context: PluginContext, task: Task, timeZone = "Asia/Shanghai") => { if (task.pause || disposers.has(task.task_id)) return; const dispose = await context.jobs.register(`task_${task.task_id}`, {cron: cronFor(task), timeZone, description: `定时发送任务 ${task.task_id}`}, () => execute(context, task.task_id)); disposers.set(task.task_id, dispose); };
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "sendat", description: "按固定时间或间隔发送消息",
-    commands: {sendat: {helpArgs: ["help","h"], helpOnEmpty: true, description: "管理定时发送任务", async handle(invocation, context) {
-      const store = context.storage.json<State>("tasks.json", defaults); const sub = invocation.args[0]?.toLowerCase();
+  const storeFor = (context: PluginContext) => context.storage.json<State>("tasks.json", defaults);
+  const manage = (operation: (i: CommandInvocation, context: PluginContext, task: Task, state: State) => Promise<unknown>): CommandDefinition["handle"] => async (i, context) => {
+    const id = Number(i.args[0]);
+    if (!Number.isInteger(id)) return context.telegram.edit(i.message, "❌ 请输入有效的任务ID", {});
+    const state = await storeFor(context).read(), task = state.tasks.find(item => item.task_id === id);
+    if (!task) return context.telegram.edit(i.message, "❌ 任务不存在", {});
+    if (task.cid !== i.message.chatId) return context.telegram.edit(i.message, "❌ 只能管理自己的任务", {});
+    await operation(i, context, task, state);
+  };
+  const pause = (paused: boolean): SubcommandDefinition => ({description: paused ? "暂停当前聊天的任务" : "恢复当前聊天的任务", args: "任务ID",
+    handle: manage(async (i, context, task, state) => {
+      const id = task.task_id;
+      if (task.pause === paused) return context.telegram.edit(i.message, `❌ ${paused ? "暂停" : "恢复"}任务失败`, {});
+      if (paused) { await disposers.get(id)?.(); disposers.delete(id); }
+      await storeFor(context).update(current => { const found = current.tasks.find(item => item.task_id === id); if (found) found.pause = paused; return current; });
+      if (!paused) await register(context, {...task, pause: false}, state.timezone);
+      return context.telegram.edit(i.message, `${paused ? "⏸️ 已暂停" : "▶️ 已恢复"}任务 #${id}`, {});
+    })});
+  const command: CommandDefinition = {
+    helpArgs: ["help", "h"], helpOnEmpty: true, description: "管理定时发送任务", args: "时间 | 消息内容", subcommandsCaseSensitive: false,
+    examples: [{args: "16:00:00 date | 投票截止！", description: "到下一个 16:00 发送一次"}, {args: "every 23:59:59 date | 又是无所事事的一天呢。", description: "每天 23:59:59 发送"}, {args: "every 1 minutes | 又过去了一分钟。", description: "每分钟发送"}, {args: "3 times 1 minutes | 此消息将出现三次。", description: "每分钟发送，共 3 次"}],
+    subcommands: {
+      list: {description: "查看当前聊天的任务", args: "", subcommandsCaseSensitive: true, subcommands: {
+        all: {description: "全部任务查询入口（当前实现始终返回权限不足）", args: "", async handle(i, context) { return context.telegram.edit(i.message, "❌ 只有管理员可以查看所有任务", {}); }},
+      }, async handle(i, context) {
+        const tasks = (await storeFor(context).read()).tasks.filter(task => task.cid === i.message.chatId);
+        return context.telegram.edit(i.message, tasks.length ? `📋 <b>我的任务：</b>\n\n${tasks.map(description).join("\n\n")}` : "📝 您没有已注册的任务", {parseMode: "html"});
+      }},
+      rm: {description: "删除当前聊天的任务", aliases: ["delete"], args: "任务ID", handle: manage(async (i, context, task) => {
+        const id = task.task_id; await disposers.get(id)?.(); disposers.delete(id);
+        await storeFor(context).update(current => ({...current, tasks: current.tasks.filter(item => item.task_id !== id)}));
+        return context.telegram.edit(i.message, `✅ 已删除任务 #${id}`, {});
+      })},
+      pause: pause(true), resume: pause(false),
+    },
+    help: [{heading: "时间单位：", body: "seconds（1–59）、minutes（1–59）、hours（1–23）、date（HH:MM:SS）、times（正整数次数）。使用 | 分隔时间和消息，消息支持多行及 HTML。"},
+      {heading: "时区：", body: "默认 Asia/Shanghai，可在插件设置修改 IANA 时区。一次性 date 的下次执行时刻按 Asia/Shanghai 计算；每日及间隔任务使用配置时区注册。"}],
+    async handle(invocation, context) {
+      const store = storeFor(context), sub = invocation.args[0]?.toLowerCase();
       if (!sub || sub === "help" || sub === "h") return context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
-      if (sub === "list") { const all = invocation.args[1] === "all"; if (all) return context.telegram.edit(invocation.message, "❌ 只有管理员可以查看所有任务", {}); const tasks = (await store.read()).tasks.filter(task => task.cid === invocation.message.chatId); return context.telegram.edit(invocation.message, tasks.length ? `📋 <b>我的任务：</b>\n\n${tasks.map(description).join("\n\n")}` : "📝 您没有已注册的任务", {parseMode: "html"}); }
-      if (["rm", "delete", "pause", "resume"].includes(sub)) { const id = Number(invocation.args[1]); if (!Number.isInteger(id)) return context.telegram.edit(invocation.message, "❌ 请输入有效的任务ID", {}); const state = await store.read(); const task = state.tasks.find(item => item.task_id === id); if (!task) return context.telegram.edit(invocation.message, "❌ 任务不存在", {}); if (task.cid !== invocation.message.chatId) return context.telegram.edit(invocation.message, "❌ 只能管理自己的任务", {});
-        if (sub === "rm" || sub === "delete") { await disposers.get(id)?.(); disposers.delete(id); await store.update(current => ({...current, tasks: current.tasks.filter(item => item.task_id !== id)})); return context.telegram.edit(invocation.message, `✅ 已删除任务 #${id}`, {}); }
-        const pause = sub === "pause"; if (task.pause === pause) return context.telegram.edit(invocation.message, `❌ ${pause ? "暂停" : "恢复"}任务失败`, {}); if (pause) {await disposers.get(id)?.(); disposers.delete(id);} await store.update(current => {const found = current.tasks.find(item => item.task_id === id); if (found) found.pause = pause; return current;}); if (!pause) await register(context, {...task, pause: false}, state.timezone); return context.telegram.edit(invocation.message, `${pause ? "⏸️ 已暂停" : "▶️ 已恢复"}任务 #${id}`, {});
-      }
       const raw = invocation.message.text.replace(/^\S+\s*/, "");
       try { const state = await store.read(); const task = parseTask(Math.max(0, ...state.tasks.map(item => item.task_id)) + 1, invocation.message.chatId, raw); await store.update(current => ({...current, schemaVersion: 1, tasks: [...current.tasks, task]})); await register(context, task, state.timezone); return context.telegram.edit(invocation.message, `✅ <b>已添加任务 #${task.task_id}</b>\n\n${description(task)}`, {parseMode: "html"}); } catch (error) { return context.telegram.edit(invocation.message, `❌ <b>错误：</b>${escape(error instanceof Error ? error.message : "添加任务失败")}`, {parseMode: "html"}); }
-    }}},
+
+    },
+  };
+  const help = (prefix: string) => renderCommandHelp("sendat", command, {prefix, title: "⏰ 定时发送消息插件"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "sendat", description: "按固定时间或间隔发送消息", commands: {sendat: command},
     async setup(context) { const store = context.storage.json<State>("tasks.json", defaults); const state = await store.update(current => ({...current, schemaVersion: 1, timezone: current.timezone && validZone(current.timezone) ? current.timezone : "Asia/Shanghai", tasks: (current.tasks || []).filter(task => task.delivery !== "prepared" || task.interval).map(task => ({...task, cid: String(task.cid), current_count: task.current_count || 0, delivery: task.delivery === "prepared" ? "pending" : task.delivery || "pending"}))})); for (const task of state.tasks) { if (!task.pause && task.dueAt && Date.parse(task.dueAt) <= Date.now()) await execute(context, task.task_id); else await register(context, task, state.timezone); } },
     async cleanup() { await Promise.all([...disposers.values()].map(dispose => dispose())); disposers.clear(); },
     settings: context => ({title: "定时发送", category: "插件配置", icon: "📅", getSchema: () => [{key: "timezone", label: "时区", type: "string"}], async getValues() {return {timezone: (await context.storage.json<State>("tasks.json", defaults).read()).timezone};}, async setValues(patch) {if (patch.timezone !== undefined && (typeof patch.timezone !== "string" || !validZone(patch.timezone))) throw new Error("invalid timezone"); const state = await context.storage.json<State>("tasks.json", defaults).update(current => ({...current, ...(patch.timezone ? {timezone: patch.timezone as string} : {})})); await Promise.all([...disposers.values()].map(dispose => dispose())); disposers.clear(); for (const task of state.tasks) await register(context, task, state.timezone);}}),

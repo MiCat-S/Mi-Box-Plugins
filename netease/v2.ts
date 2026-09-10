@@ -1,12 +1,10 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as delay} from "node:timers/promises";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 const BOT = "Music163bot";
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
-const help = (prefix: string) => `<b>网易云音乐</b>\n依赖 @Music163bot\n\n<code>${escape(prefix)}netease 关键词</code>\n<code>${escape(prefix)}netease 歌曲链接或 ID</code>`;
 
 function botCommand(input: string): string {
   if (/^\d+$/.test(input)) return `/music ${input}`;
@@ -20,8 +18,11 @@ async function recent(client: any): Promise<ApiTypes.Message[]> {
 }
 
 export default function createNetease() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "netease", description: "通过 Music163bot 搜索和发送网易云音乐",
-    commands: {netease: {helpArgs: ["help","h"], description: "搜索和发送网易云音乐", async handle(invocation, context) {
+  const command: CommandDefinition = {
+    args: "关键词|歌曲链接|歌曲ID", arguments: [{name: "输入", description: "按关键词搜索并返回音频，或解析网易云歌曲链接与数字 ID"}],
+    examples: [{args: "晴天"}, {args: "https://music.163.com/#/song?id=123456"}, {args: "123456"}],
+    help: [{heading: "依赖：", body: "通过 @Music163bot 搜索和发送音乐，插件会与该机器人交互。"}],
+    helpArgs: ["help","h"], description: "搜索和发送网易云音乐", async handle(invocation, context) {
       const keyword = invocation.args.join(" ").trim();
       if (!keyword || ["help", "h"].includes(keyword.toLowerCase())) {
         await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
@@ -68,6 +69,9 @@ export default function createNetease() {
         context.log.error("netease_failed");
         await context.telegram.edit(invocation.message, "网易云音乐获取失败，请稍后重试");
       }
-    }}},
+    }};
+  const help = (prefix: string) => renderCommandHelp("netease", command, {prefix, title: "🎵 网易云音乐"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "netease", description: "通过 Music163bot 搜索和发送网易云音乐",
+    commands: {netease: command},
   });
 }

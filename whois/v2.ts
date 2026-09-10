@@ -1,9 +1,8 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 import {report} from "./v2/report";
 import {records, type WhoisRecords} from "./v2/records";
 
-const help = `<b>WHOIS 域名查询</b>\n<code>whois example.com</code>`;
+
 const positive = (value: number | undefined, fallback: number) =>
   typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
@@ -22,31 +21,24 @@ function extract(raw: string): string {
   }
   return "";
 }
-export default function createWhois() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "whois", description: "查询域名注册信息",
-    async setup(ctx) { await records(ctx).initialize(); },
-    commands: {
-    whois: {helpArgs: ["help","h"], description: "查询域名注册信息", async handle(invocation, ctx) {
-      let raw = invocation.args[0] ?? "";
-      if (raw.toLowerCase() === "help" || raw.toLowerCase() === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
-      if (!raw) {
-        const reply = await ctx.telegram.getReply(invocation.message);
-        raw = reply?.text.match(/(?:https?:\/\/)?(?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:\/[^\s]*)?/i)?.[0] ?? "";
-        if (!raw) {await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return;}
-      }
+const command: CommandDefinition = {
+  description: "查询域名注册信息", helpArgs: ["help", "h"], args: "[域名]", subcommandsCaseSensitive: false,
+  examples: [{args: "google.com"}, {args: "https://example.com/path"}, {args: "", description: "回复含域名的消息查询"}],
+  subcommands: {
+    clear: {description: "清空查询历史与缓存", args: "", async handle(invocation, ctx) {
       const db = records(ctx);
-      if (raw.toLowerCase() === "clear") {
         const counts = await db.clear();
         await ctx.telegram.edit(invocation.message, `已清除历史 ${counts.history} 条、缓存 ${counts.cache} 个域名`); return;
-      }
-      if (raw.toLowerCase() === "history") {
+          }},
+    history: {description: "查看查询历史及缓存数量", args: "", async handle(invocation, ctx) {
+      const db = records(ctx);
         const data = await db.history();
         const rows = data.rows.map((item, i) => `${i + 1}. <code>${esc(item.domain)}</code> <i>${item.queryTime.slice(5, 16).replace("T", " ")}</i>`).join("\n");
         await ctx.telegram.edit(invocation.message, `<b>WHOIS 查询历史</b>\n\n${rows || "暂无查询历史"}\n\n共 ${data.history} 条，缓存 ${data.cache} 个`, {parseMode:"html"}); return;
-      }
-      const inputs = raw.toLowerCase() === "batch" ? invocation.args.slice(1) : invocation.args.slice(0, 10);
-      if (raw.toLowerCase() === "batch") {
-        if (!inputs.length) { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
+          }},
+    batch: {description: "批量查询并显示各域名是否成功", args: "域名1 [域名2...]", examples: [{args: "batch google.com github.com"}], help: [{body: "最多 10 个域名；批量结果为成功/失败摘要，详细记录可通过单域名查询读取。"}], async handle(invocation, ctx) {
+      const inputs = invocation.args, db = records(ctx);
+        if (!inputs.length) { await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode:"html"}); return; }
         if (inputs.length > 10) { await ctx.telegram.edit(invocation.message, "批量查询最多支持 10 个域名"); return; }
         const results: string[] = [];
         for (const input of inputs) {
@@ -57,7 +49,18 @@ export default function createWhois() {
           results.push(result ? `✅ <code>${esc(name)}</code>` : `❌ <code>${esc(name)}</code>：查询失败`);
         }
         await ctx.telegram.edit(invocation.message, `<b>WHOIS 批量查询</b>\n\n${results.join("\n")}`, {parseMode:"html"}); return;
-      }
+          }},
+  },
+  help: [{heading: "数据与显示：", body: "通过 namebeta.com 查询 WHOIS，显示注册商、DNS、状态和注册/更新/到期日期，并在报告中提示临近到期。支持从 URL 或回复消息提取域名；查询结果默认缓存 24 小时，详细报告自动分段。"}],
+  async handle(invocation, ctx) {
+    let raw = invocation.args[0] ?? "";
+    if (raw.toLowerCase() === "help" || raw.toLowerCase() === "h") { await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }
+    if (!raw) {
+      const reply = await ctx.telegram.getReply(invocation.message);
+      raw = reply?.text.match(/(?:https?:\/\/)?(?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:\/[^\s]*)?/i)?.[0] ?? "";
+      if (!raw) { await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }
+    }
+      const db = records(ctx);
       const name = domain(raw);
       if (!name) { await ctx.telegram.edit(invocation.message, "请输入有效域名，例如 <code>example.com</code>", {parseMode:"html"}); return; }
       try {
@@ -70,8 +73,13 @@ export default function createWhois() {
           else await ctx.telegram.reply(invocation.message, page, {parseMode: "html", linkPreview: false});
         }
       } catch { if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, "WHOIS 查询失败，请稍后重试"); }
-    }},
-  }});
+  },
+};
+const help = (prefix: string) => renderCommandHelp("whois", command, {prefix, title: "🔍 WHOIS 域名查询"});
+export default function createWhois() {
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "whois", description: "查询域名注册信息",
+    async setup(ctx) { await records(ctx).initialize(); }, commands: {whois: command},
+  });
 }
 
 async function query(name: string, ctx: PluginContext, db: WhoisRecords): Promise<string> {

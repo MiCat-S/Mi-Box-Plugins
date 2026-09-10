@@ -38,7 +38,7 @@ async function fixture(t, {cache = {}, cacheLimit = 10, surveillance = {}, clien
   t.after(async () => { assert.equal((await host.shutdown(2000)).completed, true); await fs.rm(root, {recursive: true, force: true}); });
   return {root, host, definition, edits, sent,
     read: async (name = 'cache.json') => JSON.parse(await fs.readFile(path.join(dir, name), 'utf8')),
-    listen: (chat, id, extra = {}) => host.dispatchListeners({id, chatId: peer(chat), senderId: '42', outgoing: false,
+    listen: (chat, id, extra = {}) => host.dispatchListeners({id, chatId: peer(chat), chatType: 'supergroup', senderId: '42', outgoing: false,
       text: `message ${id}`, raw: {date: now, peerId: peer(chat)}, ...extra}),
     run: text => host.dispatchPrimary({id: 999, chatId: peer(900), senderId: '42', outgoing: true, text}),
   };

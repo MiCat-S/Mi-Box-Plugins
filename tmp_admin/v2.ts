@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type CommandInvocation, definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {setTimeout as sleep} from "node:timers/promises";
 import {returnBigInt} from "teleproto/Helpers";
 
@@ -107,11 +106,41 @@ export default function createTmpAdmin(){const live=new Map<string,LiveJob>();le
     live.set(id,active);
     scheduleNext();
   };
-  const help=(prefix:string)=>`使用 <code>${prefix}tmp_admin add [分钟]</code> 回复消息，或 <code>${prefix}tmp_admin add 用户 [分钟]</code>；<code>${prefix}tmp_admin rm 用户</code> 提前解除；<code>${prefix}tmp_admin ls</code> 查看任务。`;
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"tmp_admin",description:"设置会自动到期的无权限临时管理员",
+  const guarded = (operation: (i: CommandInvocation, ctx: PluginContext, data: Data) => Promise<void>): CommandDefinition["handle"] => async (i, ctx) => {
+    try {
+      const data = await database(ctx).read();
+      if (data.enabled === false) { await ctx.telegram.edit(i.message, "临时管理员功能当前已关闭"); return; }
+      await operation(i, ctx, data);
+    } catch (e) { if (!ctx.signal.aborted) await ctx.telegram.edit(i.message, `操作失败：<code>${escape(error(e))}</code>`, {parseMode: "html"}); }
+  };
+  const change = (adding: boolean): CommandDefinition["handle"] => guarded(async ({message, args}, ctx, data) => {
+    const chat = await channel(ctx, message);
+const target=await entity(ctx,message,chat.input,message.replyToId?undefined:args[0]);const id=key(String(chat.full.id),target.id);const current=await participant(ctx,chat.input,target.input);if(adding){if(current?.className==="ChannelParticipantCreator")throw new Error("不能把群主设置为临时管理员");if(current?.className==="ChannelParticipantAdmin"&&!temporary(current)){if(data.jobs[id])await forget(id);throw new Error("目标已经是管理员。为避免覆盖现有权限和头衔, 不会将其改为临时管理员。");}const minutes=duration(message.replyToId?args[0]:args[1]);const job:StoredJob={chatId:String(chat.full.id),userId:target.id,display:target.display,expiresAt:Date.now()+minutes*60_000,originalRank:data.jobs[id]?.originalRank??(temporary(current)?"":String(current?.rank||"")),replyToId:message.id,retryCount:0,channelAccessHash:String(chat.input.accessHash),userAccessHash:String(target.input.accessHash)};await setAdmin(ctx,chat.input,target.input,title,true);await schedule(id,job);let warning="";try{await database(ctx).update(value=>({...value,schemaVersion:1,jobs:{...value.jobs,[id]:job}}));}catch(e){ctx.signal.throwIfAborted();warning=`\n持久化失败: <code>${escape(error(e))}</code>`;}
+await sleep(1200,undefined,{signal:ctx.signal});try{if(!temporary(await participant(ctx,chat.input,target.input)))warning+="\n状态校验未确认, 已保留到期解除任务。若服务端稍后同步, 到期仍会尝试解除。";}catch(e){ctx.signal.throwIfAborted();warning+=`\n状态校验失败, 已保留到期解除任务: <code>${escape(error(e))}</code>`;}await ctx.telegram.edit(message,`已设置临时管理员: ${escape(target.display)}\n头衔: <code>${title}</code>\n时长: <code>${minutes} 分钟</code>${warning}`,{parseMode:"html"});}else{const stored=(await database(ctx).read()).jobs[id];if(!temporary(current)){if(stored)await forget(id);await ctx.telegram.edit(message,stored?"目标当前已不再是插件设置的临时管理状态, 已清理记录, 未解除管理员。":"目标不是当前插件记录的临时管理员, 也没有临时管理头衔。为避免误删真实管理员, 已取消。");return;}await setAdmin(ctx,chat.input,target.input,stored?.originalRank||"",false);await forget(id);await ctx.telegram.edit(message,`已提前解除临时管理员: ${escape(target.display)}`,{parseMode:"html"});}
+  });
+  const command: CommandDefinition = {
+    description: "设置、解除或查看临时管理员", helpArgs: ["help", "h"], helpOnEmpty: true, subcommandsCaseSensitive: false,
+    subcommands: {
+      add: {description: "设置或续期临时管理员", aliases: ["set"], args: "用户ID或用户名 [分钟]", alternates: [{args: "[分钟]", description: "回复用户消息时以回复目标为准"}], examples: [{args: "add @username 60"}, {args: "add 15", description: "回复用户消息，设置 15 分钟"}], handle: change(true)},
+      rm: {description: "提前解除临时管理员", aliases: ["remove", "del"], args: "[用户ID或用户名]", examples: [{args: "rm @username"}, {args: "rm", description: "回复目标消息提前解除"}], handle: change(false)},
+      list: {description: "查看当前对话的任务及剩余分钟", aliases: ["ls"], args: "", handle: guarded(async ({message}, ctx) => {
+        const chat = await channel(ctx, message);
+const jobs=Object.values((await database(ctx).read()).jobs).filter(job=>job.chatId===String(chat.full.id));await ctx.telegram.edit(message,jobs.length?`当前临时管理员：\n${jobs.map(job=>`- ${escape(job.display)} | 剩余 <code>${Math.max(0,Math.ceil((job.expiresAt-Date.now())/60_000))} 分钟</code>`).join("\n")}`:"当前没有等待自动解除的临时管理员",{parseMode:"html"});return;
+      })},
+    },
+    help: [{heading: "权限与时长：", body: "为用户设置“临时管理”头衔及无实际管理能力的席位。适用于超级群/频道，当前账号需有设置管理员权限；不能覆盖群主或已有实际权限的管理员。默认 30 分钟，可填写大于 0、最多 525600 的分钟数。用户 ID/用户名须能解析为用户，回复消息时优先使用回复目标。"},
+      {heading: "到期行为：", body: "任务持久保存，重新加载后恢复；停机期间到期的任务恢复后处理。解除前核对仍为插件设置的临时管理状态；权限或头衔变化时保留当前状态并通知。解除失败约 1 分钟后重试一次，仍失败会提示。"},
+      {heading: "设置与提示：", body: "插件设置中的启用开关控制命令入口，已有到期任务继续执行。目标已是管理员时请选择普通成员；无法识别目标时回复该用户消息重试；入口关闭时在插件设置启用。"}],
+    handle: guarded(async (i, ctx) => {
+      const action = i.args[0]?.toLowerCase();
+      if (action && !["help", "h"].includes(action)) await channel(ctx, i.message);
+      await ctx.telegram.edit(i.message, help(i.prefix), {parseMode: "html"});
+    }),
+  };
+  const help = (prefix: string) => renderCommandHelp("tmp_admin", command, {prefix, title: "⏳ 临时管理员"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION,id:"tmp_admin",description:"设置会自动到期的无权限临时管理员",
     settings:ctx=>({id:"tmp_admin",title:"临时管理",description:"临时管理员配置",category:"插件配置",icon:"🛡️",getSchema:()=>[{key:"enabled",label:"启用",type:"boolean"}],getValues:async()=>{const data=await database(ctx).read();return{enabled:data.enabled!==false};},setValues:async patch=>{await database(ctx).update(data=>({...data,schemaVersion:1,enabled:typeof patch.enabled==="boolean"?patch.enabled:data.enabled}));}}),
     async setup(ctx){context=ctx;const data=await database(ctx).read();const migrated:Record<string,StoredJob>={};for(const value of Object.values(data.jobs||{})){const job=normalizeJob(value);if(job){const id=key(job.chatId,job.userId);migrated[id]=job;await schedule(id,job);}}if(data.schemaVersion!==1||Object.keys(migrated).some(id=>!(id in (data.jobs||{}))))await database(ctx).update(value=>({...value,schemaVersion:1,enabled:value.enabled!==false,jobs:migrated}));},
     async cleanup(){for(const job of [...live.values()])await job.dispose();live.clear();context=undefined;},
-    commands:{tmp_admin:{helpArgs: ["help","h"], helpOnEmpty: true, description:"设置、解除或查看临时管理员",async handle({message,args,prefix},ctx){try{const data=await database(ctx).read();if(data.enabled===false){await ctx.telegram.edit(message,"临时管理员功能当前已关闭");return;}const action=args[0]?.toLowerCase();if(!action||["help","h"].includes(action)){await ctx.telegram.edit(message,help(prefix),{parseMode:"html"});return;}const chat=await channel(ctx,message);if(["ls","list"].includes(action)){const jobs=Object.values((await database(ctx).read()).jobs).filter(job=>job.chatId===String(chat.full.id));await ctx.telegram.edit(message,jobs.length?`当前临时管理员：\n${jobs.map(job=>`- ${escape(job.display)} | 剩余 <code>${Math.max(0,Math.ceil((job.expiresAt-Date.now())/60_000))} 分钟</code>`).join("\n")}`:"当前没有等待自动解除的临时管理员",{parseMode:"html"});return;}if(!["add","set","rm","remove","del"].includes(action)){await ctx.telegram.edit(message,help(prefix),{parseMode:"html"});return;}const adding=action==="add"||action==="set";const target=await entity(ctx,message,chat.input,message.replyToId?undefined:args[1]);const id=key(String(chat.full.id),target.id);const current=await participant(ctx,chat.input,target.input);if(adding){if(current?.className==="ChannelParticipantCreator")throw new Error("不能把群主设置为临时管理员");if(current?.className==="ChannelParticipantAdmin"&&!temporary(current)){if(data.jobs[id])await forget(id);throw new Error("目标已经是管理员。为避免覆盖现有权限和头衔, 不会将其改为临时管理员。");}const minutes=duration(message.replyToId?args[1]:args[2]);const job:StoredJob={chatId:String(chat.full.id),userId:target.id,display:target.display,expiresAt:Date.now()+minutes*60_000,originalRank:data.jobs[id]?.originalRank??(temporary(current)?"":String(current?.rank||"")),replyToId:message.id,retryCount:0,channelAccessHash:String(chat.input.accessHash),userAccessHash:String(target.input.accessHash)};await setAdmin(ctx,chat.input,target.input,title,true);await schedule(id,job);let warning="";try{await database(ctx).update(value=>({...value,schemaVersion:1,jobs:{...value.jobs,[id]:job}}));}catch(e){ctx.signal.throwIfAborted();warning=`\n持久化失败: <code>${escape(error(e))}</code>`;}
-await sleep(1200,undefined,{signal:ctx.signal});try{if(!temporary(await participant(ctx,chat.input,target.input)))warning+="\n状态校验未确认, 已保留到期解除任务。若服务端稍后同步, 到期仍会尝试解除。";}catch(e){ctx.signal.throwIfAborted();warning+=`\n状态校验失败, 已保留到期解除任务: <code>${escape(error(e))}</code>`;}await ctx.telegram.edit(message,`已设置临时管理员: ${escape(target.display)}\n头衔: <code>${title}</code>\n时长: <code>${minutes} 分钟</code>${warning}`,{parseMode:"html"});}else{const stored=(await database(ctx).read()).jobs[id];if(!temporary(current)){if(stored)await forget(id);await ctx.telegram.edit(message,stored?"目标当前已不再是插件设置的临时管理状态, 已清理记录, 未解除管理员。":"目标不是当前插件记录的临时管理员, 也没有临时管理头衔。为避免误删真实管理员, 已取消。");return;}await setAdmin(ctx,chat.input,target.input,stored?.originalRank||"",false);await forget(id);await ctx.telegram.edit(message,`已提前解除临时管理员: ${escape(target.display)}`,{parseMode:"html"});}}catch(e){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`操作失败：<code>${escape(error(e))}</code>`,{parseMode:"html"});}}}},
+    commands: {tmp_admin: command},
   });}

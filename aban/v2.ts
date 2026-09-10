@@ -1,15 +1,35 @@
 import type {Api} from "teleproto";
-import {renderHelp} from "./v2/help";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type CommandInvocation, type PluginContext} from "telebox/sdk";
 import {createAbanRuntime} from "./v2/runtime";
-import {definePlugin, type CommandInvocation, type PluginContext} from "telebox/sdk";
 
-const commands = {aban: "封禁管理帮助", kick: "踢出", ban: "封禁", unban: "解封", mute: "禁言",
-  unmute: "解除禁言", sb: "批量封禁", unsb: "批量解封", refresh: "刷新管理群缓存"};
+const meta: Record<string, {description: string; args?: string; arguments?: readonly {name: string; required?: boolean; description?: string}[]; examples?: readonly {args?: string; description?: string}[]; help?: readonly {heading?: string; body: string}[]}> = {
+  aban: {description: "查看封禁管理帮助", args: "", examples: [{args: "", description: "查看完整封禁管理指南"}],
+    help: [{heading: "目标与范围：", body: "目标：回复消息 / @用户名 / 用户ID；管理员目标需追加 <code>true</code>。\n基本群仅支持踢出；ban/sb 在基本群执行移出，不会阻止再次加入。"}]},
+  kick: {description: "踢出", args: "[目标]", arguments: [{name: "目标", description: "回复消息 / @用户名 / 用户ID"}], examples: [{args: "@username"}, {args: "123456789"}]},
+  ban: {description: "封禁并清理消息", args: "[目标] [true]", arguments: [{name: "目标", description: "回复消息 / @用户名 / 用户ID"}, {name: "true", description: "管理员目标需追加 true"}], examples: [{args: "@username"}, {args: "123456789 true"}]},
+  unban: {description: "解封", args: "[目标]", arguments: [{name: "目标", description: "回复消息 / @用户名 / 用户ID"}], examples: [{args: "@username"}]},
+  mute: {description: "禁言，时长如 60s / 5m / 1h / 1d；省略为永久", args: "[目标] [时长]", arguments: [{name: "目标", description: "回复消息 / @用户名 / 用户ID"}, {name: "时长", description: "60s / 5m / 1h / 1d；省略为永久"}], examples: [{args: "@username 1h"}, {args: "123456789 60s"}]},
+  unmute: {description: "解除禁言", args: "[目标]", arguments: [{name: "目标", description: "回复消息 / @用户名 / 用户ID"}], examples: [{args: "@username"}]},
+  sb: {description: "在所有有管理权的群/频道封禁，并清理当前群消息", args: "[目标] [true]", arguments: [{name: "目标", description: "回复消息 / @用户名 / 用户ID"}, {name: "true", description: "管理员目标需追加 true"}], examples: [{args: "@username"}, {args: "123456789 true"}]},
+  unsb: {description: "批量解封", args: "[目标]", arguments: [{name: "目标", description: "回复消息 / @用户名 / 用户ID"}], examples: [{args: "@username"}]},
+  refresh: {description: "刷新管理群缓存", args: "", examples: [{args: "", description: "刷新有管理权的群组缓存"}]},
+};
 
 export default function createAban() {
+  const commands: Record<string, CommandDefinition> = Object.fromEntries(Object.entries(meta).map(([name, value]) => [name, {
+    description: value.description, ignoreEdited: true,
+    ...(value.args !== undefined ? {args: value.args} : {}),
+    ...(value.arguments ? {arguments: value.arguments} : {}),
+    ...(value.examples ? {examples: value.examples} : {}),
+    ...(value.help ? {help: value.help} : {}),
+  } as CommandDefinition]));
+  const renderModuleHelp = (prefix: string): string => [
+    "<b>🛡️ 封禁管理</b>",
+    ...Object.entries(commands).map(([name, command]) => renderCommandHelp(name, command, {prefix})),
+  ].join("\n\n");
   const handle = async (inv: CommandInvocation, ctx: PluginContext) => {
     if (inv.command === "aban" || ["help", "h"].includes(inv.args[0] ?? "")) {
-      await ctx.telegram.edit(inv.message, renderHelp(inv.prefix), {parseMode: "html", linkPreview: false});
+      await ctx.telegram.edit(inv.message, renderModuleHelp(inv.prefix), {parseMode: "html", linkPreview: false});
       return;
     }
     const run = async () => {
@@ -53,8 +73,8 @@ export default function createAban() {
       void ctx.tasks.run("aban:batch", run).catch(() => {if (!ctx.signal.aborted) ctx.log.error("aban:batch");});
     } else await run();
   };
-  return definePlugin({apiVersion: 1, id: "aban", description: "封禁管理", renderHelp,
-    commands: Object.fromEntries(Object.entries(commands).map(([name, description]) =>
-      [name, {description, ignoreEdited: true, handle}])),
+  for (const name of Object.keys(commands)) commands[name] = Object.freeze({...commands[name]!, handle});
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "aban", description: "封禁管理", renderHelp: renderModuleHelp,
+    commands,
   });
 }

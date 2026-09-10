@@ -1,8 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext} from "telebox/sdk";
 import path from "node:path";
 import {open, stat} from "node:fs/promises";
 import {load} from "cheerio";
-import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 const HOST = "cosplaytele.com";
@@ -123,8 +122,20 @@ async function run(invocation: any, context: PluginContext): Promise<void> {
   }
 }
 
+const cosplayCommand: CommandDefinition = {
+  description: "从随机套图获取 Cosplay 图片",
+  args: "[数量]",
+  arguments: [{name: "数量", description: "获取图片数量，默认 1，最大 10"}],
+  examples: [{args: ""}, {args: "3"}],
+  help: [
+    {heading: "说明：", body: "从 cosplaytele.com 随机选择套图，确保多张图片来自同一套图，只获取高质量的 gallery 图片；发送图片时自动包含原套图链接。"},
+    {heading: "别名：", body: "<code>{prefix}cos</code> 与 cosplay 相同。"},
+  ],
+  handle: run,
+};
+
 export default function createCosplay() {
-  const command = {description: "从随机套图获取 Cosplay 图片", handle: run};
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "cosplay", description: "从 cosplaytele.com 获取同一套图中的随机图片",
-    commands: {cos: command, cosplay: command}});
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "cosplay", description: "从 cosplaytele.com 获取同一套图中的随机图片",
+    renderHelp: prefix => renderCommandHelp("cosplay", cosplayCommand, {prefix, title: "从 cosplaytele.com 随机获取cosplay图片"}),
+    commands: {cos: cosplayCommand, cosplay: cosplayCommand}});
 }

@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type MessageEnvelope, type PluginContext, type SubcommandDefinition} from "telebox/sdk";
 
 const SCHEMA_VERSION = 1;
 const TIME_ZONE = "Asia/Shanghai";
@@ -73,16 +72,211 @@ export default function createCheckin(){
   const single=async(ctx:PluginContext,wanted:Target,signal:AbortSignal):Promise<Result>=>ctx.telegram.withClient(async client=>{signal.throwIfAborted();const sent=await client.sendMessage(wanted.target,{message:wanted.command});const id=Number(sent?.id??0),date=Math.floor(Date.now()/1000);const hasButton=!!(wanted.callbackData||wanted.buttonText);const first=await poll(ctx,client,wanted.target,date,id,wanted,hasButton,signal);if(!first)return{success:false,message:"未收到签到结果"};if(!hasButton)return{success:true,message:String(first.message||"签到命令已发送")};const data=callback(first,wanted);if(!data)return{success:false,message:"未找到签到按钮"};const {Api}=await import("teleproto");await client.invoke(new Api.messages.GetBotCallbackAnswer({peer:wanted.target,msgId:first.id,data}));const second=await poll(ctx,client,wanted.target,Math.floor(Date.now()/1000),Number(first.id??0),wanted,false,signal);return{success:true,message:String(second?.message||first.message||"已点击签到按钮")};});
   const botPush=async(ctx:PluginContext,state:State,text:string)=>{const url=`https://${BOT_HOST}/bot${encodeURIComponent(state.botToken)}/sendMessage`;await ctx.http.withResponse(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({chat_id:state.pushChatId,text,parse_mode:"HTML"})},async response=>{if(response.status!==200)throw new Error("bot status");const body=await response.json() as any;if(body?.ok!==true)throw new Error("bot rejected");},{redirects:{allowedHosts:[BOT_HOST],maxRedirects:0},timeoutMs:15_000});};
   const all=async(ctx:PluginContext,source:string,fallback:string|undefined,signal:AbortSignal,scheduledDate?:string)=>{const state=normalize(await store(ctx).read()),enabled=state.targets.filter(x=>x.enabled);if(!enabled.length)throw new Error("没有启用的签到目标");const results:Array<{target:Target;result:Result}>=[];for(const [index,item] of enabled.entries()){signal.throwIfAborted();if(scheduledDate){const saved=normalize(await store(ctx).read()).execution?.targets?.[item.id];if(saved){results.push({target:item,result:saved.status==="sent"?{success:saved.success===true,message:saved.message||"已执行"}:{success:false,message:"上次执行状态未确认，已避免重复发送"}});continue;}await store(ctx).update(raw=>{const value=normalize(raw),execution=value.execution;if(!execution||execution.date!==scheduledDate)return value;return{...value,execution:{...execution,targets:{...execution.targets,[item.id]:{status:"prepared"}}}};});}let result:Result;try{result=await single(ctx,item,signal);}catch(error){signal.throwIfAborted();result={success:false,message:safeError(error)};}results.push({target:item,result});if(scheduledDate)await store(ctx).update(raw=>{const value=normalize(raw),execution=value.execution;if(!execution||execution.date!==scheduledDate)return value;return{...value,execution:{...execution,targets:{...execution.targets,[item.id]:{status:"sent",success:result.success,message:result.message.slice(0,500)}}}};});if(index+1<enabled.length)await abortableDelay(2_000,signal);}const ok=results.filter(x=>x.result.success).length;const summary=`🤖 <b>CheckIn 签到汇总报告</b>\n来源: ${esc(source)}\n结果: ${ok} 成功 / ${results.length-ok} 失败\n\n${results.map((x,i)=>`${x.result.success?"✅":"❌"} <b>${i+1}. ${esc(x.target.name)}</b>\n   ${esc(x.result.message)}`).join("\n")}`;let pushed=false;if(state.botToken&&state.pushChatId)try{await botPush(ctx,state,summary);pushed=true;}catch{signal.throwIfAborted();ctx.log.error("checkin_bot_push_failed");}const destination=state.logChat||fallback;if(!pushed&&destination)await ctx.telegram.withClient(async client=>{await client.sendMessage(destination,{message:summary,parseMode:"html",linkPreview:false});});return{ok,total:results.length,summary};};
-  const scheduled=async(ctx:PluginContext,signal:AbortSignal,now=Date.now())=>serial(async()=>{let run=false,date="",delay=false;await store(ctx).update(raw=>{const state=normalize(raw),candidate=state.execution?.status==="prepared"?state.execution:plan(state,now);if(!candidate||state.lastRunDate===candidate.date||candidate.status==="sent"||now<candidate.plannedAt)return state;run=true;date=candidate.date;delay=candidate.startedAt===undefined;return{...state,execution:{...candidate,status:"prepared",startedAt:candidate.startedAt??now}};});if(!run)return;try{const current=normalize(await store(ctx).read());if(delay&&current.randomDelay)await abortableDelay(Math.floor(Math.random()*current.randomDelay*60_000),signal);await all(ctx,"自动定时任务",undefined,signal,date);await store(ctx).update(raw=>{const state=normalize(raw);return{...state,lastRunDate:state.execution?.date??localParts(now).date,execution:state.execution?{...state.execution,status:"sent",completedAt:Date.now()}:state.execution};});}catch(error){signal.throwIfAborted();ctx.log.error("checkin_scheduled_failed",{code:safeError(error)});}});
-  const help=(prefix:string)=>`<b>CheckIn 自动签到</b>\n<code>${prefix}checkin</code> 手动执行\n<code>${prefix}checkin add ID 名称 目标 [data:值|text:文本]</code>\n<code>${prefix}checkin del|toggle|test ID</code>\n<code>${prefix}checkin list|settings|reset</code>\n<code>${prefix}checkin set time HH:MM</code>\n<code>${prefix}checkin set range HH:MM</code>\n<code>${prefix}checkin set delay 0-60</code>\n<code>${prefix}checkin set bot TOKEN CHAT_ID</code>（仅收藏夹）\n支持跨日时间段，时区为 ${TIME_ZONE}。`;
-  const command=async(message:MessageEnvelope,args:readonly string[],prefix:string,ctx:PluginContext)=>{const action=(args[0]??"").toLowerCase();if(!action){try{await ctx.telegram.edit(message,"🚀 开始执行签到任务…");const result=await serial(()=>all(ctx,"手动触发",message.chatId,ctx.signal));await ctx.telegram.edit(message,`✅ 已执行 ${result.total} 个任务`);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ ${esc(error instanceof Error?error.message:"执行失败")}`,{parseMode:"html"});}return;}if(["help","h"].includes(action)){await ctx.telegram.edit(message,help(prefix),{parseMode:"html"});return;}if(action==="add"){const [id,name,peer]=args.slice(1,4);if(!id||!name||!peer){await ctx.telegram.edit(message,help(prefix),{parseMode:"html"});return;}const match=matcher(args.slice(4));const sent=await ctx.telegram.withClient(client=>client.sendMessage(message.chatId,{message:"请回复此消息发送签到命令",replyTo:message.id}));await store(ctx).update(raw=>{const state=normalize(raw);return{...state,pending:{...state.pending,[message.chatId]:{promptId:Number(sent.id),id,name,target:peer,...match}}};});return;}if(action==="list"){const state=normalize(await store(ctx).read());await ctx.telegram.edit(message,state.targets.length?state.targets.map((x,i)=>`${x.enabled?"🟢":"🔴"} ${i+1}. <b>${esc(x.name)}</b> <code>${esc(x.id)}</code>\n${esc(x.target)} · ${esc(x.command)}`).join("\n\n"):"当前没有签到目标",{parseMode:"html"});return;}if(["del","delete","toggle","test"].includes(action)){const id=args[1];if(!id){await ctx.telegram.edit(message,"请指定目标 ID");return;}const state=normalize(await store(ctx).read()),found=state.targets.find(x=>x.id===id);if(!found){await ctx.telegram.edit(message,"未找到签到目标");return;}if(action==="test"){const result=await serial(()=>single(ctx,found,ctx.signal));await ctx.telegram.edit(message,`${result.success?"✅":"❌"} ${esc(result.message)}`,{parseMode:"html"});return;}await store(ctx).update(raw=>{const value=normalize(raw);return{...value,targets:action==="toggle"?value.targets.map(x=>x.id===id?{...x,enabled:!x.enabled}:x):value.targets.filter(x=>x.id!==id)};});await ctx.telegram.edit(message,"✅ 配置已更新");return;}if(["settings","config","info"].includes(action)&&action!=="config"||action==="settings"||action==="info"){const state=normalize(await store(ctx).read());await ctx.telegram.edit(message,`⏰ ${state.runTime}${state.runTimeEnd?` ~ ${state.runTimeEnd}`:""}\n🎲 ${state.randomDelay} 分钟\n🤖 Bot: ${state.botToken?"已配置":"未配置"}\n📅 最近执行: ${esc(state.lastRunDate||"无")}\n🎯 ${state.targets.filter(x=>x.enabled).length}/${state.targets.length}`,{parseMode:"html"});return;}if(action==="reset"){await store(ctx).update(raw=>({...normalize(raw),lastRunDate:"",execution:undefined}));await ctx.telegram.edit(message,"✅ 已重置每日运行状态");return;}if(action==="set"||action==="config"){const field=(args[1]??"").toLowerCase(),value=args[2];if(field==="time"&&time(value)){await store(ctx).update(raw=>({...normalize(raw),runTime:value,execution:undefined}));await ctx.telegram.edit(message,"✅ 开始时间已更新");return;}if(field==="range"){if(value&&!time(value)){await ctx.telegram.edit(message,"时间格式应为 HH:MM");return;}await store(ctx).update(raw=>{const state=normalize(raw);if(value)return{...state,runTimeEnd:value,execution:undefined};delete state.runTimeEnd;state.execution=undefined;return state;});await ctx.telegram.edit(message,"✅ 时间范围已更新");return;}if(field==="delay"){const delay=Number(value);if(!Number.isInteger(delay)||delay<0||delay>60){await ctx.telegram.edit(message,"随机延迟应为 0-60 分钟");return;}await store(ctx).update(raw=>({...normalize(raw),randomDelay:delay}));await ctx.telegram.edit(message,"✅ 随机延迟已更新");return;}if(field==="bot"){if(!message.saved){await ctx.telegram.edit(message,"Bot Token 只能在收藏夹中设置");return;}if(!value||!args[3]){await ctx.telegram.edit(message,"请提供 Token 与 Chat ID");return;}await store(ctx).update(raw=>({...normalize(raw),botToken:value,pushChatId:args[3]!}));await ctx.telegram.edit(message,`✅ Bot 配置已更新：${esc(value.slice(0,5))}…` ,{parseMode:"html"});return;}if(field==="log"&&value){await store(ctx).update(raw=>({...normalize(raw),logChat:value}));await ctx.telegram.edit(message,"✅ 日志对话已更新");return;}}await ctx.telegram.edit(message,help(prefix),{parseMode:"html"});};
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"checkin",description:"定时串行执行 Telegram Bot 签到任务",commands:{checkin:{helpArgs: ["help","h"], description:"管理并运行自动签到",handle(i,c){return command(i.message,i.args,i.prefix,c);}}},
-    listeners:[{edited:false,ignoreCommands:false,async handle(message,ctx){if(message.outgoing!==true||message.replyToId===undefined)return;const state=normalize(await store(ctx).read()),pending=state.pending[message.chatId];if(!pending||message.replyToId!==pending.promptId)return;const command=message.text.trim();if(!command){await ctx.telegram.reply(message,"签到命令不能为空");return;}await store(ctx).update(raw=>{const value=normalize(raw),existing=value.targets.findIndex(x=>x.id===pending.id),next:Target={id:pending.id,name:pending.name,target:pending.target,command,...(pending.callbackData?{callbackData:pending.callbackData}:{}),...(pending.buttonText?{buttonText:pending.buttonText}:{}),enabled:true},targets=[...value.targets];if(existing>=0)targets[existing]=next;else targets.push(next);const rest={...value.pending};delete rest[message.chatId];return{...value,targets,pending:rest};});await ctx.telegram.reply(message,`✅ 已保存签到目标：${esc(pending.name)}`,{parseMode:"html"});}}],
-    jobs:{daily_check:{description:"检查每日签到执行窗口",cron:"* * * * *",timeZone:TIME_ZONE,handle(ctx,signal){return scheduled(ctx,signal);}}},
-    settings:ctx=>({id:"checkin",title:"自动签到",description:"签到时间、通知与目标设置",category:"插件配置",icon:"✅",getSchema:()=>[
-      {key:"runTime",label:"开始时间",type:"string"},{key:"runTimeEnd",label:"结束时间",type:"string"},{key:"randomDelay",label:"随机延迟（分钟）",type:"number",min:0,max:60},
-      {key:"logChat",label:"日志对话",type:"string"},{key:"botToken",label:"Bot Token",type:"password",secret:true},{key:"pushChatId",label:"Bot 推送 Chat ID",type:"string"},{key:"targets",label:"签到目标",type:"json"}],
-      async getValues(){const s=normalize(await store(ctx).read());return{runTime:s.runTime,runTimeEnd:s.runTimeEnd??"",randomDelay:s.randomDelay,logChat:s.logChat,botToken:s.botToken?"***":"",pushChatId:s.pushChatId,targets:s.targets};},
-      async setValues(patch){await store(ctx).update(raw=>{const s=normalize(raw);if(patch.runTime!==undefined&&!time(patch.runTime))throw new Error("开始时间格式无效");if(patch.runTimeEnd!==undefined&&patch.runTimeEnd!==""&&!time(patch.runTimeEnd))throw new Error("结束时间格式无效");if(patch.randomDelay!==undefined&&integer(patch.randomDelay,0,60,-1)<0)throw new Error("随机延迟无效");const next={...s,...patch,schemaVersion:SCHEMA_VERSION,botToken:typeof patch.botToken==="string"&&patch.botToken!=="***"?patch.botToken:s.botToken,execution:undefined};if(patch.runTimeEnd==="")delete next.runTimeEnd;return normalize(next);});}}),
-    async setup(ctx){const current=await store(ctx).read();if(!current.legacyImported){const legacy=await ctx.storage.json<Record<string,unknown>>("checkin_config.json",{}).read();await store(ctx).update(raw=>{const state=normalize(raw);if(state.legacyImported)return state;const imported=Object.keys(legacy).length?normalize({...state,...legacy,pending:state.pending,targets:state.targets.length?state.targets:legacy.targets,botToken:state.botToken||legacy.botToken,pushChatId:state.pushChatId||legacy.pushChatId,logChat:state.logChat||legacy.logChat}):state;return{...imported,legacyImported:true};});}else await store(ctx).update(raw=>normalize(raw));},cleanup(){tail=Promise.resolve();}});
+  const scheduled=async(ctx:PluginContext,signal:AbortSignal,now=Date.now())=>serial(async()=>{let run=false,date="",delay=false;await store(ctx).update(raw=>{const state=normalize(raw),candidate=state.execution?.status==="prepared"?state.execution:plan(state,now);if(!candidate||state.lastRunDate===candidate.date||candidate.status==="sent"||now<candidate.plannedAt)return state;run=true;date=candidate.date;delay=candidate.startedAt===undefined;return{...state,execution:{...candidate,status:"prepared",startedAt:candidate.startedAt??now}};});if(!run)return;try{const current=normalize(await store(ctx).read());if(delay&&current.randomDelay)await abortableDelay(Math.floor(Math.random()*current.randomDelay*60_000),signal);await all(ctx,"自动定时任务",undefined,signal,date);await store(ctx).update(raw=>{const state=normalize(raw);const next:{[key:string]:unknown}={...state,lastRunDate:state.execution?.date??localParts(now).date};if(state.execution)next.execution={...state.execution,status:"sent",completedAt:Date.now()};else delete next.execution;return next as State;});}catch(error){signal.throwIfAborted();ctx.log.error("checkin_scheduled_failed",{code:safeError(error)});}});
+
+  const checkinCommand: CommandDefinition = {
+    description: "管理并运行自动签到；无参数时手动触发所有签到",
+    helpArgs: ["help", "h"],
+    subcommandsCaseSensitive: false,
+    subcommands: {
+      add: {
+        description: "添加签到目标", args: "ID 名称 目标 [data:回调|text:按钮]",
+        arguments: [{name: "ID", required: true}, {name: "名称", required: true}, {name: "目标", required: true, description: "Bot 用户名或对话"},
+          {name: "匹配", description: "data:回调 或 text:按钮"}],
+        examples: [{args: "add storm Storm签到 @storm_bot data:checkin"}],
+        async handle(invocation, ctx) {
+          const message = invocation.message;
+          const [id, name, peer] = invocation.args.slice(0, 3);
+          if (!id || !name || !peer) { await ctx.telegram.edit(message, renderCommandHelp("checkin", checkinCommand, {prefix: invocation.prefix, title: "🤖 CheckIn 自动化签到插件"}), {parseMode: "html"}); return; }
+          const match = matcher(invocation.args.slice(3));
+          const sent = await ctx.telegram.withClient(client => client.sendMessage(message.chatId, {message: "请回复此消息发送签到命令", replyTo: message.id}));
+          await store(ctx).update(raw => { const state = normalize(raw);
+            return {...state, pending: {...state.pending, [message.chatId]: {promptId: Number(sent.id), id, name, target: peer, ...match}}}; });
+        },
+      },
+      list: {
+        description: "列出签到目标", args: "", examples: [{args: "list"}],
+        async handle(invocation, ctx) {
+          const state = normalize(await store(ctx).read());
+          await ctx.telegram.edit(invocation.message, state.targets.length ? state.targets.map((x, i) => `${x.enabled ? "🟢" : "🔴"} ${i + 1}. <b>${esc(x.name)}</b> <code>${esc(x.id)}</code>\n${esc(x.target)} · ${esc(x.command)}`).join("\n\n") : "当前没有签到目标", {parseMode: "html"});
+        },
+      },
+      del: {
+        description: "删除签到目标", args: "ID", aliases: ["delete"],
+        arguments: [{name: "ID", required: true}], examples: [{args: "del storm"}],
+        async handle(invocation, ctx) {
+          const id = invocation.args[0];
+          if (!id) { await ctx.telegram.edit(invocation.message, "请指定目标 ID"); return; }
+          const state = normalize(await store(ctx).read());
+          if (!state.targets.find(x => x.id === id)) { await ctx.telegram.edit(invocation.message, "未找到签到目标"); return; }
+          await store(ctx).update(raw => { const value = normalize(raw); return {...value, targets: value.targets.filter(x => x.id !== id)}; });
+          await ctx.telegram.edit(invocation.message, "✅ 配置已更新");
+        },
+      },
+      toggle: {
+        description: "启用或禁用签到目标", args: "ID",
+        arguments: [{name: "ID", required: true}], examples: [{args: "toggle storm"}],
+        async handle(invocation, ctx) {
+          const id = invocation.args[0];
+          if (!id) { await ctx.telegram.edit(invocation.message, "请指定目标 ID"); return; }
+          const state = normalize(await store(ctx).read());
+          if (!state.targets.find(x => x.id === id)) { await ctx.telegram.edit(invocation.message, "未找到签到目标"); return; }
+          await store(ctx).update(raw => { const value = normalize(raw); return {...value, targets: value.targets.map(x => x.id === id ? {...x, enabled: !x.enabled} : x)}; });
+          await ctx.telegram.edit(invocation.message, "✅ 配置已更新");
+        },
+      },
+      test: {
+        description: "测试单个签到目标", args: "ID",
+        arguments: [{name: "ID", required: true}], examples: [{args: "test storm"}],
+        async handle(invocation, ctx) {
+          const id = invocation.args[0];
+          if (!id) { await ctx.telegram.edit(invocation.message, "请指定目标 ID"); return; }
+          const state = normalize(await store(ctx).read());
+          const found = state.targets.find(x => x.id === id);
+          if (!found) { await ctx.telegram.edit(invocation.message, "未找到签到目标"); return; }
+          const result = await serial(() => single(ctx, found, ctx.signal));
+          await ctx.telegram.edit(invocation.message, `${result.success ? "✅" : "❌"} ${esc(result.message)}`, {parseMode: "html"});
+        },
+      },
+      settings: {
+        description: "查看当前配置", args: "", aliases: ["info"], examples: [{args: "settings"}],
+        async handle(invocation, ctx) {
+          const state = normalize(await store(ctx).read());
+          await ctx.telegram.edit(invocation.message, `⏰ ${state.runTime}${state.runTimeEnd ? ` ~ ${state.runTimeEnd}` : ""}\n🎲 ${state.randomDelay} 分钟\n🤖 Bot: ${state.botToken ? "已配置" : "未配置"}\n📅 最近执行: ${esc(state.lastRunDate || "无")}\n🎯 ${state.targets.filter(x => x.enabled).length}/${state.targets.length}`, {parseMode: "html"});
+        },
+      },
+      reset: {
+        description: "重置今日运行状态", args: "", examples: [{args: "reset"}],
+        async handle(invocation, ctx) {
+          await store(ctx).update(raw => { const state = normalize(raw); state.lastRunDate = ""; delete state.execution; return state; });
+          await ctx.telegram.edit(invocation.message, "✅ 已重置每日运行状态");
+        },
+      },
+      set: {
+        description: "修改配置", args: "[time|range|delay|bot|log [值]]",
+        aliases: ["config"],
+        subcommandsCaseSensitive: false,
+        subcommands: {
+          time: {
+            description: "设置开始时间", args: "HH:MM",
+            arguments: [{name: "HH:MM", required: true, description: "24 小时制，例如 10:00"}],
+            examples: [{args: "time 10:00"}],
+            async handle(invocation, ctx) {
+              const value = invocation.args[0];
+              if (!time(value)) { await ctx.telegram.edit(invocation.message, renderCommandHelp("checkin", checkinCommand, {prefix: invocation.prefix, title: "🤖 CheckIn 自动化签到插件"}), {parseMode: "html"}); return; }
+              await store(ctx).update(raw => { const state = normalize(raw); state.runTime = value; delete state.execution; return state; });
+              await ctx.telegram.edit(invocation.message, "✅ 开始时间已更新");
+            },
+          },
+          range: {
+            description: "设置执行时间结束点（留空改为固定时间）", args: "[HH:MM]",
+            arguments: [{name: "HH:MM", description: "省略时清除时间范围，改为固定时间执行"}],
+            examples: [{args: "range 11:30"}, {args: "range"}],
+            async handle(invocation, ctx) {
+              const value = invocation.args[0];
+              if (value && !time(value)) { await ctx.telegram.edit(invocation.message, "时间格式应为 HH:MM"); return; }
+              await store(ctx).update(raw => { const state = normalize(raw); if (value) { state.runTimeEnd = value; delete state.execution; return state; } delete state.runTimeEnd; delete state.execution; return state; });
+              await ctx.telegram.edit(invocation.message, "✅ 时间范围已更新");
+            },
+          },
+          delay: {
+            description: "设置额外随机延迟（0-60 分钟）", args: "分钟",
+            arguments: [{name: "分钟", required: true, description: "0 到 60 的整数"}],
+            examples: [{args: "delay 5"}],
+            async handle(invocation, ctx) {
+              const delay = Number(invocation.args[0]);
+              if (!Number.isInteger(delay) || delay < 0 || delay > 60) { await ctx.telegram.edit(invocation.message, "随机延迟应为 0-60 分钟"); return; }
+              await store(ctx).update(raw => ({...normalize(raw), randomDelay: delay}));
+              await ctx.telegram.edit(invocation.message, "✅ 随机延迟已更新");
+            },
+          },
+          bot: {
+            description: "设置 Bot 通知（仅收藏夹）", args: "Token ChatID",
+            arguments: [{name: "Token", required: true, description: "Bot Token，仅可在收藏夹设置"}, {name: "ChatID", required: true, description: "接收推送的对话 ID"}],
+            examples: [{args: "bot <Token> <ChatID>"}],
+            async handle(invocation, ctx) {
+              const [token, chatId] = invocation.args;
+              if (!invocation.message.saved) { await ctx.telegram.edit(invocation.message, "Bot Token 只能在收藏夹中设置"); return; }
+              if (!token || !chatId) { await ctx.telegram.edit(invocation.message, "请提供 Token 与 Chat ID"); return; }
+              await store(ctx).update(raw => ({...normalize(raw), botToken: token, pushChatId: chatId}));
+              await ctx.telegram.edit(invocation.message, `✅ Bot 配置已更新：${esc(token.slice(0, 5))}…`, {parseMode: "html"});
+            },
+          },
+          log: {
+            description: "设置日志聊天", args: "ChatID",
+            arguments: [{name: "ChatID", required: true, description: "接收汇总的对话 ID"}],
+            examples: [{args: "log -100123"}],
+            async handle(invocation, ctx) {
+              const value = invocation.args[0];
+              if (!value) { await ctx.telegram.edit(invocation.message, renderCommandHelp("checkin", checkinCommand, {prefix: invocation.prefix, title: "🤖 CheckIn 自动化签到插件"}), {parseMode: "html"}); return; }
+              await store(ctx).update(raw => ({...normalize(raw), logChat: value}));
+              await ctx.telegram.edit(invocation.message, "✅ 日志对话已更新");
+            },
+          },
+        },
+        examples: [{args: "set time 10:00"}, {args: "set range 11:30"}, {args: "set range"}, {args: "set delay 5"}, {args: "set bot <Token> <ChatID>"}, {args: "set log -100123"}],
+        async handle(invocation, ctx) {
+          await ctx.telegram.edit(invocation.message, renderCommandHelp("checkin", checkinCommand, {prefix: invocation.prefix, title: "🤖 CheckIn 自动化签到插件"}), {parseMode: "html"});
+        },
+      },
+    },
+    examples: [{args: "", description: "手动触发所有签到"}, {args: "reset"}, {args: "add storm Storm签到 @storm_bot data:checkin"}, {args: "set time 10:00"}, {args: "set range 11:30"}, {args: "set range"}],
+    help: [
+      {heading: "手动触发：", body: "不带参数发送 <code>{prefix}checkin</code> 立即串行执行所有已启用目标；<code>{prefix}checkin reset</code> 重置今日运行状态。"},
+      {heading: "添加流程：", body: "<code>{prefix}checkin add ID 名称 目标 [data:回调|text:按钮]</code> 后，回复提示消息发送真实签到命令（可含空格），例如 <code>/sign 123456</code>。"},
+      {heading: "时间范围：", body: "时区为 " + TIME_ZONE + "，默认 10:00 ~ 11:30、随机延迟 0 分钟。设置 range 后每天在 time 到 range 之间随机选择一个时刻执行，支持跨天，例如 22:00 到次日 02:00；<code>set range</code> 留空改为固定时间。"},
+      {heading: "密钥配置：", body: "涉及 API Key、Token 或其他登录凭据的设置命令请在收藏夹中执行。"},
+    ],
+    async handle(invocation, ctx) {
+      const message = invocation.message;
+      if (!invocation.args.length) {
+        try {
+          await ctx.telegram.edit(message, "🚀 开始执行签到任务…");
+          const result = await serial(() => all(ctx, "手动触发", message.chatId, ctx.signal));
+          await ctx.telegram.edit(message, `✅ 已执行 ${result.total} 个任务`);
+        } catch (error) {
+          if (!ctx.signal.aborted) await ctx.telegram.edit(message, `❌ ${esc(error instanceof Error ? error.message : "执行失败")}`, {parseMode: "html"});
+        }
+        return;
+      }
+      await ctx.telegram.edit(message, renderCommandHelp("checkin", checkinCommand, {prefix: invocation.prefix, title: "🤖 CheckIn 自动化签到插件"}), {parseMode: "html"});
+    },
+  };
+
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "checkin", description: "定时串行执行 Telegram Bot 签到任务",
+    renderHelp: prefix => renderCommandHelp("checkin", checkinCommand, {prefix, title: "🤖 CheckIn 自动化签到插件"}),
+    commands: {checkin: checkinCommand},
+    listeners: [{direction: "outgoing", edited: false, ignoreCommands: false, async handle(message, ctx) {
+      if (message.replyToId === undefined) return;
+      const state = normalize(await store(ctx).read()), pending = state.pending[message.chatId];
+      if (!pending || message.replyToId !== pending.promptId) return;
+      const command = message.text.trim();
+      if (!command) { await ctx.telegram.reply(message, "签到命令不能为空"); return; }
+      await store(ctx).update(raw => { const value = normalize(raw), existing = value.targets.findIndex(x => x.id === pending.id),
+        next: Target = {id: pending.id, name: pending.name, target: pending.target, command, ...(pending.callbackData ? {callbackData: pending.callbackData} : {}), ...(pending.buttonText ? {buttonText: pending.buttonText} : {}), enabled: true},
+        targets = [...value.targets];
+        if (existing >= 0) targets[existing] = next; else targets.push(next);
+        const rest = {...value.pending}; delete rest[message.chatId]; return {...value, targets, pending: rest}; });
+      await ctx.telegram.reply(message, `✅ 已保存签到目标：${esc(pending.name)}`, {parseMode: "html"});
+    }}],
+    jobs: {daily_check: {description: "检查每日签到执行窗口", cron: "* * * * *", timeZone: TIME_ZONE, handle(ctx, signal) { return scheduled(ctx, signal); }}},
+    settings: ctx => ({id: "checkin", title: "自动签到", description: "签到时间、通知与目标设置", category: "插件配置", icon: "✅", getSchema: () => [
+      {key: "runTime", label: "开始时间", type: "string"}, {key: "runTimeEnd", label: "结束时间", type: "string"}, {key: "randomDelay", label: "随机延迟（分钟）", type: "number", min: 0, max: 60},
+      {key: "logChat", label: "日志对话", type: "string"}, {key: "botToken", label: "Bot Token", type: "password", secret: true}, {key: "pushChatId", label: "Bot 推送 Chat ID", type: "string"}, {key: "targets", label: "签到目标", type: "json"}],
+      async getValues() { const s = normalize(await store(ctx).read()); return {runTime: s.runTime, runTimeEnd: s.runTimeEnd ?? "", randomDelay: s.randomDelay, logChat: s.logChat, botToken: s.botToken ? "***" : "", pushChatId: s.pushChatId, targets: s.targets}; },
+      async setValues(patch) { await store(ctx).update(raw => { const s = normalize(raw);
+        if (patch.runTime !== undefined && !time(patch.runTime)) throw new Error("开始时间格式无效");
+        if (patch.runTimeEnd !== undefined && patch.runTimeEnd !== "" && !time(patch.runTimeEnd)) throw new Error("结束时间格式无效");
+        if (patch.randomDelay !== undefined && integer(patch.randomDelay, 0, 60, -1) < 0) throw new Error("随机延迟无效");
+        const next = {...s, ...patch, schemaVersion: SCHEMA_VERSION, botToken: typeof patch.botToken === "string" && patch.botToken !== "***" ? patch.botToken : s.botToken};
+        delete next.execution;
+        if (patch.runTimeEnd === "") delete next.runTimeEnd;
+        return normalize(next); }); }}),
+    async setup(ctx) { const current = await store(ctx).read();
+      if (!current.legacyImported) { const legacy = await ctx.storage.json<Record<string, unknown>>("checkin_config.json", {}).read();
+        await store(ctx).update(raw => { const state = normalize(raw); if (state.legacyImported) return state;
+          const imported = Object.keys(legacy).length ? normalize({...state, ...legacy, pending: state.pending, targets: state.targets.length ? state.targets : legacy.targets, botToken: state.botToken || legacy.botToken, pushChatId: state.pushChatId || legacy.pushChatId, logChat: state.logChat || legacy.logChat}) : state;
+          return {...imported, legacyImported: true}; }); }
+      else await store(ctx).update(raw => normalize(raw)); },
+    cleanup() { tail = Promise.resolve(); }});
 }

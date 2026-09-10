@@ -1,9 +1,8 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext, type SubcommandDefinition} from "telebox/sdk";
 import {access, open, readFile, rm, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import {createHash} from "node:crypto";
 import path from "node:path";
-import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 import type {OverlayOptions} from "sharp";
 const {encode} = require("modern-gif") as {encode(options: {width: number; height: number; frames: UnencodedFrame[]}): Promise<Uint8Array>};
@@ -82,19 +81,45 @@ async function masked(sharp: typeof import("sharp"), context: PluginContext, rol
 export default function createEatGif() {
   let catalog: Catalog | undefined;
   const getCatalog = async (context: PluginContext): Promise<Catalog> => catalog ??= await json<Catalog>(context, "config.json");
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "eatgif", description: "将双方头像合成为动画贴纸",
-    resources: {processes: {concurrency: 1, queueCapacity: 1, timeoutMs: 180_000, maxOutputBytes: 256 * 1024}},
-    commands: {eatgif: {helpArgs: ["help","h"], description: "生成头像融合动画", async handle(invocation, context) {
+  const guard = (operation: SubcommandDefinition["handle"]): SubcommandDefinition["handle"] => async (invocation, context) => {
+    try { await operation(invocation, context); }
+    catch {
+      if (context.signal.aborted) return;
+      context.log.error("eatgif_failed");
+      await context.telegram.edit(invocation.message, "动图生成失败，请确认头像、远程素材、Sharp 与 FFmpeg 均可用");
+    }
+  };
+  const showList = async (invocation: any, context: PluginContext) => {
+    const list = await getCatalog(context);
+    await context.telegram.edit(invocation.message, `<b>头像动图表情</b>\n<code>${escape(invocation.prefix)}eatgif 名称</code>（需回复目标）\n\n` +
+      Object.entries(list).map(([name, value]) => `• <code>${escape(name)}</code> - ${escape(value.desc)}`).join("\n"), {parseMode: "html"});
+  };
+  const clear: SubcommandDefinition = {
+    description: "清理缓存并重新下载素材", args: "", examples: [{args: "clear"}],
+    handle: guard(async (invocation, context) => { await rm(context.files.dataPath("cache"), {recursive: true, force: true}); catalog = undefined;
+      await context.telegram.edit(invocation.message, "缓存已清理并将在下次请求时刷新"); }),
+  };
+  const list: SubcommandDefinition = {
+    description: "查看表情列表", args: "", aliases: ["ls"], examples: [{args: "list"}],
+    handle: guard(showList),
+  };
+  const eatgifCommand: CommandDefinition = {
+    description: "生成头像融合动画",
+    helpArgs: ["help", "h"],
+    args: "[名称]",
+    arguments: [{name: "名称", description: "表情名称；省略或 list 查看列表"}],
+    examples: [{args: ""}, {args: "list"}, {args: "名称", description: "回复目标用户后生成"}],
+    subcommandsCaseSensitive: false,
+    subcommands: {clear, list},
+    help: [
+      {heading: "用法：", body: "空或 <code>{prefix}eatgif list</code> 查看表情列表；回复目标用户并输入名称生成头像融合动图；<code>{prefix}eatgif clear</code> 清理缓存。"},
+    ],
+    async handle(invocation, context) {
       const sub = invocation.args[0]?.toLowerCase() ?? "";
       try {
-        if (sub === "clear") { await rm(context.files.dataPath("cache"), {recursive: true, force: true}); catalog = undefined;
-          await context.telegram.edit(invocation.message, "缓存已清理并将在下次请求时刷新"); return; }
-        const list = await getCatalog(context);
-        if (!sub || sub === "list" || sub === "ls" || sub === "help" || sub === "h") {
-          await context.telegram.edit(invocation.message, `<b>头像动图表情</b>\n<code>${escape(invocation.prefix)}eatgif 名称</code>（需回复目标）\n\n` +
-            Object.entries(list).map(([name, value]) => `• <code>${escape(name)}</code> - ${escape(value.desc)}`).join("\n"), {parseMode: "html"}); return;
-        }
-        const selected = list[sub]; if (!selected) { await context.telegram.edit(invocation.message, `未找到：<code>${escape(sub)}</code>`, {parseMode: "html"}); return; }
+        if (!sub || sub === "help" || sub === "h") { await showList(invocation, context); return; }
+        const current = await getCatalog(context);
+        const selected = current[sub]; if (!selected) { await context.telegram.edit(invocation.message, `未找到：<code>${escape(sub)}</code>`, {parseMode: "html"}); return; }
         if (invocation.message.replyToId === undefined) { await context.telegram.edit(invocation.message, "请回复一个用户的消息后再生成"); return; }
         const reply = await context.telegram.getReply(invocation.message); const replyRaw = reply?.raw as ApiTypes.Message | undefined;
         const raw = invocation.message.raw as ApiTypes.Message | undefined; if (!raw?.peerId || !replyRaw?.senderId) throw new Error("Missing message");
@@ -124,6 +149,11 @@ export default function createEatGif() {
         });
       } catch { if (context.signal.aborted) return; context.log.error("eatgif_failed");
         await context.telegram.edit(invocation.message, "动图生成失败，请确认头像、远程素材、Sharp 与 FFmpeg 均可用"); }
-    }}}, cleanup() { catalog = undefined; },
+    },
+  };
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "eatgif", description: "将双方头像合成为动画贴纸",
+    resources: {processes: {concurrency: 1, queueCapacity: 1, timeoutMs: 180_000, maxOutputBytes: 256 * 1024}},
+    renderHelp: prefix => renderCommandHelp("eatgif", eatgifCommand, {prefix, title: "🧩 头像动图表情"}),
+    commands: {eatgif: eatgifCommand}, cleanup() { catalog = undefined; },
   });
 }

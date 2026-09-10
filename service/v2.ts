@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 
 const translations: ReadonlyArray<readonly [RegExp, string]> = [
   [/active \(running\)/g, "活跃 (运行中)"],
@@ -51,9 +50,7 @@ async function detect(ctx: PluginContext): Promise<string> {
 }
 
 export default function createService() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "service", description: "查看 systemd 服务状态",
-    resources: {processes: {concurrency: 1, queueCapacity: 1, timeoutMs: 8_000, maxOutputBytes: 64 * 1024}},
-    commands: {service: {description: "查看指定或当前 systemd 服务状态", async handle({message, args}, ctx) {
+  const command: CommandDefinition = {"args":"[服务名]","examples":[{"args":"","description":"自动检测当前进程对应的服务"},{"args":"ssh"},{"args":"mibot.service"}],"help":[{"heading":"输出与环境：","body":"显示运行状态、运行时间、进程、内存、CPU 和资源限制等状态字段。适用于提供 systemd 与 systemctl 的 Linux 环境。"}],description: "查看指定或当前 systemd 服务状态", async handle({message, args}, ctx) {
       let name: string;
       let automatic = false;
       if (args[0]) {
@@ -95,6 +92,10 @@ export default function createService() {
           await ctx.telegram.edit(message, `❌ 获取服务详情时发生错误: ${escape(error instanceof Error ? error.message : error)}`);
         }
       }
-    }}},
+    }};
+  const help = (prefix: string) => renderCommandHelp("service", command, {prefix, title: "⚙️ systemd 服务状态"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "service", description: "查看 systemd 服务状态",
+    resources: {processes: {concurrency: 1, queueCapacity: 1, timeoutMs: 8_000, maxOutputBytes: 64 * 1024}},
+    commands: {service: command},
   });
 }

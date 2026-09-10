@@ -1,7 +1,6 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, ui, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, ui, type CommandDefinition, type PluginContext} from "telebox/sdk";
 import {countries, continents} from "./v2/countries";
-const help = `<b>BIN 查询</b>\n<code>bin 415042</code> 查询银行卡前六至八位信息`;
+
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
 const field = (value: unknown) => typeof value === "string" && value ? value : "未知";
 const schemeName = (value: unknown) => {
@@ -32,6 +31,7 @@ async function bincheck(ctx: PluginContext, bin: string) {
     return match ? {scheme: match[1].trim().toLowerCase().replace(/\s+/g, ""), bank: match[2].trim(), country: match[3].trim()} : {};
   } catch { return {}; }
 }
+
 export default function createBin() {
   let cachedRates: Rates | undefined;
   let pendingRates: Promise<Rates | undefined> | undefined;
@@ -56,10 +56,32 @@ export default function createBin() {
     })();
     return pendingRates;
   }
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "bin", description: "查询银行卡 BIN 信息", commands: {
-    bin: {helpArgs: ["help","h"], helpOnEmpty: true, description: "查询银行卡 BIN 信息", async handle(invocation, ctx: PluginContext) {
+  const binCommand: CommandDefinition = {
+    description: "查询银行卡 BIN 信息",
+    helpArgs: ["help", "h"],
+    helpOnEmpty: true,
+    args: "卡头6-8位",
+    arguments: [{name: "卡头6-8位", required: true, description: "银行卡前 6 至 8 位数字"}],
+    examples: [{args: "415042"}],
+    help: [
+      {
+        heading: "查询内容：",
+        body: "卡组织、类型、级别、发卡行、国家区号、地区与货币。",
+      },
+      {
+        heading: "参考汇率：",
+        body: "发卡币种及美元兑人民币，显示数据日期；不可用时保留卡片信息。",
+      },
+      {
+        heading: "数据源：",
+        body: "Binlist、Bincheck；汇率由 ExchangeRate-API 提供。",
+      },
+    ],
+    async handle(invocation, ctx: PluginContext) {
       const value = invocation.args[0] ?? "";
-      if (!value || value === "help" || value === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
+      if (!value || value === "help" || value === "h") {
+        await ctx.telegram.edit(invocation.message, renderCommandHelp("bin", binCommand, {prefix: invocation.prefix}), {parseMode:"html"}); return;
+      }
       if (!/^\d{6,8}$/.test(value)) { await ctx.telegram.edit(invocation.message, "请输入 6 至 8 位数字 BIN"); return; }
       try {
         await ctx.telegram.edit(invocation.message, "正在查询 BIN…");
@@ -112,6 +134,9 @@ export default function createBin() {
           await ctx.telegram[index ? "reply" : "edit"](invocation.message, page, {parseMode:"html", linkPreview:false});
         }
       } catch { if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, "BIN 查询失败，请稍后重试"); }
-    }},
-  }});
+    },
+  };
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "bin", description: "查询银行卡 BIN 信息",
+    renderHelp: prefix => renderCommandHelp("bin", binCommand, {prefix, title: "💳 BIN 查询"}),
+    commands: {bin: binCommand}});
 }

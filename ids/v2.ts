@@ -1,29 +1,9 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import { definePlugin, type MessageEnvelope, type PluginContext } from "telebox/sdk";
+import { STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type MessageEnvelope, type PluginContext } from "telebox/sdk";
 import type { Api } from "teleproto";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g,
   character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;" })[character]!);
 const code = (value: unknown): string => `<code>${escape(value)}</code>`;
-const help = (prefix: string): string => `🆔 <b>用户信息查询插件</b>
-
-<b>使用方式：</b>
-• <code>${escape(prefix)}ids</code> - 显示自己的信息
-• <code>${escape(prefix)}ids @用户名</code> - 查询指定用户信息
-• <code>${escape(prefix)}ids 用户ID</code> - 通过ID查询用户信息
-• 回复消息后使用 <code>${escape(prefix)}ids</code> - 查询被回复用户信息
-
-<b>显示信息包括：</b>
-• 用户名和显示名称
-• 用户ID、注册时间估算、DC
-• <b>入群时间</b>（仅群组有效）
-• 共同群组数量
-• 用户简介
-• 三种跳转链接
-
-<b>支持格式：</b>
-• @用户名、用户ID、频道ID、回复消息`;
-
 const points: readonly (readonly [number, number])[] = [
   [0, 1376438400], [50000000, 1400000000], [150000000, 1451606400],
   [350000000, 1483228800], [500000000, 1514764800], [900000000, 1559347200],
@@ -108,15 +88,21 @@ async function send(context: PluginContext, message: MessageEnvelope, text: stri
   }
 }
 
-export default function createIds() {
-  return definePlugin({renderHelp: renderPluginHelp,
-    apiVersion: 1, id: "ids", description: `用户信息查询插件\n\n${help("")}`,
-    commands: { ids: {helpArgs: ["help","h"],  description: "用户信息查询插件", async handle({ message, prefix }, context) {
+const idsCommand: CommandDefinition = {
+  description: "用户信息查询插件",
+  helpArgs: ["help", "h"],
+  args: "[@用户名|用户ID]",
+  arguments: [{name: "目标", description: "支持 @用户名、用户 ID、频道 ID；省略或回复消息时查询该用户或自己"}],
+  examples: [{args: ""}, {args: "@username"}, {args: "123456789"}],
+  help: [
+    {heading: "显示信息：", body: "用户名与显示名称、用户 ID、注册时间估算、DC、入群时间（仅群组）、共同群组数量、用户简介与三种跳转链接。"},
+  ],
+  async handle({ message, prefix }, context) {
       const target = message.text.trim().split(/\r?\n/)[0].split(/\s+/)[1] || "";
       try {
         context.signal.throwIfAborted();
         if (target === "help" || target === "h") {
-          await context.telegram.edit(message, help(prefix), { parseMode: "html" });
+          await context.telegram.edit(message, renderCommandHelp("ids", idsCommand, { prefix, title: "🆔 用户信息查询插件" }), { parseMode: "html" });
           return;
         }
         await context.telegram.edit(message, "🔍 <b>正在查询用户信息...</b>", { parseMode: "html" });
@@ -200,6 +186,11 @@ export default function createIds() {
         const detail = error instanceof InvalidTargetError ? "无效格式" : "未知错误，请稍后重试";
         await context.telegram.edit(message, `❌ <b>查询失败:</b> ${detail}`, { parseMode: "html" });
       }
-    } } },
+    },
+};
+export default function createIds() {
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "ids", description: "用户信息查询插件",
+    renderHelp: prefix => renderCommandHelp("ids", idsCommand, {prefix, title: "🆔 用户信息查询插件"}),
+    commands: { ids: idsCommand },
   });
 }

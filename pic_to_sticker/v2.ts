@@ -1,7 +1,6 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {stat} from "node:fs/promises";
 import path from "node:path";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type CommandInvocation, type SubcommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 type Config = {schemaVersion: number; defaultEmoji: string; quality: number; format: "webp" | "png";
@@ -30,9 +29,6 @@ async function configuration(context: PluginContext) {
   current = await store.update(value => normalize(value));
   return {store, current};
 }
-
-function help(prefix: string): string { return `<b>图片转贴纸</b>\n回复图片：<code>${escape(prefix)}pts [表情]</code>\n` +
-  `<code>${escape(prefix)}pts batch</code> 批量转换\n<code>${escape(prefix)}pts config [emoji|size|quality|bg|auto] 值</code>`; }
 
 function background(value: Config["background"]) {
   return value === "white" ? {r: 255, g: 255, b: 255, alpha: 1} : value === "black" ?
@@ -67,30 +63,7 @@ async function convert(context: PluginContext, source: ApiTypes.Message, config:
   });
 }
 
-async function configure(invocation: any, context: PluginContext): Promise<void> {
-  const args = invocation.args.slice(1); const option = args[0]?.toLowerCase(); const supplied = args[1];
-  const {store, current} = await configuration(context);
-  if (!option) {
-    await context.telegram.edit(invocation.message, `<b>当前配置</b>\n默认表情：${escape(current.defaultEmoji)}\n尺寸：${current.size}\n` +
-      `质量：${current.quality}\n格式：${current.format}\n背景：${current.background}\n自动删除：${current.autoDelete ? "开启" : "关闭"}`, {parseMode: "html"}); return;
-  }
-  const patch: Partial<Config> = {};
-  if (option === "emoji" && supplied) patch.defaultEmoji = supplied.slice(0, 32);
-  else if (option === "size" && Number.isInteger(Number(supplied)) && Number(supplied) >= 256 && Number(supplied) <= 512) patch.size = Number(supplied);
-  else if (option === "quality" && Number.isInteger(Number(supplied)) && Number(supplied) >= 1 && Number(supplied) <= 100) patch.quality = Number(supplied);
-  else if (["bg", "background"].includes(option) && ["transparent", "white", "black"].includes(supplied ?? "")) patch.background = supplied as Config["background"];
-  else if (option === "auto" && ["on", "off"].includes(supplied ?? "")) patch.autoDelete = supplied === "on";
-  else if (option === "format" && ["webp", "png"].includes(supplied ?? "")) patch.format = supplied as Config["format"];
-  else { await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }
-  await store.update(value => normalize({...value, ...patch}));
-  await context.telegram.edit(invocation.message, "配置已保存");
-}
-
-export default function createPicToSticker() {
-  const command = {description: "将回复的图片转换为 Telegram 贴纸", async handle(invocation: any, context: PluginContext) {
-    const sub = invocation.args[0]?.toLowerCase();
-    if (["help", "h"].includes(sub)) { await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }
-    if (sub === "config") { await configure(invocation, context); return; }
+const convertReply = (batch: boolean): CommandDefinition["handle"] => async (invocation, context) => {
     if (invocation.message.replyToId === undefined) { await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }
     try {
       const config = (await configuration(context)).current;
@@ -100,9 +73,9 @@ export default function createPicToSticker() {
       const raw = invocation.message.raw as ApiTypes.Message | undefined;
       if (!raw?.peerId) throw new Error("Missing peer");
       const {Api} = await import("teleproto");
-      const selected = sub === "batch" ? config.defaultEmoji : (invocation.args[0] || config.defaultEmoji).slice(0, 32);
+      const selected = batch ? config.defaultEmoji : (invocation.args[0] || config.defaultEmoji).slice(0, 32);
       const candidates: ApiTypes.Message[] = [source];
-      if (sub === "batch" && (source as any).groupedId) {
+      if (batch && (source as any).groupedId) {
         const group = await context.telegram.withClient(client => client.getMessages(raw.peerId!, {limit: 20, offsetId: source.id}));
         for (const item of group as any[]) if (String(item?.groupedId ?? "") === String((source as any).groupedId) && item?.media && !candidates.some(value => value.id === item.id)) candidates.push(item);
       }
@@ -115,14 +88,50 @@ export default function createPicToSticker() {
         completed++;
       }
       if (config.autoDelete && typeof raw.delete === "function") await raw.delete({revoke: true});
-      else await context.telegram.edit(invocation.message, sub === "batch" ? `批量转换完成：${completed} 张` : `贴纸已发送 ${escape(selected)}`, {parseMode: "html"});
+      else await context.telegram.edit(invocation.message, batch ? `批量转换完成：${completed} 张` : `贴纸已发送 ${escape(selected)}`, {parseMode: "html"});
     } catch {
       if (context.signal.aborted) return;
       context.log.error("pic_to_sticker_failed");
       await context.telegram.edit(invocation.message, "图片转换失败，请确认回复的是图片、格式受支持且输出小于 512 KiB");
     }
-  }};
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "pic_to_sticker", description: "将图片转换为贴纸", commands: {pic_to_sticker: {...command, helpArgs: ["help","h"]}, pts: {...command, helpArgs: ["help","h"]}},
+
+};
+const configure = (patch: (value: string | undefined) => Partial<Config> | undefined): CommandDefinition["handle"] => async (i, context) => {
+  const {store} = await configuration(context);
+  const value = patch(i.args[0]);
+  if (!value) { await context.telegram.edit(i.message, help(i.prefix), {parseMode: "html"}); return; }
+  await store.update(current => normalize({...current, ...value}));
+  await context.telegram.edit(i.message, "配置已保存");
+};
+const command: CommandDefinition = {
+  description: "将回复的图片转换为 Telegram 贴纸", helpArgs: ["help", "h"], args: "[表情]", subcommandsCaseSensitive: false,
+  examples: [{args: "", description: "回复图片，使用默认设置转换"}, {args: "😎"}],
+  subcommands: {
+    batch: {description: "转换回复图片所在的相册，最多 20 张", args: "", examples: [{args: "batch"}], handle: convertReply(true)},
+    config: {description: "查看或修改转换配置", args: "", subcommands: {
+      emoji: {description: "设置默认表情", args: "表情", examples: [{args: "emoji 🔥"}], handle: configure(value => value ? {defaultEmoji: value.slice(0, 32)} : undefined)},
+      size: {description: "设置贴纸尺寸", args: "256–512", handle: configure(value => Number.isInteger(Number(value)) && Number(value) >= 256 && Number(value) <= 512 ? {size: Number(value)} : undefined)},
+      quality: {description: "设置输出质量", args: "1–100", handle: configure(value => Number.isInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 100 ? {quality: Number(value)} : undefined)},
+      bg: {description: "设置背景", aliases: ["background"], args: "transparent|white|black", handle: configure(value => ["transparent", "white", "black"].includes(value ?? "") ? {background: value as Config["background"]} : undefined)},
+      auto: {description: "设置发送成功后是否删除命令消息", args: "on|off", handle: configure(value => ["on", "off"].includes(value ?? "") ? {autoDelete: value === "on"} : undefined)},
+      format: {description: "设置输出格式", args: "webp|png", handle: configure(value => ["webp", "png"].includes(value ?? "") ? {format: value as Config["format"]} : undefined)},
+    },
+      async handle(i, context) {
+        const {current} = await configuration(context);
+        if (i.args.length) { await context.telegram.edit(i.message, help(i.prefix), {parseMode: "html"}); return; }
+        await context.telegram.edit(i.message, `<b>当前配置</b>\n默认表情：${escape(current.defaultEmoji)}\n尺寸：${current.size}\n质量：${current.quality}\n格式：${current.format}\n背景：${current.background}\n自动删除：${current.autoDelete ? "开启" : "关闭"}`, {parseMode: "html"});
+      }},
+  },
+  help: [{heading: "格式与默认值：", body: "回复 JPG/PNG/GIF/WebP 等图片，通过 sharp 保持比例并优化尺寸和质量；GIF 按动画读取。默认表情 🙂、512 像素、WebP 质量 90、透明背景，发送成功后删除命令。WebP 超限时再压缩一次，输出仍超过 512 KiB 会报错。"},
+    {heading: "命令别名：", body: "<code>{prefix}pts</code> 与 <code>{prefix}pic_to_sticker</code> 使用相同参数。"}],
+  async handle(i, context) {
+    if (["help", "h"].includes(i.args[0]?.toLowerCase() ?? "")) { await context.telegram.edit(i.message, help(i.prefix), {parseMode: "html"}); return; }
+    await convertReply(false)(i, context);
+  },
+};
+const help = (prefix: string) => renderCommandHelp("pic_to_sticker", command, {prefix, title: "🖼️ 图片转贴纸工具"});
+export default function createPicToSticker() {
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "pic_to_sticker", description: "将图片转换为贴纸", commands: {pic_to_sticker: command, pts: command},
     settings: context => ({title: "图片转贴纸", description: "贴纸转换配置", category: "插件配置", icon: "🖼️",
       getSchema: () => [{key: "defaultEmoji", label: "默认表情", type: "string", max: 32}, {key: "quality", label: "质量", type: "number", min: 1, max: 100},
         {key: "format", label: "格式", type: "select", options: [{value: "webp", label: "WebP"}, {value: "png", label: "PNG"}]},

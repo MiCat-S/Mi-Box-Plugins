@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import { definePlugin, type PluginContext, type MessageEnvelope } from "telebox/sdk";
+import { STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext, type MessageEnvelope } from "telebox/sdk";
 import { setTimeout as sleep } from "node:timers/promises";
 import {randomUUID} from "node:crypto";
 import type { TelegramClient } from "teleproto";
@@ -8,8 +7,6 @@ const defaults = { batchSize: 50, searchLimit: 100, retryAttempts: 3 };
 type Config = typeof defaults;
 const escape = (value: unknown) => String(value).replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-const help = (prefix: string) => `<b>智能防撤回删除</b>\n\n<code>${escape(prefix)}dme 数量</code> 快速删除自己的消息\n<code>${escape(prefix)}dme -f 数量</code> 替换文本和媒体后删除\n<code>${escape(prefix)}dme 999999</code> 删除全部可见的自己的消息\n普通数量单次最多 2000 条；仅处理命令之前的消息及当前话题。\n收藏夹直接删除；-f 模式下广播频道主直接按数量删除。\n防撤回编辑可能因消息类型、编辑时限或权限失败，不保证第三方副本被删除。`;
-
 function topic(message: any): number | undefined {
   const reply = message?.replyTo;
   return [reply?.replyToTopId, reply?.topMsgId, reply?.replyToMsgId, reply?.replyToMsg?.id]
@@ -215,8 +212,50 @@ async function execute(ctx: PluginContext, client: TelegramClient, signal: Abort
 export default function createDme() {
   const active = new Set<string>();
   const store = (ctx: PluginContext) => ctx.storage.json<Config>("config.json", defaults);
-  return definePlugin({renderHelp: renderPluginHelp,
-    apiVersion: 1, id: "dme", description: help("."),
+  const dmeCommand: CommandDefinition = {
+    description: "删除自己的消息，支持防撤回模式",
+    helpOnEmpty: true,
+    helpArgs: ["help", "h"],
+    ignoreEdited: true,
+    args: "[数量]",
+    arguments: [{name: "数量", description: "正整数；普通模式单次最多 2000 条，999999 表示全部可见"}, {name: "-f", description: "防撤回模式：先替换文本与媒体再删除"}],
+    examples: [{args: "10"}, {args: "-f 100"}, {args: "999999"}],
+    help: [
+      {heading: "说明：", body: "仅处理命令之前的消息及当前话题；自动检测禁止转发和复制的群组，受限群组切换传统遍历模式；API 搜索失败时回退历史遍历。收藏夹直接删除，-f 模式下广播频道主按数量直接删除。普通数量单次最多 2000 条，999999 删除全部可见的自己的消息。防撤回编辑可能因消息类型、编辑时限或权限失败，不保证第三方副本被删除。"},
+    ],
+    async handle({ message, args, prefix }, ctx) {
+      const sub = (args[0] || "").toLowerCase();
+      if (!sub || sub === "help" || sub === "h") {
+        await ctx.telegram.edit(message, renderCommandHelp("dme", dmeCommand, { prefix, title: "🗑️ 智能防撤回删除插件" }), { parseMode: "html" }); return;
+      }
+      const anti = sub === "-f", token = anti ? args[1] : args[0];
+      const count = Number(token);
+      if (!token || !/^\d+$/.test(token) || !Number.isSafeInteger(count) || count <= 0) {
+        await ctx.telegram.edit(message, "参数错误：请指定正整数删除数量"); return;
+      }
+      if (active.has(message.chatId)) {
+        await ctx.telegram.edit(message, "当前会话已有 DME 删除任务正在执行，请等待任务完成"); return;
+      }
+      active.add(message.chatId);
+      try {
+        await ctx.tasks.run(`dme:delete:${message.chatId}`, async scoped => {
+          const config = await store(ctx).read();
+          await ctx.telegram.withClient((client, signal) => execute(ctx, client,
+            AbortSignal.any([signal, scoped]), message, count, anti, config));
+        });
+      } catch (error) {
+        if (!ctx.signal.aborted) {
+          ctx.log.error("dme:task");
+          await ctx.telegram.withClient(async (client, signal) => {
+            signal.throwIfAborted();
+            await client.sendMessage("me", { message: `DME ${message.chatId} 操作失败，请检查权限、网络和 Telegram 限制后重试。` });
+          });
+        }
+      } finally { active.delete(message.chatId); }
+    },
+  };
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "dme", description: "删除自己的消息，支持防撤回模式",
+    renderHelp: prefix => renderCommandHelp("dme", dmeCommand, {prefix, title: "🗑️ 智能防撤回删除插件"}),
     settings: ctx => ({
       id: "dme", title: "防撤回删除", category: "管理",
       getSchema: () => [
@@ -234,38 +273,6 @@ export default function createDme() {
         signal.throwIfAborted(); await store(ctx).update(data => { Object.assign(data, patch); return data; });
       },
     }),
-    commands: { dme: {helpOnEmpty: true, helpArgs: ["help","h"],  description: "删除自己的消息，支持防撤回模式", ignoreEdited: true,
-      async handle({ message, args, prefix }, ctx) {
-        const sub = (args[0] || "").toLowerCase();
-        if (!sub || sub === "help" || sub === "h") {
-          await ctx.telegram.edit(message, help(prefix), { parseMode: "html" }); return;
-        }
-        const anti = sub === "-f", token = anti ? args[1] : args[0];
-        const count = Number(token);
-        if (!token || !/^\d+$/.test(token) || !Number.isSafeInteger(count) || count <= 0) {
-          await ctx.telegram.edit(message, "参数错误：请指定正整数删除数量"); return;
-        }
-        if (active.has(message.chatId)) {
-          await ctx.telegram.edit(message, "当前会话已有 DME 删除任务正在执行，请等待任务完成"); return;
-        }
-        active.add(message.chatId);
-        try {
-          await ctx.tasks.run(`dme:delete:${message.chatId}`, async scoped => {
-            const config = await store(ctx).read();
-            await ctx.telegram.withClient((client, signal) => execute(ctx, client,
-              AbortSignal.any([signal, scoped]), message, count, anti, config));
-          });
-        } catch (error) {
-          if (!ctx.signal.aborted) {
-            ctx.log.error("dme:task");
-            // The command may already be deleted; report failures to Saved Messages.
-            await ctx.telegram.withClient(async (client, signal) => {
-              signal.throwIfAborted();
-              await client.sendMessage("me", { message: `DME ${message.chatId} 操作失败，请检查权限、网络和 Telegram 限制后重试。` });
-            });
-          }
-        } finally { active.delete(message.chatId); }
-      },
-    } },
+    commands: { dme: dmeCommand },
   });
 }

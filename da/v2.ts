@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import { definePlugin, type PluginContext } from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext, type SubcommandDefinition} from "telebox/sdk";
 import { setTimeout as sleep } from "node:timers/promises";
 
 interface DeleteTask {
@@ -9,7 +8,6 @@ interface DeleteTask {
 }
 const escape = (value: unknown) => String(value).replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-const help = (prefix: string) => `<b>批量删除</b>\n\n<code>${escape(prefix)}da true</code> 开始或恢复删除\n<code>${escape(prefix)}da stop</code> 停止任务\n<code>${escape(prefix)}da status</code> 状态发送到收藏夹\n管理员删除全部消息，普通成员仅删除自己的消息。`;
 const failure = (kind: "permission" | "delete" | "task") => kind === "permission" ? "权限检查失败" : kind === "delete" ? "部分消息删除失败" : "删除任务执行失败";
 
 export default function createDa() {
@@ -44,58 +42,41 @@ export default function createDa() {
       await save(ctx, task);
     } catch { ctx.signal.throwIfAborted(); ctx.log.error("da:progress"); }
   };
-  return definePlugin({renderHelp: renderPluginHelp,
-    apiVersion: 1, id: "da", description: help("."),
-    async setup(ctx) {
-      const store = database(ctx);
-      if (!(await store.read()).imported) {
-        const legacy = await ctx.tasks.run("da:import", async signal => {
-          const { readFile } = await import("node:fs/promises");
-          try {
-            const data = JSON.parse(await readFile(ctx.files.dataPath("database.json"), "utf8"));
-            signal.throwIfAborted();
-            if (!Array.isArray(data.tasks)) throw new Error("Invalid legacy DA database");
-            return data.tasks as DeleteTask[];
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-            throw error;
-          }
-        });
-        await store.update(data => { if (!data.imported) { data.tasks = legacy; data.imported = true; } return data; });
-      }
-      // Persisted jobs require an explicit resume after a generation change.
-      await store.update(data => { for (const task of data.tasks) {
-        if (task.isRunning) task.isPaused = true;
-        task.isRunning = false; task.sleepUntil = null;
-        task.errors = task.errors?.length ? ["历史任务存在删除失败"] : [];
-      } return data; });
-    },
-    commands: { da: {helpOnEmpty: true, helpArgs: ["help","h"],  description: "批量删除群组消息", ignoreEdited: true, async handle({ message, args, prefix }, ctx) {
-      const raw = message.raw as { isPrivate?: boolean; peerId?: any } | undefined;
-      if (raw?.isPrivate || !message.chatId.startsWith("-")) {
-        await ctx.telegram.edit(message, "仅群组可用"); return;
-      }
-      const sub = (args[0] || "").toLowerCase();
-      if (!sub || sub === "help" || sub === "h") {
-        await ctx.telegram.edit(message, help(prefix), { parseMode: "html" }); return;
-      }
-      if (!["true", "stop", "status"].includes(sub)) { await ctx.telegram.edit(message, "未知命令"); return; }
+
+  const stopOrStatus = (kind: "stop" | "status"): SubcommandDefinition => ({
+    description: kind === "stop" ? "停止当前删除任务" : "查看任务状态并发送到收藏夹",
+    args: "", examples: [{args: kind}],
+    async handle(invocation, ctx) {
+      const message = invocation.message;
+      const raw = message.raw as { peerId?: any } | undefined;
       const id = message.chatId;
       const removeCommand = () => ctx.telegram.withClient(async (client, signal) => {
         const { returnBigInt } = await import("teleproto/Helpers.js");
         signal.throwIfAborted();
         await client.deleteMessages(raw?.peerId ?? returnBigInt(id), [message.id], { revoke: true });
       });
-      if (sub !== "true") {
-        const slot = active.get(id);
-        if (sub === "stop") slot?.controller.abort(new Error("DA stopped"));
-        const task = slot?.task ?? (await database(ctx).read()).tasks.find(t => t.chatId === id);
-        if (task) {
-          if (sub === "stop" && !slot) { task.isRunning = false; task.isPaused = true; await save(ctx, task); }
-          await progress(ctx, task, sub === "status" ? "状态查询" : slot ? "正在停止，等待当前请求结束" : "已手动停止");
-        }
-        await removeCommand(); return;
+      const slot = active.get(id);
+      if (kind === "stop") slot?.controller.abort(new Error("DA stopped"));
+      const task = slot?.task ?? (await database(ctx).read()).tasks.find(t => t.chatId === id);
+      if (task) {
+        if (kind === "stop" && !slot) { task.isRunning = false; task.isPaused = true; await save(ctx, task); }
+        await progress(ctx, task, kind === "status" ? "状态查询" : slot ? "正在停止，等待当前请求结束" : "已手动停止");
       }
+      await removeCommand();
+    },
+  });
+
+  const start: SubcommandDefinition = {
+    description: "开始或恢复删除", args: "", examples: [{args: "true"}],
+    async handle(invocation, ctx) {
+      const message = invocation.message;
+      const raw = message.raw as { peerId?: any } | undefined;
+      const id = message.chatId;
+      const removeCommand = () => ctx.telegram.withClient(async (client, signal) => {
+        const { returnBigInt } = await import("teleproto/Helpers.js");
+        signal.throwIfAborted();
+        await client.deleteMessages(raw?.peerId ?? returnBigInt(id), [message.id], { revoke: true });
+      });
       if (active.has(id)) { await removeCommand(); return; }
       const slot: { controller: AbortController; task?: DeleteTask } = { controller: new AbortController() };
       active.set(id, slot);
@@ -205,6 +186,63 @@ export default function createDa() {
           } finally { active.delete(id); }
         }
       }).catch(() => ctx.log.error("da:background"));
-    } } },
+    },
+  };
+
+  const daCommand: CommandDefinition = {
+    description: "批量删除群组消息",
+    helpOnEmpty: true,
+    helpArgs: ["help", "h"],
+    ignoreEdited: true,
+    subcommandsCaseSensitive: false,
+    subcommands: {true: start, stop: stopOrStatus("stop"), status: stopOrStatus("status")},
+    examples: [{args: "true"}, {args: "stop"}, {args: "status"}],
+    help: [
+      {heading: "说明：", body: "仅群组可用。管理员删除全部消息，普通成员仅删除自己的消息；任务状态发送到收藏夹。"},
+      {heading: "提示：", body: "持久化任务在重启后需要再次发送 <code>{prefix}da true</code> 恢复。"},
+    ],
+    authorize: async (invocation, ctx) => {
+      const raw = invocation.message.raw as { isPrivate?: boolean } | undefined;
+      if (raw?.isPrivate || !invocation.message.chatId.startsWith("-")) {
+        await ctx.telegram.edit(invocation.message, "仅群组可用");
+        return false;
+      }
+    },
+    async handle(invocation, ctx) {
+      const sub = (invocation.args[0] || "").toLowerCase();
+      if (!sub || sub === "help" || sub === "h") {
+        await ctx.telegram.edit(invocation.message, renderCommandHelp("da", daCommand, {prefix: invocation.prefix, title: "群组消息批量删除插件"}), { parseMode: "html" }); return;
+      }
+      await ctx.telegram.edit(invocation.message, "未知命令");
+    },
+  };
+
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "da", description: "群组消息批量删除插件",
+    async setup(ctx) {
+      const store = database(ctx);
+      if (!(await store.read()).imported) {
+        const legacy = await ctx.tasks.run("da:import", async signal => {
+          const { readFile } = await import("node:fs/promises");
+          try {
+            const data = JSON.parse(await readFile(ctx.files.dataPath("database.json"), "utf8"));
+            signal.throwIfAborted();
+            if (!Array.isArray(data.tasks)) throw new Error("Invalid legacy DA database");
+            return data.tasks as DeleteTask[];
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+            throw error;
+          }
+        });
+        await store.update(data => { if (!data.imported) { data.tasks = legacy; data.imported = true; } return data; });
+      }
+      // Persisted jobs require an explicit resume after a generation change.
+      await store.update(data => { for (const task of data.tasks) {
+        if (task.isRunning) task.isPaused = true;
+        task.isRunning = false; task.sleepUntil = null;
+        task.errors = task.errors?.length ? ["历史任务存在删除失败"] : [];
+      } return data; });
+    },
+    renderHelp: prefix => renderCommandHelp("da", daCommand, {prefix, title: "群组消息批量删除插件"}),
+    commands: { da: daCommand },
   });
 }

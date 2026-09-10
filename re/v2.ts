@@ -1,10 +1,8 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin} from "telebox/sdk";
 import type {Api} from "teleproto";
 
 export default function createRe() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "re", description: "复读回复的消息",
-    commands: {re: {description: "回复消息后重复转发，可指定数量和次数", async handle(invocation, ctx) {
+  const command: CommandDefinition = {"args":"[消息数] [复读次数]","arguments":[{"name":"消息数","description":"默认 1，范围 1–20；截至被回复消息的若干条消息"},{"name":"复读次数","description":"默认 1，范围 1–10"}],"examples":[{"args":"","description":"回复消息转发一条、一次"},{"args":"3"},{"args":"3 2"}],"help":[{"heading":"条件：","body":"目标消息需要允许转发，成功后删除命令消息。"}],description: "回复消息后重复转发，可指定数量和次数", async handle(invocation, ctx) {
       const reply = await ctx.telegram.getReply(invocation.message);
       const raw = reply?.raw as Api.Message | undefined;
       const count = Math.min(Math.max(Number(invocation.args[0]) || 1, 1), 20);
@@ -28,6 +26,9 @@ export default function createRe() {
       } catch {
         if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, "复读失败：目标消息可能禁止转发");
       }
-    }}},
+    }};
+  const help = (prefix: string) => renderCommandHelp("re", command, {prefix, title: "🔁 消息复读"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "re", description: "复读回复的消息",
+    commands: {re: command},
   });
 }

@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext} from "telebox/sdk";
 import {setTimeout as delay} from "node:timers/promises";
 
 type Hitokoto = {hitokoto: unknown; type?: unknown; from?: unknown; from_who?: unknown};
@@ -12,9 +11,6 @@ function escape(value: string): string {
   return value.replace(/[&<>\"]/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"})[char]!);
 }
 
-function help(prefix: string): string {
-  return `<b>一言</b>\n<code>${escape(prefix)}hitokoto</code> 随机获取\n<code>${escape(prefix)}hitokoto a c</code> 按类型筛选\n类型：${Object.entries(types).map(([key, value]) => `<code>${key}</code>${value}`).join(" · ")}`;
-}
 
 function parseTypes(args: readonly string[]): string[] | undefined {
   const selected = [...new Set(args.map(value => value.toLowerCase()))];
@@ -58,12 +54,17 @@ async function fetchHitokoto(ctx: PluginContext, selected: string[] | undefined)
   throw last instanceof Error ? last : new Error("请求失败");
 }
 
-export default function createHitokoto() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "hitokoto", description: "获取随机一言并按类型筛选",
-    commands: {hitokoto: {helpArgs: ["help","h"], description: "获取随机一言", async handle(invocation, ctx) {
+const hitokotoCommand: CommandDefinition = {
+  description: "获取随机一言",
+  helpArgs: ["help", "h"],
+  args: "[类型...]",
+  arguments: [{name: "类型", description: `可选，可多选：${Object.entries(types).map(([key, value]) => `${key}=${value}`).join("、")}`}],
+  examples: [{args: ""}, {args: "a"}, {args: "a c"}, {args: "a c h"}],
+  help: [{heading: "说明：", body: "从 v1.hitokoto.cn 获取随机一言，只接受类型字母参数，可多选；显示句子出处和作者（API 提供时）。失败时自动重试，最多请求 10 次。"}],
+  async handle(invocation, ctx) {
       const args = invocation.args.map(value => value.trim()).filter(Boolean);
       if (args[0]?.toLowerCase() === "help" || args[0]?.toLowerCase() === "h") {
-        await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
+        await ctx.telegram.edit(invocation.message, renderCommandHelp("hitokoto", hitokotoCommand, {prefix: invocation.prefix, title: "💬 一言"}), {parseMode: "html"});
         return;
       }
       try {
@@ -75,6 +76,11 @@ export default function createHitokoto() {
         const message = error instanceof Error && error.message === "类型参数无效" ? error.message : "获取一言失败，请稍后重试";
         await ctx.telegram.edit(invocation.message, `<b>一言失败</b>\n${escape(message)}`, {parseMode: "html"});
       }
-    }}},
+    },
+};
+export default function createHitokoto() {
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "hitokoto", description: "获取随机一言并按类型筛选",
+    renderHelp: prefix => renderCommandHelp("hitokoto", hitokotoCommand, {prefix, title: "💬 一言"}),
+    commands: {hitokoto: hitokotoCommand},
   });
 }

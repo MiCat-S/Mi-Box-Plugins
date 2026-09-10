@@ -1,30 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition} from "telebox/sdk";
 import {isIP} from "node:net";
 import {domainToASCII} from "node:url";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
-
-const help = `📍 <b>IP查询插件</b>
-
-<b>使用方法：</b>
-• <code>ip &lt;IP地址&gt;</code>
-• <code>ip &lt;域名&gt;</code>
-• 回复包含IP/域名的消息后使用 <code>ip</code>
-
-<b>示例：</b>
-• <code>ip 8.8.8.8</code>
-• <code>ip google.com</code>
-• <code>ip 2001:4860:4860::8888</code>`;
-
-const description = `
-IP 查询插件：
-- ip &lt;IP地址/域名&gt; - 查询 IP 地址或域名的详细信息
-- 也可回复包含 IP/域名 的消息后使用 ip 命令
-
-示例：
-1. ip 8.8.8.8
-2. ip google.com
-3. 回复包含 IP 的消息后使用 ip
-  `;
+import type { MessageEnvelope, PluginContext } from "telebox/sdk";
 
 const fields = "status,message,country,regionName,city,isp,org,as,query,timezone,proxy,hosting";
 const maxResponseBytes = 64 * 1024;
@@ -155,11 +132,15 @@ async function edit(context: PluginContext, message: MessageEnvelope, text: stri
   await context.telegram.edit(message, text, {parseMode: "html", ...(linkPreview === undefined ? {} : {linkPreview})});
 }
 
-export default function createIp() {
-  return definePlugin({renderHelp: renderPluginHelp,
-    apiVersion: 1, id: "ip", description,
-    commands: {
-      ip: {description: "查询 IP 地址或域名的详细信息", async handle({message, args}, context) {
+const ipCommand: CommandDefinition = {
+  description: "查询 IP 地址或域名的详细信息",
+  args: "<IP地址|域名>",
+  arguments: [{name: "目标", description: "IPv4/IPv6 地址或域名；省略时读取回复消息中的 IP/域名"}],
+  examples: [{args: "8.8.8.8"}, {args: "google.com"}, {args: "2001:4860:4860::8888"}],
+  help: [
+    {heading: "说明：", body: "查询地理位置、ISP、组织、AS 号、时区以及代理/数据中心标记；也可回复包含 IP/域名 的消息后使用。"},
+  ],
+  async handle({message, args, prefix}, context) {
         try {
           context.signal.throwIfAborted();
           let query = args.join(" ").trim();
@@ -173,7 +154,7 @@ export default function createIp() {
               context.log.error("ip.reply.failed");
             }
           }
-          if (!query) { await edit(context, message, help); return; }
+          if (!query) { await edit(context, message, renderCommandHelp("ip", ipCommand, {prefix, title: "📍 IP查询插件"})); return; }
           const clean = target(query);
           if (!clean) { await edit(context, message, failure(query, "请提供有效的IP地址或域名")); return; }
           await edit(context, message, `🔍 <b>正在查询:</b> <code>${escape(query)}</code>`);
@@ -213,7 +194,11 @@ export default function createIp() {
             if (!context.signal.aborted) context.log.error("ip.message.failed");
           }
         }
-      }},
-    },
+      },
+};
+export default function createIp() {
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "ip", description: "查询 IP 地址或域名的详细信息",
+    renderHelp: prefix => renderCommandHelp("ip", ipCommand, {prefix, title: "📍 IP查询插件"}),
+    commands: {ip: ipCommand},
   });
 }

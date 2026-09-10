@@ -1,8 +1,6 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext} from "telebox/sdk";
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const help = (prefix: string) => `<b>HTTP 猫猫图片</b>\n<code>${prefix}httpcat 404</code>\n支持 100–599 状态码。`;
 
 async function readImage(response: Response, signal: AbortSignal): Promise<Buffer> {
   if (response.status !== 200 || !response.body) throw new Error("图片暂时不可用");
@@ -25,12 +23,16 @@ async function readImage(response: Response, signal: AbortSignal): Promise<Buffe
   }
 }
 
-export default function createHttpcat() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "httpcat", description: "发送 HTTP 状态码对应的图片",
-    commands: {httpcat: {description: "发送 HTTP 状态码图片", async handle(invocation, ctx) {
+const httpcatCommand: CommandDefinition = {
+  description: "发送 HTTP 状态码图片",
+  args: "状态码",
+  arguments: [{name: "状态码", required: true, description: "100–599 的三位状态码"}],
+  examples: [{args: "404"}],
+  help: [{heading: "说明：", body: "从 http.cat 获取对应状态码图片并回复到当前对话，单张上限 5 MiB。"}],
+  async handle(invocation, ctx) {
       const code = invocation.args[0] ?? "";
       if (!/^[1-5]\d{2}$/.test(code)) {
-        await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
+        await ctx.telegram.edit(invocation.message, renderCommandHelp("httpcat", httpcatCommand, {prefix: invocation.prefix, title: "🐱 HTTP 猫猫图片"}), {parseMode: "html"});
         return;
       }
       try {
@@ -51,6 +53,11 @@ export default function createHttpcat() {
       } catch {
         if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, "图片获取或发送失败，请稍后重试");
       }
-    }}},
+    },
+};
+export default function createHttpcat() {
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "httpcat", description: "发送 HTTP 状态码对应的图片",
+    renderHelp: prefix => renderCommandHelp("httpcat", httpcatCommand, {prefix, title: "🐱 HTTP 猫猫图片"}),
+    commands: {httpcat: httpcatCommand},
   });
 }

@@ -1,7 +1,6 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {setTimeout as sleep} from "node:timers/promises";
 import {returnBigInt} from "teleproto/Helpers";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 type Rule = {id: string; command: string; delay: number; parameters?: string[]; deleteResponse?: boolean; exactMatch?: boolean};
 type Pending = {chatId: string; messageId: number; dueAt: number};
@@ -43,7 +42,6 @@ function normalize(input: unknown): State {
   }
   return {...source, schemaVersion: 2, enabled: source.enabled === true, rules, pending};
 }
-
 async function forget(context: PluginContext, id: string, running: Set<string>) {
   running.delete(id);
   await database(context).update(state => { const pending = {...state.pending}; delete pending[id]; return {...state, pending}; });
@@ -83,59 +81,98 @@ function nextId(rules: Rule[]) { return String(Math.max(0, ...rules.map(rule => 
 
 export default function createPlugin() {
   const running = new Set<string>();
-  return definePlugin({renderHelp: renderPluginHelp,
-  apiVersion: 1, id: "autodelcmd", description: "按规则延迟删除命令及其响应。",
-  commands: {autodelcmd: {helpArgs: ["help", "h"], helpOnEmpty: true, description: "管理命令自动删除规则", async handle({message, args, prefix}, context) {
-    const action = args[0]?.toLowerCase();
+  const toggle = (enabled: boolean) => async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+    await database(context).update(value => ({...value, enabled}));
+    await context.telegram.edit(invocation.message, enabled ? "🟢 自动删除功能已启用" : "🔴 自动删除功能已禁用");
+  };
+  const status = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
     const state = await database(context).read();
-    if (["on", "enable"].includes(action)) { await database(context).update(value => ({...value, enabled: true})); await context.telegram.edit(message, "🟢 自动删除功能已启用"); return; }
-    if (["off", "disable"].includes(action)) { await database(context).update(value => ({...value, enabled: false})); await context.telegram.edit(message, "🔴 自动删除功能已禁用"); return; }
-    if (["status", "st"].includes(action)) { await context.telegram.edit(message, `${state.enabled ? "🟢 已启用" : "🔴 已禁用"}\n规则数：${state.rules.length}\n待删除：${Object.keys(state.pending).length}`); return; }
-    if (["list", "ls"].includes(action)) {
-      const body = state.rules.map((rule, index) => `${index + 1}. <code>${escape(rule.command)}${rule.parameters?.length ? ` [${rule.parameters.map(escape).join(", ")}]` : ""}</code> → ${rule.delay}秒${rule.deleteResponse ? " 🔄" : ""}${rule.exactMatch ? " 🎯" : ""} <code>[ID: ${escape(rule.id)}]</code>`).join("\n");
-      await context.telegram.edit(message, body ? `📋 <b>自动删除规则</b>\n\n${body}` : "暂无规则", {parseMode: "html"}); return;
+    await context.telegram.edit(invocation.message, `${state.enabled ? "🟢 已启用" : "🔴 已禁用"}\n规则数：${state.rules.length}\n待删除：${Object.keys(state.pending).length}`);
+  };
+  const list = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+    const state = await database(context).read();
+    const body = state.rules.map((rule, index) => `${index + 1}. <code>${escape(rule.command)}${rule.parameters?.length ? ` [${rule.parameters.map(escape).join(", ")}]` : ""}</code> → ${rule.delay}秒${rule.deleteResponse ? " 🔄" : ""}${rule.exactMatch ? " 🎯" : ""} <code>[ID: ${escape(rule.id)}]</code>`).join("\n");
+    await context.telegram.edit(invocation.message, body ? `📋 <b>自动删除规则</b>\n\n${body}` : "暂无规则", {parseMode: "html"});
+  };
+  const reset = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+    await database(context).update(() => defaults());
+    await context.telegram.edit(invocation.message, `✅ 已重置为默认配置，共 ${defaultRules().length} 条规则`);
+  };
+  const add = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+    const state = await database(context).read();
+    const values = invocation.args, response = values.includes("-r") || values.includes("--response"), exact = values.includes("-e") || values.includes("--exact");
+    const filtered = values.filter(value => !["-r", "--response", "-e", "--exact"].includes(value));
+    const command = filtered[0]?.toLowerCase(), delay = Number(filtered[1]), parameters = filtered.slice(2);
+    if (!command || !/^[a-z0-9_]+$/i.test(command) || !Number.isInteger(delay) || delay < 1 || delay > 86400 || (exact && parameters.length)) {
+      await context.telegram.edit(invocation.message, `❌ 用法：<code>${invocation.prefix}autodelcmd add [命令] [1-86400秒] [参数...] [-r] [-e]</code>`, {parseMode: "html"}); return;
     }
-    if (action === "reset") { await database(context).update(() => defaults()); await context.telegram.edit(message, `✅ 已重置为默认配置，共 ${defaultRules().length} 条规则`); return; }
-    if (action === "add") {
-      const values = args.slice(1), response = values.includes("-r") || values.includes("--response"), exact = values.includes("-e") || values.includes("--exact");
-      const filtered = values.filter(value => !["-r", "--response", "-e", "--exact"].includes(value));
-      const command = filtered[0]?.toLowerCase(), delay = Number(filtered[1]), parameters = filtered.slice(2);
-      if (!command || !/^[a-z0-9_]+$/i.test(command) || !Number.isInteger(delay) || delay < 1 || delay > 86400 || (exact && parameters.length)) {
-        await context.telegram.edit(message, `❌ 用法：<code>${prefix}autodelcmd add [命令] [1-86400秒] [参数...] [-r] [-e]</code>`, {parseMode: "html"}); return;
-      }
-      const conflict = state.rules.find(rule => rule.command === command && !!rule.exactMatch === exact && (!parameters.length ? !rule.parameters?.length : parameters.some(value => rule.parameters?.includes(value))));
-      if (conflict && (conflict.delay !== delay || !!conflict.deleteResponse !== response)) { await context.telegram.edit(message, `❌ 规则冲突，请先删除 ID ${escape(conflict.id)}`, {parseMode: "html"}); return; }
-      await database(context).update(value => {
-        const rules = [...value.rules];
-        const merge = rules.find(rule => rule.command === command && rule.delay === delay && !!rule.deleteResponse === response && !!rule.exactMatch === exact);
-        if (merge && parameters.length) merge.parameters = [...new Set([...(merge.parameters ?? []), ...parameters])];
-        else rules.push({id: nextId(rules), command, delay, ...(parameters.length ? {parameters} : {}), ...(response ? {deleteResponse: true} : {}), ...(exact ? {exactMatch: true} : {})});
-        return {...value, rules};
-      });
-      await context.telegram.edit(message, "✅ 已保存自动删除规则"); return;
-    }
-    if (["del", "remove"].includes(action)) {
-      const target = args[1];
-      if (!target) { await context.telegram.edit(message, `❌ 用法：<code>${prefix}autodelcmd del [规则ID]</code>`, {parseMode: "html"}); return; }
-      const exists = state.rules.some(rule => rule.id === target);
-      if (!exists) { await context.telegram.edit(message, `❌ 未找到规则 ID ${escape(target)}`, {parseMode: "html"}); return; }
-      await database(context).update(value => ({...value, rules: value.rules.filter(rule => rule.id !== target)}));
-      await context.telegram.edit(message, "✅ 已删除自动删除规则"); return;
-    }
-    await context.telegram.edit(message, `<b>自动删除命令消息</b>\n<code>${prefix}autodelcmd on|off|status|list|add|del|reset</code>`, {parseMode: "html"});
-  }}},
-  listeners: [{edited: false, ignoreCommands: false, async handle(message, context) {
-    if ((!message.outgoing && !message.saved) || !message.text) return;
-    const state = await database(context).read(); if (!state.enabled) return;
-    const route = context.commands.parse(message.text); if (!route || route.command === "autodelcmd") return;
-    const rule = match(state.rules, route.command, route.args); if (!rule) return;
-    const ids = rule.deleteResponse ? await responseIds(context, message) : [];
-    for (const id of [...ids, message.id]) await queue(context, message.chatId, id, rule.delay, running);
-  }}],
-  async setup(context) {
-    const legacy = await database(context).read(); const state = normalize(legacy);
-    await database(context).update(() => state);
-    for (const pending of Object.values(state.pending)) await deletePending(context, pending, running);
-  },
-  cleanup() { running.clear(); },
-}); }
+    const conflict = state.rules.find(rule => rule.command === command && !!rule.exactMatch === exact && (!parameters.length ? !rule.parameters?.length : parameters.some(value => rule.parameters?.includes(value))));
+    if (conflict && (conflict.delay !== delay || !!conflict.deleteResponse !== response)) { await context.telegram.edit(invocation.message, `❌ 规则冲突，请先删除 ID ${escape(conflict.id)}`, {parseMode: "html"}); return; }
+    await database(context).update(value => {
+      const rules = [...value.rules];
+      const merge = rules.find(rule => rule.command === command && rule.delay === delay && !!rule.deleteResponse === response && !!rule.exactMatch === exact);
+      if (merge && parameters.length) merge.parameters = [...new Set([...(merge.parameters ?? []), ...parameters])];
+      else rules.push({id: nextId(rules), command, delay, ...(parameters.length ? {parameters} : {}), ...(response ? {deleteResponse: true} : {}), ...(exact ? {exactMatch: true} : {})});
+      return {...value, rules};
+    });
+    await context.telegram.edit(invocation.message, "✅ 已保存自动删除规则");
+  };
+  const del = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+    const target = invocation.args[0];
+    const state = await database(context).read();
+    if (!target) { await context.telegram.edit(invocation.message, `❌ 用法：<code>${invocation.prefix}autodelcmd del [规则ID]</code>`, {parseMode: "html"}); return; }
+    if (!state.rules.some(rule => rule.id === target)) { await context.telegram.edit(invocation.message, `❌ 未找到规则 ID ${escape(target)}`, {parseMode: "html"}); return; }
+    await database(context).update(value => ({...value, rules: value.rules.filter(rule => rule.id !== target)}));
+    await context.telegram.edit(invocation.message, "✅ 已删除自动删除规则");
+  };
+  const autodelcmd: CommandDefinition = {
+    description: "管理命令自动删除规则",
+    helpArgs: ["help", "h"],
+    helpOnEmpty: true,
+    args: "on|off|status|list|add|del|reset",
+    arguments: [
+      {name: "on|off", description: "开启或关闭新任务；别名 enable / disable"},
+      {name: "status", description: "查看开关、规则数和待删除数；别名 st"},
+      {name: "list", description: "查看规则、延迟、选项和 ID；别名 ls"},
+      {name: "add", description: "格式：add 命令 延迟秒数 [参数...] [-r] [-e]"},
+      {name: "del", description: "按列表中的 ID 删除规则；del 也可写 remove"},
+      {name: "reset", description: "恢复默认规则并关闭功能"},
+    ],
+    examples: [{args: "list"}, {args: "add calc 45 -e"}, {args: "on"}, {args: "del 1"}],
+    help: [
+      {heading: "参数与匹配：", body: "• 命令名填写字母、数字或下划线，不带前缀。执行时使用当前配置的前缀，命令别名按路由解析后的命令匹配。\n• 延迟为 1–86400 的整数，单位秒。\n• 多个“参数”表示允许的第一个参数；参数值区分大小写。\n• 带参数的规则优先于通用规则，匹配后使用第一条适用规则。\n• <code>-e</code> / <code>--exact</code>：只匹配无参数调用，不能同时填写参数列表。\n• <code>-r</code> / <code>--response</code>：从最近 100 条消息中选择 ID 大于命令的消息，最多 3 条。"},
+      {heading: "任务与常见提示：", body: "• 关闭功能或删除规则只影响后续匹配；已经排定的删除仍可能执行。\n• 待删除任务会持久保存，重启后继续处理保留的任务。\n• “规则冲突”会给出 ID，先核对并删除该条规则，再添加新配置。\n• 删除能力受当前对话的 Telegram 权限限制。"},
+    ],
+    subcommandsCaseSensitive: false,
+    subcommands: {
+      on: {aliases: ["enable"], description: "开启自动删除功能", args: "", examples: [{args: "on"}], handle: toggle(true)},
+      off: {aliases: ["disable"], description: "关闭自动删除功能", args: "", examples: [{args: "off"}], handle: toggle(false)},
+      status: {aliases: ["st"], description: "查看开关、规则数和待删除数", args: "", examples: [{args: "status"}], handle: status},
+      list: {aliases: ["ls"], description: "查看规则、延迟、选项和 ID", args: "", examples: [{args: "list"}], handle: list},
+      reset: {description: "恢复默认规则并关闭功能", args: "", examples: [{args: "reset"}], handle: reset},
+      add: {description: "添加或合并一条规则", args: "命令 延迟秒数 [参数...] [-r] [-e]", arguments: [{name: "命令", required: true, description: "不带前缀的命令名"}, {name: "延迟秒数", required: true, description: "1–86400 的整数"}, {name: "参数...", description: "允许的第一个参数，多个用空格分隔"}, {name: "-r|--response", description: "同时删除命令的响应消息"}, {name: "-e|--exact", description: "只匹配无参数调用"}], examples: [{args: "add calc 45 -e"}], handle: add},
+      del: {aliases: ["remove"], description: "按 ID 删除规则", args: "规则ID", arguments: [{name: "规则ID", required: true, description: "list 中显示的 ID"}], examples: [{args: "del 1"}], handle: del},
+    },
+    async handle(invocation, context) {
+      await context.telegram.edit(invocation.message, `<b>自动删除命令消息</b>\n<code>${invocation.prefix}autodelcmd on|off|status|list|add|del|reset</code>`, {parseMode: "html"});
+    },
+  };
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "autodelcmd", description: "按规则延迟删除命令及其响应。",
+    renderHelp: prefix => renderCommandHelp("autodelcmd", autodelcmd, {prefix, title: "🗑️ 命令自动删除"}),
+    commands: {autodelcmd},
+    listeners: [{edited: false, ignoreCommands: false, direction: "outgoing", includeSaved: true, async handle(message, context) {
+      if (!message.text) return;
+      const state = await database(context).read(); if (!state.enabled) return;
+      const route = context.commands.parse(message.text); if (!route || route.command === "autodelcmd") return;
+      const rule = match(state.rules, route.command, route.args); if (!rule) return;
+      const ids = rule.deleteResponse ? await responseIds(context, message) : [];
+      for (const id of [...ids, message.id]) await queue(context, message.chatId, id, rule.delay, running);
+    }}],
+    async setup(context) {
+      const legacy = await database(context).read(); const state = normalize(legacy);
+      await database(context).update(() => state);
+      for (const pending of Object.values(state.pending)) await deletePending(context, pending, running);
+    },
+    cleanup() { running.clear(); },
+  });
+}

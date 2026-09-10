@@ -1,8 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 const COMMANDS = ["/usr/bin/magick", "/usr/bin/convert", "/usr/local/bin/magick", "/opt/homebrew/bin/magick"] as const;
@@ -23,13 +22,6 @@ async function imageMagick(context: PluginContext, args: readonly string[]) {
   throw new Error("ImageMagick unavailable");
 }
 
-function help(prefix: string): string {
-  return `<b>贴纸转图片</b>\n回复贴纸后发送：\n` +
-    `<code>${escape(prefix)}stp</code> JPG 白底\n<code>${escape(prefix)}stp png</code> PNG 白底\n` +
-    `<code>${escape(prefix)}stp transparent</code> PNG 透明背景\n<code>${escape(prefix)}stp doc [png] [transparent]</code> 文档发送\n` +
-    `<code>${escape(prefix)}stp check</code> 检查 ImageMagick`;
-}
-
 function options(args: readonly string[]): {format: "jpg" | "png"; transparent: boolean; document: boolean} | undefined {
   if (!args.length) return {format: "jpg", transparent: false, document: false};
   const values = new Set(args.map(value => value.toLowerCase()));
@@ -39,17 +31,23 @@ function options(args: readonly string[]): {format: "jpg" | "png"; transparent: 
 }
 
 export default function createStickerToPic() {
-  const command = {description: "将回复的静态贴纸转换为图片", async handle(invocation: any, context: PluginContext) {
-    const sub = invocation.args[0]?.toLowerCase();
-    if (sub === "help" || sub === "h") { await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }
-    if (sub === "check") {
+  const command: CommandDefinition = {
+    args: "[jpg|png] [transparent] [doc]", helpArgs: ["help", "h"], subcommandsCaseSensitive: false,
+    examples: [{args: "", description: "回复 WebP 静态贴纸，默认 JPG 白底"}, {args: "png"}, {args: "transparent", description: "PNG 透明背景"}, {args: "doc", description: "将转换后的 JPG 作为文档发送"}, {args: "doc png transparent"}],
+    subcommands: {check: {description: "检查 ImageMagick 是否可用", args: "", async handle(invocation, context) {
       try {
         const {command, result} = await imageMagick(context, ["-version"]);
         const version = result.stdout.toString("utf8").split(/\r?\n/)[0]?.slice(0, 300) || "可执行";
         await context.telegram.edit(invocation.message, `<b>ImageMagick 可用</b>\n<code>${escape(command)}</code>\n<code>${escape(version)}</code>`, {parseMode: "html"});
       } catch { if (!context.signal.aborted) await context.telegram.edit(invocation.message, "未检测到 ImageMagick，请先由管理员安装 imagemagick"); }
-      return;
-    }
+
+    }}},
+    help: [{heading: "输入与输出：", body: "仅支持 WebP 静态贴纸，输出 JPG 或 PNG，最大 20 MiB。transparent 强制使用 PNG；doc 将转换后的图片作为文档发送。选项可组合且不区分大小写。"},
+      {heading: "系统依赖：", body: "需要管理员安装 ImageMagick，可使用 check 检测，插件不会自动安装系统软件。"},
+      {heading: "命令别名：", body: "<code>{prefix}stp</code> 与 <code>{prefix}sticker_to_pic</code> 使用相同参数。"}],
+    description: "将回复的静态贴纸转换为图片", async handle(invocation: any, context: PluginContext) {
+    const sub = invocation.args[0]?.toLowerCase();
+    if (sub === "help" || sub === "h") { await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }
     const selected = options(invocation.args);
     if (!selected) { await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }
     if (invocation.message.replyToId === undefined) { await context.telegram.edit(invocation.message, "请回复一个静态贴纸"); return; }
@@ -90,7 +88,8 @@ export default function createStickerToPic() {
       await context.telegram.edit(invocation.message, "贴纸转换失败，请确认服务器已安装 ImageMagick 且回复的是静态贴纸");
     }
   }};
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "sticker_to_pic", description: "将静态贴纸转换为 JPG 或 PNG",
+  const help = (prefix: string) => renderCommandHelp("sticker_to_pic", command, {prefix, title: "🖼️ 贴纸转图片"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "sticker_to_pic", description: "将静态贴纸转换为 JPG 或 PNG",
     resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 60_000, maxOutputBytes: 256 * 1024}},
-    commands: {sticker_to_pic: {...command, helpArgs: ["help","h"]}, stp: {...command, helpArgs: ["help","h"]}}});
+    commands: {sticker_to_pic: command, stp: command}});
 }

@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
@@ -49,10 +48,12 @@ async function sendParts(message: MessageEnvelope, context: PluginContext, parts
 }
 
 export default function createListUsernames() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "listusernames", description: "列出账号管理的公开群组和频道",
-    commands: {listusernames: {helpArgs: ["help","h"], description: "列出账号管理的公开群组和频道", async handle(invocation, context) {
+  const command: CommandDefinition = {
+    args: "", examples: [{args: ""}],
+    help: [{heading: "说明：", body: "列出当前账号管理的公开群组和频道，包含名称、用户名、ID 及分类数量。任何账号均可查询自己的列表，内容较长时自动分段发送。"}],
+    helpArgs: ["help","h"], description: "列出账号管理的公开群组和频道", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
-        await context.telegram.edit(invocation.message, `<b>公开群组/频道</b>\n<code>${escape(invocation.prefix)}listusernames</code>`, {parseMode: "html"});
+        await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
         return;
       }
       await context.telegram.edit(invocation.message, "正在获取公开群组/频道列表…");
@@ -69,6 +70,9 @@ export default function createListUsernames() {
         context.log.error("listusernames_query_failed");
         await context.telegram.edit(invocation.message, "<b>获取列表失败</b>\n请稍后重试", {parseMode: "html"});
       }
-    }}},
+    }};
+  const help = (prefix: string) => renderCommandHelp("listusernames", command, {prefix, title: "📋 公开群组与频道"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "listusernames", description: "列出账号管理的公开群组和频道",
+    commands: {listusernames: command},
   });
 }

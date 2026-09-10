@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin} from "telebox/sdk";
 import type {Api} from "teleproto";
 import {openAsBlob} from "node:fs";
 import {open} from "node:fs/promises";
@@ -7,7 +6,7 @@ import path from "node:path";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
-const help = (prefix: string) => `<b>以图搜图</b>\n回复一张图片后发送 <code>${escape(prefix)}soutu</code>。\n图片会临时上传至 0x0.st，并生成 Google Lens 与 Yandex 链接。`;
+
 
 function fileName(buffer: Buffer): string {
   const head = buffer.subarray(0, 12).toString("hex").toLowerCase();
@@ -24,8 +23,7 @@ function validUploadUrl(value: string): URL {
 }
 
 export default function createSoutu() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "soutu", description: "回复图片生成反向搜图链接",
-    commands: {soutu: {helpArgs: ["help","h"], description: "回复图片生成反向搜图链接", async handle(invocation, context) {
+  const command: CommandDefinition = {"args":"","examples":[{"args":"","description":"回复一张图片生成搜图链接"}],"help":[{"heading":"处理流程：","body":"下载回复的图片（最多 20 MiB），上传到 0x0.st 临时图床并生成 Google Lens 与 Yandex Images 链接。原图链接的实际有效期由图床决定。"}],helpArgs: ["help","h"], description: "回复图片生成反向搜图链接", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
         await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
         return;
@@ -80,6 +78,9 @@ export default function createSoutu() {
         context.log.error("soutu_search_failed");
         await context.telegram.edit(invocation.message, "<b>搜图失败</b>\n请确认回复的是图片并稍后重试", {parseMode: "html"});
       }
-    }}},
+    }};
+  const help = (prefix: string) => renderCommandHelp("soutu", command, {prefix, title: "🖼️ 以图搜图"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "soutu", description: "回复图片生成反向搜图链接",
+    commands: {soutu: command},
   });
 }

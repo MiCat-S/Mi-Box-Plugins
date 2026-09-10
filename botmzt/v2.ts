@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type CommandInvocation, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes, TelegramClient} from "teleproto";
 
 const BOT = "@FinelyGirlsBot";
@@ -8,6 +7,8 @@ const IMAGE_COMMANDS: Readonly<Record<string, string>> = {
   coser: "cos", nsfw: "nsfw", naizi: "naizi",
 };
 type Runtime = {tail: Promise<void>; cursor: number};
+const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
+  character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
 
 function serial<T>(runtime: Runtime, operation: () => Promise<T>): Promise<T> {
   const previous = runtime.tail;
@@ -15,7 +16,6 @@ function serial<T>(runtime: Runtime, operation: () => Promise<T>): Promise<T> {
   runtime.tail = new Promise<void>(resolve => { release = resolve; });
   return previous.catch(() => undefined).then(operation).finally(release);
 }
-
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return reject(signal.reason);
@@ -25,7 +25,6 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
     signal.addEventListener("abort", abort, {once: true});
   });
 }
-
 async function waitFor(runtime: Runtime, client: TelegramClient, signal: AbortSignal, photo: boolean): Promise<any | undefined> {
   for (let attempt = 0; attempt < 20; attempt++) {
     signal.throwIfAborted();
@@ -40,8 +39,7 @@ async function waitFor(runtime: Runtime, client: TelegramClient, signal: AbortSi
     if (attempt < 19) await delay(700, signal);
   }
 }
-
-async function request(runtime: Runtime, context: PluginContext, invocation: any, command: string, photo: boolean): Promise<void> {
+async function request(runtime: Runtime, context: PluginContext, invocation: CommandInvocation, command: string, photo: boolean): Promise<void> {
   await context.telegram.edit(invocation.message, photo ? "正在获取图片…" : "正在签到…");
   try {
     await context.telegram.withClient((client, signal) => serial(runtime, async () => {
@@ -71,26 +69,37 @@ async function request(runtime: Runtime, context: PluginContext, invocation: any
   }
 }
 
-const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
-  character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
-
 export default function createBotmzt() {
   const runtime: Runtime = {tail: Promise.resolve(), cursor: 0};
-  const commands: Record<string, any> = {
-    botmzt: {description: "显示妹子图片插件帮助", async handle(invocation: any, context: PluginContext) {
-      await context.telegram.edit(invocation.message,
-        `<b>妹子图片插件</b>\n\n<code>${invocation.prefix}rand</code> 随机图片\n` +
-        `<code>${invocation.prefix}pic</code> 妹子图片\n<code>${invocation.prefix}leg</code> 腿部图片\n` +
-        `<code>${invocation.prefix}ass</code> 臀部图片\n<code>${invocation.prefix}chest</code> 胸部图片\n` +
-        `<code>${invocation.prefix}coser</code> Cosplay 图片\n<code>${invocation.prefix}nsfw</code> NSFW 图片\n` +
-        `<code>${invocation.prefix}naizi</code> 奶子图片\n<code>${invocation.prefix}qd</code> 签到\n\n图片以剧透模式发送。`,
-        {parseMode: "html"});
-    }},
-    qd: {description: "向图片机器人签到", handle: (invocation: any, context: PluginContext) => request(runtime, context, invocation, "checkin", false)},
+  const descriptions: Record<string, string> = {rand: "随机图片", pic: "妹子图片", leg: "腿部图片", ass: "臀部图片", chest: "胸部图片", coser: "Cosplay图片", nsfw: "NSFW图片", naizi: "奶子图片"};
+  const commands: Record<string, CommandDefinition> = {};
+  const renderHelp = (prefix: string): string => [
+    "<b>🎨 妹子图片插件</b>",
+    ...Object.entries(commands).map(([name, command]) => renderCommandHelp(name, command, {prefix})),
+  ].join("\n\n");
+  commands.botmzt = {
+    description: "显示插件设置和帮助",
+    args: "",
+    examples: [{args: "", description: "显示图片命令与说明"}],
+    help: [{heading: "说明：", body: "所有图片都会以剧透模式发送，需要点击查看。"}],
+    async handle(invocation, context) {
+      await context.telegram.edit(invocation.message, renderHelp(invocation.prefix), {parseMode: "html"});
+    },
   };
-  for (const [name, command] of Object.entries(IMAGE_COMMANDS)) {
-    commands[name] = {description: "从图片机器人获取剧透图片", handle: (invocation: any, context: PluginContext) => request(runtime, context, invocation, command, true)};
+  commands.qd = {
+    description: "签到命令",
+    args: "",
+    examples: [{args: "", description: "向 @FinelyGirlsBot 签到"}],
+    handle: (invocation, context) => request(runtime, context, invocation, "checkin", false),
+  };
+  for (const name of Object.keys(IMAGE_COMMANDS)) {
+    commands[name] = {
+      description: descriptions[name] ?? "图片",
+      args: "",
+      examples: [{args: "", description: `获取${descriptions[name] ?? name}`}],
+      handle: (invocation, context) => request(runtime, context, invocation, IMAGE_COMMANDS[name]!, true),
+    };
   }
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "botmzt", description: `从 ${BOT} 获取剧透图片`, commands,
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "botmzt", description: `从 ${BOT} 获取剧透图片`, renderHelp, commands,
     cleanup() { runtime.cursor = 0; runtime.tail = Promise.resolve(); }});
 }

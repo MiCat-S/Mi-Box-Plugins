@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes, TelegramClient} from "teleproto";
 
 const defaults = {schemaVersion: 1, sticker_default_pack: ""};
@@ -90,12 +89,10 @@ async function addWithBot(client: TelegramClient, signal: AbortSignal, source: A
 }
 
 function validPack(value: string): boolean { return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value); }
-function help(prefix: string): string { return `<b>贴纸收藏</b>\n回复贴纸：<code>${escape(prefix)}sticker [to 包名]</code>\n` +
-  `<code>${escape(prefix)}sticker 包名</code> 设置默认包 · <code>${escape(prefix)}sticker cancel</code> 取消`; }
+
 
 export default function createSticker() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "sticker", description: "收藏贴纸到自己的贴纸包", commands: {
-    sticker: {helpArgs: ["help","h"], description: "收藏贴纸或配置默认贴纸包", async handle(invocation, context) {
+  const command: CommandDefinition = {"args":"[默认包名]","alternates":[{"args":"to 包名","description":"回复贴纸时临时指定收藏包"},{"args":"cancel","description":"未回复贴纸时取消默认包；回复贴纸时仍按默认目标收藏"}],"examples":[{"args":"","description":"回复贴纸收藏"},{"args":"MyStickers","description":"未回复贴纸时设置默认包"},{"args":"cancel","description":"未回复贴纸时取消默认包"},{"args":"to TempPack","description":"回复贴纸临时指定包"}],"help":[{"body":"回复贴纸时收藏到默认或自动创建的包；未回复贴纸且不带参数时查看当前默认包。"},{"heading":"名称与类型：","body":"包名以字母开头，仅含字母、数字和下划线，最多 64 字符。支持普通、TGS 动态和 WebM 视频贴纸。默认包或临时指定包已满时提示失败；自动选择目标时，按类型查找最多 50 个序号包，每包以 120 张为上限。"},{"heading":"依赖与标签：","body":"请先私聊官方 @Stickers 机器人。目标包不存在时创建新包；向已有包添加时与机器人交互。源贴纸无基础 emoji 时随机选一个基础表情。"}],helpArgs: ["help","h"], description: "收藏贴纸或配置默认贴纸包", async handle(invocation, context) {
       const args = invocation.args;
       if (["help", "h"].includes(args[0]?.toLowerCase() ?? "")) {
         await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html", linkPreview: false}); return;
@@ -159,6 +156,9 @@ export default function createSticker() {
         context.log.error("sticker_failed", {code: String((error as any)?.errorMessage ?? (error as any)?.code ?? "FAILED").slice(0, 80)});
         await context.telegram.edit(invocation.message, "贴纸收藏失败，请检查贴纸包名称、所有权和贴纸格式");
       }
-    }},
+    }};
+  const help = (prefix: string) => renderCommandHelp("sticker", command, {prefix, title: "⭐ 贴纸收藏"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "sticker", description: "收藏贴纸到自己的贴纸包", commands: {
+    sticker: command,
   }, cleanup() { tails.clear(); cursors.clear(); }});
 }

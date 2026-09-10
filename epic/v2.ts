@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext} from "telebox/sdk";
 
 const ENDPOINT = "https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions?locale=zh-CN&country=CN&allowCountries=CN";
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
@@ -56,11 +55,17 @@ async function query(context: PluginContext): Promise<Game[]> {
   return games(data);
 }
 
-export default function createEpic() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "epic", description: "查看 Epic Games 当前限免游戏",
-    commands: {epic: {helpArgs: ["help","h"], description: "查看 Epic Games 当前限免游戏", async handle(invocation, context) {
+const epicCommand: CommandDefinition = {
+  description: "查看 Epic Games 当前限免游戏",
+  helpArgs: ["help", "h"],
+  args: "",
+  examples: [{args: ""}],
+  help: [
+    {heading: "说明：", body: "查询 Epic Games 商店当前可领取的限免游戏，显示原价、领取时间与链接。"},
+  ],
+  async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
-        await context.telegram.edit(invocation.message, `<b>Epic 限免游戏</b>\n<code>${escape(invocation.prefix)}epic</code> 查看当前限免`, {parseMode: "html"});
+        await context.telegram.edit(invocation.message, renderCommandHelp("epic", epicCommand, {prefix: invocation.prefix, title: "🎮 Epic Games 限免游戏"}), {parseMode: "html"});
         return;
       }
       await context.telegram.edit(invocation.message, "正在获取 Epic 限免游戏…");
@@ -71,6 +76,11 @@ export default function createEpic() {
         context.log.error("epic_query_failed");
         await context.telegram.edit(invocation.message, "<b>获取限免失败</b>\n请稍后重试", {parseMode: "html"});
       }
-    }}},
+    },
+};
+export default function createEpic() {
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "epic", description: "查看 Epic Games 当前限免游戏",
+    renderHelp: prefix => renderCommandHelp("epic", epicCommand, {prefix, title: "🎮 Epic Games 限免游戏"}),
+    commands: {epic: epicCommand},
   });
 }

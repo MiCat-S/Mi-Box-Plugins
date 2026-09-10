@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type SubcommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes, TelegramClient} from "teleproto";
 
 const BOTS = {default: "@music_v1bot", vk: "@vkmusic_bot", ym: "@ttaudiobot"} as const;
@@ -150,12 +149,10 @@ async function sendRequest(state: MusicBotState, client: TelegramClient, bot: st
 }
 
 async function search(state: MusicBotState, context: PluginContext, invocation: any,
-  action: string, query: string, bot: string): Promise<void> {
+  action: string, query: string, bot: string, guide: (prefix: string) => string): Promise<void> {
   if (!ACTIONS.has(action) || !query.trim() || query.length > 300) {
     await context.telegram.edit(invocation.message,
-      `<b>多音源音乐搜索</b>\n<code>${invocation.prefix}music_bot search 关键词</code>\n` +
-      `<code>${invocation.prefix}mbvk 关键词</code> · <code>${invocation.prefix}mbym 关键词</code>\n` +
-      `支持 search、kugou、kuwo、qq、netease、vk、ym。`, {parseMode: "html"});
+      guide(invocation.prefix), {parseMode: "html"});
     return;
   }
   await context.telegram.edit(invocation.message, `正在搜索：${query}`);
@@ -223,16 +220,26 @@ const BINDINGS: Readonly<Record<string, Binding>> = {
   mbvk: {action: "vk", bot: BOTS.vk}, mbym: {action: "ym", bot: BOTS.ym},
 };
 
+const labels: Record<string, string> = {search: "综合音乐搜索", kugou: "酷狗音乐", kuwo: "酷我音乐", qq: "QQ 音乐", netease: "网易云音乐", vk: "VK 音乐", ym: "YouTube Music"};
 export default function createMusicBot() {
   const state = new MusicBotState();
-  const commands = Object.fromEntries(Object.entries(BINDINGS).map(([name, binding]) => [name, {
-    description: "通过 Telegram 音乐机器人搜索并发送歌曲", async handle(invocation: any, context: PluginContext) {
-      const action = binding.nested ? (invocation.args[0]?.toLowerCase() ?? "") : binding.action;
-      const query = invocation.args.slice(binding.nested ? 1 : 0).join(" ").trim();
-      const bot = action === "vk" ? BOTS.vk : action === "ym" ? BOTS.ym : binding.bot;
-      await search(state, context, invocation, action, query, bot);
-    },
+  const execute = (action: string): CommandDefinition["handle"] => (invocation, context) => search(state, context, invocation, action,
+    invocation.args.join(" ").trim(), action === "vk" ? BOTS.vk : action === "ym" ? BOTS.ym : BOTS.default, guide);
+  const description = (action: string) => `通过 Telegram 机器人搜索${labels[action]}`;
+  const argumentsHelp = [{name: "关键词", required: true, description: "最多 300 字符；综合搜索可在关键词中指定音源，如 洛天依 网易云"}];
+  const sources: Record<string, SubcommandDefinition> = Object.fromEntries([...ACTIONS].map(action => [action, {
+    description: description(action), args: "关键词", arguments: argumentsHelp, examples: [{args: `${action} 洛天依`}], handle: execute(action),
   }]));
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "music_bot", description: "通过多个 Telegram 音乐机器人搜索歌曲",
+  const root: CommandDefinition = {
+    description: "通过多个 Telegram 音乐机器人搜索歌曲", subcommandsCaseSensitive: false, subcommands: sources,
+    help: [{heading: "依赖与行为：", body: "综合、酷狗、酷我、QQ 与网易云音乐使用 @music_v1bot；VK 使用 @vkmusic_bot；YouTube Music 使用 @ttaudiobot。插件与机器人交互并选取首项音频，发送成功后删除命令消息；失败时先打开对应机器人并点击 Start。"}],
+    async handle(invocation, context) { await context.telegram.edit(invocation.message, guide(invocation.prefix), {parseMode: "html"}); },
+  };
+  const commands: Record<string, CommandDefinition> = Object.fromEntries(Object.entries(BINDINGS).map(([name, binding]) => [name, binding.nested ? root : {
+    description: description(binding.action), args: "关键词", arguments: argumentsHelp,
+    examples: [{args: "洛天依"}], handle: execute(binding.action),
+  }]));
+  const guide = (prefix: string) => Object.entries(commands).map(([name, command], index) => renderCommandHelp(name, command, {prefix, title: index ? "" : "🎵 多音源音乐搜索"})).join("\n\n");
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "music_bot", description: "通过多个 Telegram 音乐机器人搜索歌曲", renderHelp: guide,
     commands, cleanup() { state.dispose(); }});
 }

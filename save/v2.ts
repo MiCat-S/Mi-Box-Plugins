@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import path from "node:path";
 import {copyFile, lstat, mkdir, open, readFile, rename, stat, writeFile} from "node:fs/promises";
 import {returnBigInt} from "teleproto/Helpers";
@@ -11,7 +10,6 @@ const defaults:Data={schemaVersion:1,users:{}};
 const escape=(value:unknown)=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#x27;"})[c]!);
 const err=(value:unknown)=>value instanceof Error?value.message:String(value);
 const database=(ctx:PluginContext)=>ctx.storage.json<Data>("config.json",defaults);
-const help=(prefix:string)=>`🔥 <b>Prometheus - 保存 Telegram 内容</b>\n\n<code>${prefix}save</code> 回复消息\n<code>${prefix}save 链接...</code> 批量保存\n<code>${prefix}save 链接1|链接2</code> 范围保存\n<code>${prefix}save to me/@目标/local</code> 设置默认目标\n<code>${prefix}save target</code> 查看目标\n<code>${prefix}save source on/off</code> 控制来源说明`;
 
 function parseLink(value:string):Link|undefined{const clean=value.split("?")[0];const match=clean.match(/^(?:https?:\/\/)?t\.me\/(?:c\/(-?\d+)|([A-Za-z0-9_]+))\/(\d+)\/?$/);if(!match)return;let chatId=match[1]||match[2];if(match[1])chatId=`-100${chatId.replace(/^-/,"")}`;const messageId=Number(match[3]);if(!Number.isSafeInteger(messageId)||messageId<=0)return;return{chatId,messageId};}
 function linkFor(chatId:string,messageId:number){if(/^-100\d+$/.test(chatId))return`https://t.me/c/${chatId.slice(4)}/${messageId}`;return`https://t.me/${chatId}/${messageId}`;}
@@ -31,9 +29,49 @@ async function saveLocal(ctx:PluginContext,source:any,info:Link){if(!source.medi
 async function forward(ctx:PluginContext,source:any,sourcePeer:any,target:any){return ctx.telegram.withClient(async(client:any)=>{try{const result:any[]=await client.forwardMessages(target,{messages:[source.id],fromPeer:source.peerId||sourcePeer});return result[0];}catch(error){if(!/SAVE|FORWARD|CHAT_FORWARDS_RESTRICTED/i.test(err(error)))throw error;if(!source.media){if(!source.text)throw new Error("消息无内容可保存");return client.sendMessage(target,{message:source.text});}return ctx.files.withTemp(async directory=>{const file=path.join(directory,mediaName(source));await downloadTo(ctx,source,file);return client.sendFile(target,{file,forceDocument:false,...(source.text?{caption:source.text}:{})});});}});}
 async function sourceNotice(ctx:PluginContext,target:any,last:any,sources:Link[]){if(!last||!sources.length)return;const unique=[...new Map(sources.map(item=>[`${item.chatId}:${item.messageId}`,item])).values()];const body=unique.map(item=>`• <a href="${escape(linkFor(item.chatId,item.messageId))}">${escape(item.chatId)} / ${item.messageId}</a>`).join("\n");await ctx.telegram.withClient(async(client:any)=>{await client.sendMessage(target,{message:`🔗 <b>消息来源</b>\n${body}`,parseMode:"html",replyTo:last.id});});}
 
-export default function createSave(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"save",description:"保存、转发受保护消息或将媒体写入插件数据目录",commands:{save:{helpArgs: ["help","h"], description:"保存回复消息、消息链接或消息范围",async handle({message,args,prefix},ctx){try{const id=userId(message),action=args[0]?.toLowerCase();if(action==="to"){if(!args[1]){await ctx.telegram.edit(message,"❌ 请指定转发目标");return;}const target=args.slice(1).join(" ");await setConfig(ctx,id,{target});await ctx.telegram.edit(message,`✅ 已设置默认转发目标为: <code>${escape(target)}</code>`,{parseMode:"html"});return;}if(action==="target"){await ctx.telegram.edit(message,`📌 当前默认转发目标: <code>${escape((await config(ctx,id)).target)}</code>`,{parseMode:"html"});return;}if(action==="source"){const current=await config(ctx,id);if(!args[1]){await ctx.telegram.edit(message,`📊 来源显示功能: <b>${current.showSource?"开启 ✅":"关闭 ❌"}</b>`,{parseMode:"html"});return;}if(!["on","off"].includes(args[1].toLowerCase())){await ctx.telegram.edit(message,`❌ 无效的参数\n\n使用: <code>${prefix}save source on/off</code>`,{parseMode:"html"});return;}const showSource=args[1].toLowerCase()==="on";await setConfig(ctx,id,{showSource});await ctx.telegram.edit(message,showSource?"✅ 已开启来源显示功能":"❌ 已关闭来源显示功能");return;}if(["help","h"].includes(action)){await ctx.telegram.edit(message,help(prefix),{parseMode:"html"});return;}
+const guarded = (operation: CommandDefinition["handle"]): CommandDefinition["handle"] => async (i, ctx) => {
+  try { await operation(i, ctx); }
+  catch(error) { if (!ctx.signal.aborted) await ctx.telegram.edit(i.message, `❌ 执行失败: ${escape(err(error))}`); }
+};
+const source = (showSource: boolean): CommandDefinition["handle"] => guarded(async (i, ctx) => {
+  const id = userId(i.message); await config(ctx, id);
+  await setConfig(ctx, id, {showSource});
+  await ctx.telegram.edit(i.message, showSource ? "✅ 已开启来源显示功能" : "❌ 已关闭来源显示功能");
+});
+const command: CommandDefinition = {
+  helpArgs: ["help", "h"], description: "保存回复消息、消息链接或消息范围", args: "[消息链接...] [临时目标]", subcommandsCaseSensitive: false,
+  alternates: [{args: "链接1|链接2", description: "保存同一对话两个链接之间的消息，最多 500 条，跳过不存在的消息"}],
+  examples: [{args: "", description: "回复需要保存的消息"}, {args: "https://t.me/c/123/1 https://t.me/c/123/2"}, {args: "https://t.me/c/123/1 @username"}, {args: "https://t.me/c/123/1 local"}, {args: "t.me/c/123/1|t.me/c/123/100"}],
+  subcommands: {
+    to: {description: "设置默认目标", args: "me|local|@用户名|chatid", examples: [{args: "to me"}, {args: "to @group"}, {args: "to -123456780"}, {args: "to local"}],
+      handle: guarded(async (i, ctx) => {
+        if (!i.args[0]) { await ctx.telegram.edit(i.message, "❌ 请指定转发目标"); return; }
+        const target = i.args.join(" "); await setConfig(ctx, userId(i.message), {target});
+        await ctx.telegram.edit(i.message, `✅ 已设置默认转发目标为: <code>${escape(target)}</code>`, {parseMode: "html"});
+      })},
+    target: {description: "查看当前默认目标", args: "", handle: guarded(async (i, ctx) => {
+      await ctx.telegram.edit(i.message, `📌 当前默认转发目标: <code>${escape((await config(ctx, userId(i.message))).target)}</code>`, {parseMode: "html"});
+    })},
+    source: {description: "查看或设置来源说明，默认关闭", args: "", subcommands: {
+      on: {description: "开启来源说明", args: "", handle: source(true)},
+      off: {description: "关闭来源说明", args: "", handle: source(false)},
+    }, handle: guarded(async (i, ctx) => {
+      const current = await config(ctx, userId(i.message));
+      if (i.args.length) { await ctx.telegram.edit(i.message, `❌ 无效的参数\n\n使用: <code>${i.prefix}save source on/off</code>`, {parseMode: "html"}); return; }
+      await ctx.telegram.edit(i.message, `📊 来源显示功能: <b>${current.showSource ? "开启 ✅" : "关闭 ❌"}</b>`, {parseMode: "html"});
+    })},
+  },
+  help: [{heading: "内容范围：", body: "保存当前账号能够读取和下载的内容。正常转发支持文本、图片、视频、音频、语音、文档、贴纸、GIF、相册消息、链接预览、投票和地理位置；转发受限时，支持的文字或媒体会改为重新发送。"},
+    {heading: "本地模式：", body: "local 仅保存媒体，纯文本跳过；单个媒体最多 2 GiB。保存至 assets/save/saved/ 下的来源对话子目录，文件旁生成同名 .json 来源元数据。目标默认为 me；来源说明仅用于 Telegram 转发。"}],
+  handle: guarded(async ({message, args, prefix}, ctx) => {
+    if (["help", "h"].includes(args[0]?.toLowerCase() ?? "")) { await ctx.telegram.edit(message, help(prefix), {parseMode: "html"}); return; }
+    const id = userId(message);
       const current=await config(ctx,id);let targetName=current.target;const links:Link[]=[];let range:Link[]|undefined;for(let index=0;index<args.length;index++){const token=args[index];if(token.includes("|")){const pair=token.split("|").map(parseLink);if(pair.length===2&&pair[0]&&pair[1]&&pair[0].chatId===pair[1].chatId){const low=Math.min(pair[0].messageId,pair[1].messageId),high=Math.max(pair[0].messageId,pair[1].messageId);if(high-low+1>500)throw new Error("单次范围最多保存 500 条消息");range=Array.from({length:high-low+1},(_,offset)=>({chatId:pair[0]!.chatId,messageId:low+offset}));break;}}const parsed=parseLink(token);if(parsed)links.push(parsed);else if(index===args.length-1&&links.length)targetName=token;}
       if(range)links.push(...range);if(!links.length){const reply=await ctx.telegram.getReply(message);if(!reply){await ctx.telegram.edit(message,help(prefix),{parseMode:"html"});return;}links.push({chatId:reply.chatId,messageId:reply.id});}
       const local=targetName.toLowerCase()==="local";const target=local?undefined:await ctx.telegram.withClient((client:any)=>client.getInputEntity(/^-?\d+$/.test(targetName)?returnBigInt(targetName):targetName));let succeeded=0,skipped=0,failed=0,last:any;const sources:Link[]=[];for(const item of links){ctx.signal.throwIfAborted();const found=await sourceMessage(ctx,item);if(!found){skipped++;continue;}try{if(local){const result=await saveLocal(ctx,found.message,item);result.ok?succeeded++:skipped++;}else{last=await forward(ctx,found.message,found.peer,target);succeeded++;sources.push(item);}}catch{failed++;}}
       if(!local&&current.showSource)await sourceNotice(ctx,target,last,sources);await ctx.telegram.edit(message,local?`✅ 本地保存完成\n已保存: ${succeeded}\n跳过: ${skipped}\n失败: ${failed}\n目录: <code>saved/</code>`:`✅ 处理完成\n成功: ${succeeded}/${links.length}\n失败: ${failed}`,{parseMode:"html"});
-    }catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ 执行失败: ${escape(err(error))}`);}}}}});}
+
+  }),
+};
+const help = (prefix: string) => renderCommandHelp("save", command, {prefix, title: "🔥 Prometheus - 保存 Telegram 内容", intro: '<blockquote>"To defy Power, which seems omnipotent." — Percy Bysshe Shelley, Prometheus Unbound</blockquote>'});
+export default function createSave() { return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "save", description: "保存、转发受保护消息或将媒体写入插件数据目录", renderHelp: help, commands: {save: command}}); }

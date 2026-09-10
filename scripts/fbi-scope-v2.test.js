@@ -28,7 +28,7 @@ async function fixture(t, {cache = {}, entity = group} = {}) {
   t.after(async () => {await host.shutdown(1000); await fs.rm(root, {recursive: true, force: true});});
   const read = async (name = 'cache.json') => JSON.parse(await fs.readFile(path.join(root, 'fbi', name), 'utf8'));
   const run = text => host.dispatchPrimary({id: 1, chatId: '-100900', senderId: '1', outgoing: true, text});
-  const listen = (chatId, text, id = 2) => host.dispatchListeners({id, chatId, senderId: '42', outgoing: false, text,
+  const listen = (chatId, text, id = 2, chatType = 'supergroup') => host.dispatchListeners({id, chatId, chatType, senderId: '42', outgoing: false, text,
     raw: {date: now, peerId: chatId, isPrivate: chatId === '42'}});
   return {host, read, run, listen, edits, sent};
 }
@@ -36,7 +36,7 @@ async function fixture(t, {cache = {}, entity = group} = {}) {
 test('fbi keeps a watch pending when the target sends a private message', async t => {
   const f = await fixture(t);
   await f.run('.fbi sur 42');
-  await f.listen('42', 'private fixture text');
+  await f.listen('42', 'private fixture text', 2, 'private');
   assert.equal(Object.hasOwn((await f.read()).cache, '42'), false);
   assert.deepEqual(f.sent, []);
   assert.ok((await f.read('db.json')).surveillance['42']);

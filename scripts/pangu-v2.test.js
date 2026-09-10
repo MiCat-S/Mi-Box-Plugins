@@ -61,12 +61,12 @@ function listenerFixture(patch = {}) {
     run: extra => listener.handle({id: 1, chatId: '1', senderId: 'owner',
       text: '中文ABC', outgoing: true, ...extra}, ctx)};
 }
-test('pangu automatic formatting edits outgoing, edited and saved messages only', async () => {
+test('pangu automatic formatting declares admission and edits admitted messages', async () => {
   const f = listenerFixture();
   assert.equal(f.listener.edited, true);
   assert.equal(f.listener.ignoreCommands, true);
-  await f.run({outgoing: false});
-  assert.equal(f.edits.length, 0);
+  assert.equal(f.listener.direction, 'outgoing');
+  assert.equal(f.listener.includeSaved, true);
   await f.run({});
   await f.run({edited: true});
   await f.run({outgoing: false, saved: true});

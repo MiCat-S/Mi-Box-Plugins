@@ -1,10 +1,8 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext} from "telebox/sdk";
 import {isIP} from "node:net";
 import {annotateLocations} from "./v2/location";
 
 const types = new Set(["A", "AAAA", "MX", "CNAME", "TXT", "NS", "SOA", "PTR", "SRV", "CAA"]);
-const help = (prefix: string) => `<b>DNS 查询</b>\n<code>${escape(prefix)}dig example.com</code>\n<code>${escape(prefix)}dig example.com MX @1.1.1.1</code>\n<code>${escape(prefix)}dig example.com MX +noall +answer</code>\n支持 A、AAAA、MX、CNAME、TXT、NS、SOA、PTR、SRV、CAA。\n选项：<code>+short +noall +answer +stats +comments +tcp</code>`;
 const escape = (value: string) => value.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"})[c]!);
 
 function args(input: readonly string[]): string[] {
@@ -52,28 +50,47 @@ async function runDig(ctx: PluginContext, values: string[]): Promise<string> {
   return result.stdout.toString("utf8");
 }
 
+const digCommand: CommandDefinition = {
+  description: "查询 DNS 记录",
+  helpArgs: ["help", "h"],
+  helpOnEmpty: true,
+  args: "域名 [类型] [服务器] [+选项]",
+  arguments: [
+    {name: "域名", required: true, description: "要查询的域名"},
+    {name: "类型", description: "A、AAAA、MX、CNAME、TXT、NS、SOA、PTR、SRV、CAA，默认 A"},
+    {name: "服务器", description: "IP 或域名，也可使用 @服务器"},
+    {name: "选项", description: "+short +noall +answer +stats +comments +tcp，默认 +short"},
+  ],
+  examples: [{args: "example.com"}, {args: "example.com MX"}, {args: "example.com MX @1.1.1.1"}, {args: "example.com MX +noall +answer"}],
+  help: [
+    {heading: "说明：", body: "运行环境需要提供 <code>/usr/bin/dig</code>；查询结果附带 IP 归属地与 ASN 信息。"},
+  ],
+  async handle(invocation, ctx) {
+    const raw = invocation.args;
+    if (!raw.length || raw[0] === "help" || raw[0] === "h") {
+      await ctx.telegram.edit(invocation.message, renderCommandHelp("dig", digCommand, {prefix: invocation.prefix, title: "🌐 DNS 查询"}), {parseMode: "html"}); return;
+    }
+    try {
+      ctx.signal.throwIfAborted();
+      const values = args(raw);
+      await ctx.telegram.edit(invocation.message, "正在查询 DNS…");
+      ctx.signal.throwIfAborted();
+      const output = await runDig(ctx, values);
+      const pages = format(await annotateLocations(ctx, output), values[0]!, values[1]!);
+      for (const [index, page] of pages.entries()) {
+        ctx.signal.throwIfAborted();
+        if (index === 0) await ctx.telegram.edit(invocation.message, page, {parseMode: "html"});
+        else await ctx.telegram.reply(invocation.message, page, {parseMode: "html"});
+      }
+    } catch (error) {
+      if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, `<b>DNS 查询失败</b>\n${escape(error instanceof Error ? error.message : "请稍后重试")}`, {parseMode: "html"});
+    }
+  },
+};
+
 export default function createDig() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "dig", description: "查询 DNS 记录",
-    commands: {dig: {helpArgs: ["help","h"], helpOnEmpty: true, description: "查询 DNS 记录", async handle(invocation, ctx) {
-      const raw = invocation.args;
-      if (!raw.length || raw[0] === "help" || raw[0] === "h") {
-        await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return;
-      }
-      try {
-        ctx.signal.throwIfAborted();
-        const values = args(raw);
-        await ctx.telegram.edit(invocation.message, "正在查询 DNS…");
-        ctx.signal.throwIfAborted();
-        const output = await runDig(ctx, values);
-        const pages = format(await annotateLocations(ctx, output), values[0], values[1]);
-        for (const [index, page] of pages.entries()) {
-          ctx.signal.throwIfAborted();
-          if (index === 0) await ctx.telegram.edit(invocation.message, page, {parseMode: "html"});
-          else await ctx.telegram.reply(invocation.message, page, {parseMode: "html"});
-        }
-      } catch (error) {
-        if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, `<b>DNS 查询失败</b>\n${escape(error instanceof Error ? error.message : "请稍后重试")}`, {parseMode: "html"});
-      }
-    }}},
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "dig", description: "查询 DNS 记录",
+    renderHelp: prefix => renderCommandHelp("dig", digCommand, {prefix, title: "🌐 DNS 查询"}),
+    commands: {dig: digCommand},
   });
 }

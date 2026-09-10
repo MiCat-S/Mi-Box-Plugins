@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type SubcommandDefinition, definePlugin, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {
   buildMessageLink, DEFAULT_PROMPT, extractFileName, extractUrlsFromEntities, formatDate,
   formatMessagesForAI, htmlEscape, normalizeReasoningEffort, normalizeServiceTier,
@@ -12,25 +11,6 @@ const defaults: SummaryDB = {seq: "0", tasks: [], aiConfig: {providers: {},
   default_prompt: DEFAULT_PROMPT, default_spoiler: false, default_timeout: 60_000,
   default_reasoning_effort: "auto", default_service_tier: "auto", reply_mode: false,
   max_output_length: 0, link_preview: false}};
-const help = `<b>群消息总结</b>
-
-• <code>sum</code> - 总结当前群最近 100 条消息
-• <code>sum 200</code> - 指定消息数量，范围 10-500
-• <code>sum 100 --provider 名称</code> - 临时选择 AI 配置
-• <code>sum add here 2h 100</code> - 定时总结当前群并推送到收藏夹
-• <code>sum list</code> / <code>sum run ID</code> / <code>sum del ID</code>
-• <code>sum disable ID</code> / <code>sum enable ID</code>
-
-<b>AI 配置</b>
-• <code>sum config list</code>
-• <code>sum config add 名称 BaseURL API_KEY 模型 [auto|chat|responses|gemini|anthropic]</code>
-• <code>sum config set default 名称</code>
-• <code>sum config set 名称 model|url|key|type 值</code>
-• <code>sum config set preview|spoiler on|off</code>
-• <code>sum config set reasoning|service 值</code>
-• <code>sum config set prompt 内容|reset|show</code>
-• <code>sum config del 名称</code>`;
-
 class UserError extends Error {}
 const requireValue: (condition: unknown, message: string) => asserts condition = (condition, message) => {
   if (!condition) throw new UserError(message);
@@ -160,72 +140,44 @@ export default function createSum() {
     disposers.set(task.id, dispose);
   };
 
-  const config = async (invocation: CommandInvocation, ctx: PluginContext): Promise<void> => {
-    const [, action = "list", name = "", property = "", ...rest] = invocation.args;
+  const guarded = (operation: CommandDefinition["handle"]): CommandDefinition["handle"] => async (invocation, ctx) => {
+    try { await operation(invocation, ctx); }
+    catch (error) { if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, `❌ ${error instanceof UserError ? error.message : "摘要操作失败，请检查配置、权限和网络后重试"}`); }
+  };
+  const configured = (operation: (i: CommandInvocation, ctx: PluginContext, db: SummaryDB) => Promise<void>, secret = false): CommandDefinition["handle"] => guarded(async (i, ctx) => {
     const db = await store(ctx).read(ctx.signal);
-    if (action === "list") {
+    const setPath = i.subcommands?.[0] === "config" && i.subcommands[1] === "set";
+    const property = i.subcommands && i.subcommands.length > 2 ? i.subcommands[3] ?? i.args[0] : i.args[1];
+    if (secret || setPath && property === "key") requireValue(i.message.saved, "涉及 API Key 的配置命令只能在收藏夹使用");
+    await operation(i, ctx, db);
+  });
+  const confirmed = async (i: CommandInvocation, ctx: PluginContext) => { await ctx.telegram.edit(i.message, "✅ 摘要配置已更新"); };
+  const configList = configured(async (invocation, ctx, db) => {
       const providers = Object.entries(db.aiConfig.providers).map(([key, value]) => `• <code>${htmlEscape(key)}</code>${db.aiConfig.default_provider === key ? "（默认）" : ""} · ${providerView(value)}`).join("\n") || "• 尚未配置 AI";
       await ctx.telegram.edit(invocation.message, `<b>摘要 AI 配置</b>\n${providers}\n\n提示词：${db.aiConfig.default_prompt === DEFAULT_PROMPT || !db.aiConfig.default_prompt ? "内置" : "自定义"}\n链接预览：${db.aiConfig.link_preview ? "on" : "off"}`, {parseMode: "html"});
       return;
-    }
-    if (action === "add" || action === "set" && property === "key") requireValue(invocation.message.saved, "涉及 API Key 的配置命令只能在收藏夹使用");
-    if (action === "add") {
-      const base = property, key = rest[0] ?? "", model = rest[1] ?? "", type = rest[2] ?? "auto";
-      requireValue(name && base && key && model, "用法：sum config add 名称 BaseURL API_KEY 模型 [type]");
-      new URL(base); assertAllowedModel(model);
-      requireValue(["auto", "chat", "responses", "gemini", "anthropic"].includes(type), "无效接口类型");
-      await store(ctx).update(data => { data.aiConfig.providers[name] = {name, base_url: base, api_key: key, model, type: type as CustomProvider["type"]};
-        data.aiConfig.default_provider ||= name; return data; }, ctx.signal);
-    } else if (action === "del") {
-      requireValue(name && db.aiConfig.providers[name], "AI 配置不存在");
-      await store(ctx).update(data => { delete data.aiConfig.providers[name]; if (data.aiConfig.default_provider === name) data.aiConfig.default_provider = undefined; return data; }, ctx.signal);
-    } else if (action === "set") {
-      const value = rest.join(" ").trim();
-      if (name === "default") {
-        requireValue(db.aiConfig.providers[property], "AI 配置不存在");
-        await store(ctx).update(data => { data.aiConfig.default_provider = property; return data; }, ctx.signal);
-      } else if (name === "preview" || name === "spoiler") {
-        requireValue(property === "on" || property === "off", "请输入 on 或 off");
-        await store(ctx).update(data => { if (name === "preview") data.aiConfig.link_preview = property === "on"; else data.aiConfig.default_spoiler = property === "on"; return data; }, ctx.signal);
-      } else if (name === "reasoning" || name === "service") {
-        const normalized = name === "reasoning" ? normalizeReasoningEffort(property) : normalizeServiceTier(property);
-        requireValue(normalized === property, "无效选项");
-        await store(ctx).update(data => { if (name === "reasoning") data.aiConfig.default_reasoning_effort = normalized as any;
-          else data.aiConfig.default_service_tier = normalized as any; return data; }, ctx.signal);
-      } else if (name === "prompt") {
-        if (property === "show") {
-          await ctx.telegram.edit(invocation.message, `<b>当前摘要提示词</b>\n\n<code>${htmlEscape(db.aiConfig.default_prompt || DEFAULT_PROMPT)}</code>`, {parseMode: "html"}); return;
-        }
-        const prompt = property === "reset" ? DEFAULT_PROMPT : [property, ...rest].join(" ").trim();
-        requireValue(prompt, "提示词不能为空");
-        await store(ctx).update(data => { data.aiConfig.default_prompt = prompt; return data; }, ctx.signal);
-      } else {
-        const provider = db.aiConfig.providers[name];
-        requireValue(provider && ["model", "url", "key", "type"].includes(property) && value, "用法：sum config set 名称 model|url|key|type 值");
-        if (property === "model") assertAllowedModel(value);
-        if (property === "url") new URL(value);
-        if (property === "type") requireValue(["auto", "chat", "responses", "gemini", "anthropic"].includes(value), "无效接口类型");
-        await store(ctx).update(data => { const item = data.aiConfig.providers[name];
-          if (property === "model") item.model = value; else if (property === "url") item.base_url = value;
-          else if (property === "key") item.api_key = value; else item.type = value as CustomProvider["type"];
-          return data; }, ctx.signal);
-      }
-    } else throw new UserError("未知 config 子命令");
-    await ctx.telegram.edit(invocation.message, "✅ 摘要配置已更新");
-  };
-
-  const handle = async (invocation: CommandInvocation, ctx: PluginContext): Promise<void> => {
-    try {
-      const sub = invocation.args[0]?.toLowerCase() ?? "";
-      if (sub === "help" || sub === "h" || sub === "?") { await ctx.telegram.edit(invocation.message, help, {parseMode: "html"}); return; }
-      if (sub === "config") { await config(invocation, ctx); return; }
-      if (sub === "list") {
-        const db = await store(ctx).read(ctx.signal);
-        const text = db.tasks.map(task => `• <code>${htmlEscape(task.id)}</code> · ${htmlEscape(task.interval)} · ${task.messageCount} 条 · ${task.disabled ? "停用" : "启用"}`).join("\n") || "暂无定时任务";
-        await ctx.telegram.edit(invocation.message, `<b>摘要任务</b>\n${text}`, {parseMode: "html"}); return;
-      }
-      if (["run", "del", "disable", "enable"].includes(sub)) {
-        const id = invocation.args[1] ?? ""; const db = await store(ctx).read(ctx.signal);
+  });
+  const switchSetting = (field: "link_preview" | "default_spoiler", value: boolean): CommandDefinition["handle"] => configured(async (i, ctx) => {
+    await store(ctx).update(data => { data.aiConfig[field] = value; return data; }, ctx.signal); await confirmed(i, ctx);
+  });
+  const switches = (field: "link_preview" | "default_spoiler"): SubcommandDefinition => ({
+    description: field === "link_preview" ? "设置定时推送链接预览，默认关闭" : "设置回答折叠，默认关闭",
+    subcommands: {on: {description: "开启", args: "", handle: switchSetting(field, true)}, off: {description: "关闭", args: "", handle: switchSetting(field, false)}},
+    handle: configured(async () => { throw new UserError("请输入 on 或 off"); }),
+  });
+  const selectOption = (kind: "reasoning" | "service"): CommandDefinition["handle"] => configured(async (i, ctx) => {
+    const property = i.args[0] ?? "";
+    const normalized = kind === "reasoning" ? normalizeReasoningEffort(property) : normalizeServiceTier(property);
+    requireValue(normalized === property, "无效选项");
+    await store(ctx).update(data => { if (kind === "reasoning") data.aiConfig.default_reasoning_effort = normalized as any;
+      else data.aiConfig.default_service_tier = normalized as any; return data; }, ctx.signal); await confirmed(i, ctx);
+  });
+  const prompt = (reset: boolean): CommandDefinition["handle"] => configured(async (i, ctx) => {
+    const value = reset ? DEFAULT_PROMPT : i.args.join(" ").trim(); requireValue(value, "提示词不能为空");
+    await store(ctx).update(data => { data.aiConfig.default_prompt = value; return data; }, ctx.signal); await confirmed(i, ctx);
+  });
+  const manageTask = (sub: "run" | "del" | "disable" | "enable"): CommandDefinition["handle"] => guarded(async (invocation, ctx) => {
+        const id = invocation.args[0] ?? ""; const db = await store(ctx).read(ctx.signal);
         const task = db.tasks.find(item => item.id === id); requireValue(task, "摘要任务不存在");
         if (sub === "run") { await ctx.telegram.edit(invocation.message, "📝 正在生成摘要..."); await pushSummary(ctx, task, ctx.signal); await ctx.telegram.edit(invocation.message, "✅ 摘要已推送"); return; }
         if (sub === "del" || sub === "disable") { const dispose = disposers.get(id); if (dispose) { await dispose(); disposers.delete(id); } }
@@ -233,21 +185,81 @@ export default function createSum() {
           if (sub === "del") data.tasks.splice(index, 1); else data.tasks[index].disabled = sub === "disable"; return data; }, ctx.signal);
         if (sub === "enable") await register(ctx, {...task, disabled: false});
         await ctx.telegram.edit(invocation.message, "✅ 摘要任务已更新"); return;
-      }
-      if (sub === "add") {
-        const target = invocation.args[1] ?? "", interval = invocation.args[2] ?? "", count = Number(invocation.args[3] ?? 100);
+
+  });
+  const command: CommandDefinition = {
+    description: "群消息即时与定时摘要", helpArgs: ["help", "h", "?"], args: "[消息数] [--provider 名称]", subcommandsCaseSensitive: false,
+    examples: [{args: "", description: "总结当前群最近 100 条消息"}, {args: "200"}, {args: "100 --provider myai"}],
+    subcommands: {
+      list: {description: "查看定时摘要任务", args: "", handle: guarded(async (invocation, ctx) => {
+        const db = await store(ctx).read(ctx.signal);
+        const text = db.tasks.map(task => `• <code>${htmlEscape(task.id)}</code> · ${htmlEscape(task.interval)} · ${task.messageCount} 条 · ${task.disabled ? "停用" : "启用"}`).join("\n") || "暂无定时任务";
+        await ctx.telegram.edit(invocation.message, `<b>摘要任务</b>\n${text}`, {parseMode: "html"}); return;
+
+      })},
+      run: {description: "立即执行任务并推送", args: "ID", handle: manageTask("run")},
+      del: {description: "删除任务", args: "ID", handle: manageTask("del")},
+      disable: {description: "暂停任务", args: "ID", handle: manageTask("disable")},
+      enable: {description: "恢复任务", args: "ID", handle: manageTask("enable")},
+      add: {description: "创建定时摘要，推送到收藏夹", args: "here|群组 间隔 [消息数]", examples: [{args: "add here 2h 100"}, {args: "add here 30m 200"}], help: [{heading: "间隔：", body: "分钟间隔为 1–59 且能整除 60；小时间隔为 1–23 且能整除 24；按天仅支持 1d。消息数默认 100，范围 10–500。"}], handle: guarded(async (invocation, ctx) => {
+        const target = invocation.args[0] ?? "", interval = invocation.args[1] ?? "", count = Number(invocation.args[2] ?? 100);
         requireValue(target && Number.isSafeInteger(count) && count >= 10 && count <= 500, "用法：sum add here|群组 2h 100");
         const chatId = target === "here" ? invocation.message.chatId : target;
         const cron = intervalCron(interval);
         const db = await store(ctx).read(ctx.signal); const id = String(Number(db.seq || "0") + 1);
         const task: SummaryTask = {id, cron, chatId, interval, messageCount: count, pushTarget: "me", createdAt: new Date().toISOString(),
-          aiProvider: db.aiConfig.default_provider, useSpoiler: db.aiConfig.default_spoiler === true};
+          ...(db.aiConfig.default_provider ? {aiProvider: db.aiConfig.default_provider} : {}), useSpoiler: db.aiConfig.default_spoiler === true};
         await store(ctx).update(data => { data.seq = id; data.tasks.push(task); return data; }, ctx.signal);
         try { await register(ctx, task); } catch (error) {
           await store(ctx).update(data => { data.tasks = data.tasks.filter(item => item.id !== id); data.seq = db.seq; return data; }, ctx.signal); throw error;
         }
         await ctx.telegram.edit(invocation.message, `✅ 已创建摘要任务 ${id}`); return;
-      }
+
+      })},
+      config: {description: "查看和修改摘要 AI 配置", args: "", subcommandsCaseSensitive: true, defaultSubcommand: "list", subcommands: {
+        list: {description: "查看供应商、模型、接口类型、默认配置及链接预览", args: "", handle: configList},
+        add: {description: "添加 AI 配置，仅收藏夹", args: "名称 BaseURL API_KEY 模型 [auto|chat|responses|gemini|anthropic]", examples: [{args: "add myai https://api.example.com YOUR_KEY gpt-4o"}], help: [{body: "未指定类型时自动识别：GPT-5/o 系列使用 Responses，Gemini 使用 Gemini API，Claude 使用 Anthropic Messages，其余使用 Chat Completions。"}], handle: configured(async (i, ctx) => {
+          const [name = "", base = "", key = "", model = "", type = "auto"] = i.args;
+          requireValue(name && base && key && model, "用法：sum config add 名称 BaseURL API_KEY 模型 [type]");
+          new URL(base); assertAllowedModel(model); requireValue(["auto", "chat", "responses", "gemini", "anthropic"].includes(type), "无效接口类型");
+          await store(ctx).update(data => { data.aiConfig.providers[name] = {name, base_url: base, api_key: key, model, type: type as CustomProvider["type"]}; data.aiConfig.default_provider ||= name; return data; }, ctx.signal);
+          await confirmed(i, ctx);
+        }, true)},
+        del: {description: "删除 AI 配置，默认项同时清空", args: "名称", handle: configured(async (i, ctx, db) => {
+          const name = i.args[0] ?? ""; requireValue(name && db.aiConfig.providers[name], "AI 配置不存在");
+          await store(ctx).update(data => { delete data.aiConfig.providers[name]; if (data.aiConfig.default_provider === name) delete data.aiConfig.default_provider; return data; }, ctx.signal);
+          await confirmed(i, ctx);
+        })},
+        set: {description: "修改全局设置或供应商字段", args: "名称 model|url|key|type 值", examples: [{args: "set myai model gpt-4o"}, {args: "set myai url https://api.example.com"}, {args: "set myai key YOUR_KEY"}, {args: "set myai type responses"}], subcommands: {
+          default: {description: "选择默认 AI 配置", args: "名称", examples: [{args: "default myai"}], handle: configured(async (i, ctx, db) => {
+            const name = i.args[0] ?? ""; requireValue(db.aiConfig.providers[name], "AI 配置不存在");
+            await store(ctx).update(data => { data.aiConfig.default_provider = name; return data; }, ctx.signal); await confirmed(i, ctx);
+          })},
+          preview: switches("link_preview"), spoiler: switches("default_spoiler"),
+          reasoning: {description: "设置 OpenAI 思考强度，auto 使用服务端默认值", args: "auto|none|minimal|low|medium|high|xhigh", handle: selectOption("reasoning")},
+          service: {description: "设置 OpenAI 服务等级，auto 不发送该参数", args: "auto|default|priority|fast|flex", handle: selectOption("service")},
+          prompt: {description: "设置默认摘要提示词", args: "内容", subcommands: {
+            show: {description: "查看当前实际提示词", args: "", handle: configured(async (i, ctx, db) => { await ctx.telegram.edit(i.message, `<b>当前摘要提示词</b>\n\n<code>${htmlEscape(db.aiConfig.default_prompt || DEFAULT_PROMPT)}</code>`, {parseMode: "html"}); })},
+            reset: {description: "恢复内置详细版提示词", args: "", handle: prompt(true)},
+          }, handle: prompt(false)},
+        }, help: [{body: "修改供应商 key 字段仅限收藏夹。供应商名称、字段名和 config 次级动作区分大小写。"}], handle: configured(async (i, ctx, db) => {
+          const [name = "", property = "", ...rest] = i.args, value = rest.join(" ").trim();
+          if (property === "key") requireValue(i.message.saved, "涉及 API Key 的配置命令只能在收藏夹使用");
+          const provider = db.aiConfig.providers[name];
+          requireValue(provider && ["model", "url", "key", "type"].includes(property) && value, "用法：sum config set 名称 model|url|key|type 值");
+          if (property === "model") assertAllowedModel(value); if (property === "url") new URL(value);
+          if (property === "type") requireValue(["auto", "chat", "responses", "gemini", "anthropic"].includes(value), "无效接口类型");
+          await store(ctx).update(data => { const item = data.aiConfig.providers[name];
+            if (property === "model") item.model = value; else if (property === "url") item.base_url = value;
+            else if (property === "key") item.api_key = value; else item.type = value as CustomProvider["type"]; return data; }, ctx.signal); await confirmed(i, ctx);
+        })},
+      }, handle: configured(async () => { throw new UserError("未知 config 子命令"); })},
+    },
+    help: [{heading: "即时与定时：", body: "即时总结默认取当前群命令之前的最近 100 条，范围 10–500；可用 --provider 临时指定配置。定时任务默认发往收藏夹。长结果自动分段；即时结果关闭链接预览，定时结果按 preview 配置。"},
+      {heading: "供应商与密钥：", body: "先添加供应商并设置默认项。涉及 API Key 的命令仅限收藏夹；模型需符合项目支持范围。"}],
+    handle: guarded(async (invocation, ctx) => {
+      const sub = invocation.args[0]?.toLowerCase() ?? "";
+      if (["help", "h", "?"].includes(sub)) { await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }
       const count = sub && /^\d+$/.test(sub) ? Number(sub) : 100;
       requireValue(Number.isSafeInteger(count) && count >= 10 && count <= 500, "消息数量范围为 10-500");
       const providerAt = invocation.args.indexOf("--provider");
@@ -257,12 +269,12 @@ export default function createSum() {
       const result = await summarize(ctx, {chatId: invocation.message.chatId, messageCount: count, aiProvider: provider,
         useSpoiler: db.aiConfig.default_spoiler === true}, invocation.message.id);
       await sendPages(ctx, invocation.message, result.html);
-    } catch (error) {
-      if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, `❌ ${error instanceof UserError ? error.message : "摘要操作失败，请检查配置、权限和网络后重试"}`);
-    }
-  };
 
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "sum", description: help, commands: {sum: {helpArgs: ["help","h","?"], description: "群消息即时与定时摘要", handle}},
+    }),
+  };
+  const help = (prefix: string) => renderCommandHelp("sum", command, {prefix, title: "📊 群消息总结"});
+
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "sum", description: "群消息即时与定时摘要", commands: {sum: command},
     async setup(ctx) {
       await store(ctx).update(data => {
         const value = data as any;

@@ -1,13 +1,11 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {setTimeout as delay} from "node:timers/promises";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 export default function createRestorePin() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "restore_pin", description: "从管理员日志恢复最近取消的置顶消息",
-    commands: {restore_pin: {helpArgs: ["help","h"], description: "恢复最近取消的置顶消息", async handle(invocation, context) {
+  const command: CommandDefinition = {"args":"","examples":[{"args":""}],"help":[{"heading":"范围与权限：","body":"仅支持有管理员权限的超级群和频道。扫描最近 100 条置顶相关管理员日志，恢复其中被取消的置顶消息；逐条操作间隔 1 秒，显示成功和失败数量。"}],helpArgs: ["help","h"], description: "恢复最近取消的置顶消息", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
-        await context.telegram.edit(invocation.message, `<b>恢复置顶</b>\n<code>${invocation.prefix}restore_pin</code>\n仅支持拥有管理员权限的超级群组和频道。`, {parseMode: "html"});
+        await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
         return;
       }
       try {
@@ -55,6 +53,9 @@ export default function createRestorePin() {
         context.log.error("restore_pin_failed");
         await context.telegram.edit(invocation.message, "恢复置顶失败，请确认当前账号拥有管理员权限");
       }
-    }}},
+    }};
+  const help = (prefix: string) => renderCommandHelp("restore_pin", command, {prefix, title: "📌 恢复置顶"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "restore_pin", description: "从管理员日志恢复最近取消的置顶消息",
+    commands: {restore_pin: command},
   });
 }

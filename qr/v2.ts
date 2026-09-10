@@ -1,8 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, writeFile} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api} from "teleproto";
 
 const QR_ENCODE = ["/usr/bin/qrencode", "/usr/local/bin/qrencode", "/opt/homebrew/bin/qrencode"] as const;
@@ -65,9 +64,7 @@ async function sendQr(context: PluginContext, invocation: any, input: string): P
 }
 
 export default function createQr() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "qr", description: "生成或识别二维码",
-    resources: {processes: {concurrency: 1, queueCapacity: 4, timeoutMs: 30_000, maxOutputBytes: 2 * 1024 * 1024}}, commands: {
-    qr: {description: "生成或识别二维码", async handle(invocation, context) {
+  const command: CommandDefinition = {"args":"[文本]","examples":[{"args":"Hello World"},{"args":"","description":"回复文本生成二维码；回复图片识别二维码，也可读取命令消息中的图片"}],"help":[{"heading":"功能与限制：","body":"生成 PNG 二维码，输入最多 4000 字节；识别图片上限 20 MiB，一次最多返回 20 条内容。生成成功后删除命令消息。"},{"heading":"系统依赖：","body":"需要 qrencode 与 zbarimg。macOS：<code>brew install qrencode zbar</code>；Ubuntu/Debian：<code>sudo apt-get install qrencode zbar-tools</code>；CentOS/RHEL：<code>sudo yum install qrencode zbar</code>。"}],description: "生成或识别二维码", async handle(invocation, context) {
       const input = invocation.args.join(" ").trim();
       try {
         if (input) { await sendQr(context, invocation, input); return; }
@@ -83,13 +80,17 @@ export default function createQr() {
         }
         if (reply?.text) { await sendQr(context, invocation, reply.text); return; }
         await context.telegram.edit(invocation.message,
-          `<b>二维码工具</b>\n<code>${escape(invocation.prefix)}qr 文本</code>\n也可回复文本生成，或回复图片识别。\n服务器需要安装 qrencode 与 zbarimg。`,
+          help(invocation.prefix),
           {parseMode: "html"});
       } catch {
         if (context.signal.aborted) return;
         context.log.error("qr_failed");
         await context.telegram.edit(invocation.message, "二维码操作失败，请确认输入有效且服务器已安装 qrencode 与 zbarimg");
       }
-    }},
+    }};
+  const help = (prefix: string) => renderCommandHelp("qr", command, {prefix, title: "📱 QR 二维码工具"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "qr", description: "生成或识别二维码",
+    resources: {processes: {concurrency: 1, queueCapacity: 4, timeoutMs: 30_000, maxOutputBytes: 2 * 1024 * 1024}}, commands: {
+    qr: command,
   }});
 }

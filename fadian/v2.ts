@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext, type SubcommandDefinition} from "telebox/sdk";
 
 const base = "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/fadian/";
 const files: Readonly<Record<string, string>> = {fd: "psycho.json", tg: "tg.json", kfc: "kfc.json", wyy: "wyy.json", cp: "cp.json"};
@@ -11,7 +10,6 @@ const MAX_ITEM_LENGTH = 4_000;
 function escape(value: string): string {
   return value.replace(/[&<>"]/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"})[char]!);
 }
-const help = (prefix: string) => `<b>发电语录</b>\n<code>${escape(prefix)}fadian fd 名字</code>\n<code>${escape(prefix)}fadian tg</code> · <code>${escape(prefix)}fadian kfc</code> · <code>${escape(prefix)}fadian wyy</code>\n<code>${escape(prefix)}fadian cp 名字1 名字2</code>\n<code>${escape(prefix)}fadian clear</code> 清理缓存`;
 
 async function list(ctx: PluginContext, kind: string, cache: Cache): Promise<string[]> {
   const previous = cache.get(kind);
@@ -32,57 +30,79 @@ function names(args: readonly string[], reply?: string): string[] {
 
 export default function createFadian() {
   const cache: Cache = new Map();
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "fadian", description: "随机生成发电语录",
-    cleanup() {cache.clear();},
-    commands: {fadian: {helpOnEmpty: true, helpArgs: ["help","h"], description: "随机生成发电语录", async handle(invocation, ctx) {
-      const lines = invocation.message.text.split(/\r?\n/);
-      const args = invocation.args;
-      const sub = (args[0] ?? "").toLowerCase();
-      if (!sub || sub === "help" || sub === "h") {
-        await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
-        return;
-      }
-      if (sub === "clear") {
-        cache.clear();
-        await ctx.telegram.edit(invocation.message, "发电语录缓存已清理");
-        return;
-      }
-      const file = files[sub];
-      if (!file) {
-        await ctx.telegram.edit(invocation.message, "未知子命令，请使用 fadian help");
-        return;
-      }
-      if (args[1]?.toLowerCase() === "help" || args[1]?.toLowerCase() === "h") {
-        await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
-        return;
-      }
-      try {
-        let text = "";
-          if (sub === "cp") {
-          const pair = names(args.slice(1), lines.slice(1, 3).join(" "));
-          if (pair.length < 2) throw new Error("CP 语录需要两个人名");
-          const values = await list(ctx, sub, cache);
-          text = values[Math.floor(Math.random() * values.length)]
-            .replaceAll("<name1>", pair[0]).replaceAll("<name2>", pair[1]);
-        } else {
-          let target = sub === "fd" ? args.slice(1).join(" ").trim() : "";
-          if (sub === "fd" && !target) {
-            const reply = await ctx.telegram.getReply(invocation.message);
-            if (reply) {
-              const raw = reply.raw as {sender?: {firstName?: string; lastName?: string; title?: string; username?: string}} | undefined;
-              const sender = raw?.sender;
-              target = [sender?.firstName, sender?.lastName].filter(Boolean).join(" ").trim() ||
-                sender?.title || sender?.username || "Ta";
-            }
-          }
-          if (sub === "fd" && !target) throw new Error("请提供名字或回复一条消息");
-          const values = await list(ctx, sub, cache);
-          text = values[Math.floor(Math.random() * values.length)].replaceAll("<name>", target);
-        }
-        await ctx.telegram.edit(invocation.message, escape(text), {parseMode: "html"});
-      } catch (error) {
-        if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, `<b>发电失败</b>\n${escape(error instanceof Error ? error.message : "请稍后重试")}`, {parseMode: "html"});
-      }
-    }}},
+  const emit = async (invocation: any, ctx: PluginContext, kind: string, target?: string, pair?: string[]) => {
+    const values = await list(ctx, kind, cache);
+    let text = values[Math.floor(Math.random() * values.length)]!;
+    if (kind === "cp") text = text.replaceAll("<name1>", pair![0]!).replaceAll("<name2>", pair![1]!);
+    else text = text.replaceAll("<name>", target ?? "");
+    await ctx.telegram.edit(invocation.message, escape(text), {parseMode: "html"});
+  };
+  const fail = async (invocation: any, ctx: PluginContext, error: unknown) => {
+    if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, `<b>发电失败</b>\n${escape(error instanceof Error ? error.message : "请稍后重试")}`, {parseMode: "html"});
+  };
+  const simple = (kind: string, description: string): SubcommandDefinition => ({
+    description, args: "", examples: [{args: kind}],
+    async handle(invocation, ctx) {
+      if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) { await ctx.telegram.edit(invocation.message, renderCommandHelp("fadian", fadianCommand, {prefix: invocation.prefix, title: "🗒️ 发电语录插件"}), {parseMode: "html"}); return; }
+      try { await emit(invocation, ctx, kind); } catch (error) { await fail(invocation, ctx, error); }
+    },
   });
+  const fd: SubcommandDefinition = {
+    description: "心理语录（回复消息时自动获取对方昵称）", args: "[名字]",
+    examples: [{args: "fd 张三"}, {args: "fd", description: "回复消息自动获取昵称"}],
+    async handle(invocation, ctx) {
+      if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) { await ctx.telegram.edit(invocation.message, renderCommandHelp("fadian", fadianCommand, {prefix: invocation.prefix, title: "🗒️ 发电语录插件"}), {parseMode: "html"}); return; }
+      try {
+        let target = invocation.args.join(" ").trim();
+        if (!target) {
+          const reply = await ctx.telegram.getReply(invocation.message);
+          if (reply) {
+            const raw = reply.raw as {sender?: {firstName?: string; lastName?: string; title?: string; username?: string}} | undefined;
+            const sender = raw?.sender;
+            target = [sender?.firstName, sender?.lastName].filter(Boolean).join(" ").trim() || sender?.title || sender?.username || "Ta";
+          }
+        }
+        if (!target) throw new Error("请提供名字或回复一条消息");
+        await emit(invocation, ctx, "fd", target);
+      } catch (error) { await fail(invocation, ctx, error); }
+    },
+  };
+  const cp: SubcommandDefinition = {
+    description: "CP 语录（第二行/第三行为两个名字）", args: "[名字1 名字2]",
+    examples: [{args: "cp 张三 李四"}],
+    help: [{heading: "CP 多行示例：", body: "<pre>{prefix}fadian cp\n第一个人\n第二个人</pre>"}],
+    async handle(invocation, ctx) {
+      if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) { await ctx.telegram.edit(invocation.message, renderCommandHelp("fadian", fadianCommand, {prefix: invocation.prefix, title: "🗒️ 发电语录插件"}), {parseMode: "html"}); return; }
+      try {
+        const lines = invocation.message.text.split(/\r?\n/);
+        const pair = names(invocation.args, lines.slice(1, 3).join(" "));
+        if (pair.length < 2) throw new Error("CP 语录需要两个人名");
+        await emit(invocation, ctx, "cp", undefined, pair);
+      } catch (error) { await fail(invocation, ctx, error); }
+    },
+  };
+  const clear: SubcommandDefinition = {
+    description: "清理缓存并重新下载", args: "", examples: [{args: "clear"}],
+    async handle(invocation, ctx) { cache.clear(); await ctx.telegram.edit(invocation.message, "发电语录缓存已清理"); },
+  };
+  const fadianCommand: CommandDefinition = {
+    description: "随机生成发电语录",
+    helpOnEmpty: true,
+    helpArgs: ["help", "h"],
+    subcommandsCaseSensitive: false,
+    subcommands: {fd, tg: simple("tg", "TG 语录"), kfc: simple("kfc", "KFC 语录"), wyy: simple("wyy", "网抑云语录"), cp, clear},
+    examples: [{args: "fd 张三"}, {args: "fd"}, {args: "tg"}, {args: "kfc"}, {args: "wyy"}, {args: "cp 张三 李四"}, {args: "clear"}],
+    help: [
+      {heading: "说明：", body: "从远程配置随机生成发电语录；fd 回复消息时自动获取对方昵称；clear 清理缓存并重新下载。"},
+    ],
+    async handle(invocation, ctx) {
+      const first = invocation.args[0]?.toLowerCase();
+      if (!first || first === "help" || first === "h") { await ctx.telegram.edit(invocation.message, renderCommandHelp("fadian", fadianCommand, {prefix: invocation.prefix, title: "🗒️ 发电语录插件"}), {parseMode: "html"}); return; }
+      await ctx.telegram.edit(invocation.message, "未知子命令，请使用 fadian help");
+    },
+  };
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "fadian", description: "随机生成发电语录",
+    cleanup() {cache.clear();},
+    renderHelp: prefix => renderCommandHelp("fadian", fadianCommand, {prefix, title: "🗒️ 发电语录插件"}),
+    commands: {fadian: fadianCommand}});
 }

@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type SubcommandDefinition, definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 const TIME_ZONE = "Asia/Shanghai";
 const STICKER_SET = "luxiaoxunbs";
@@ -126,54 +125,19 @@ export default function createLuBs() {
     }
   };
 
-  const command = {
-    description: "管理鲁小迅整点贴纸报时",
-    async handle(invocation: {message: MessageEnvelope; prefix: string; args: readonly string[]}, context: PluginContext) {
-      const action = (invocation.args[0] ?? "help").toLowerCase();
-      const aliases: Record<string, string> = {"订阅": "sub", "退订": "unsub", "列表": "list", "重载": "reload", "帮助": "help"};
-      const normalized = aliases[action] ?? action;
-      if (normalized === "help" || !["sub", "unsub", "list", "reload"].includes(normalized)) {
-        await context.telegram.edit(invocation.message,
-          `<b>鲁小迅整点报时</b>\n\n每小时整点自动发送贴纸，并删除上一条报时消息。\n\n` +
-          `<code>${invocation.prefix}lu_bs sub</code> - 订阅\n` +
-          `<code>${invocation.prefix}lu_bs unsub</code> - 退订\n` +
-          `<code>${invocation.prefix}lu_bs list</code> - 查看状态\n` +
-          `<code>${invocation.prefix}lu_bs reload</code> - 重载贴纸包\n\n` +
-          `群组订阅需要当前账号具有管理员权限。\n` +
-          `请先添加贴纸包: <code>https://t.me/addstickers/${STICKER_SET}</code>`, {parseMode: "html"});
-        return;
-      }
-      if (normalized === "reload") {
-        try {
-          await getStickerSet(context, true);
-          await context.telegram.edit(invocation.message, "✅ 贴纸包重新加载成功", {parseMode: "html"});
-        } catch {
-          if (!context.signal.aborted) {
-            await context.telegram.edit(invocation.message, "❌ 贴纸包加载失败，请检查贴纸包名称是否正确", {parseMode: "html"});
-          }
-        }
-        return;
-      }
-      if (normalized === "list") {
-        const state = normalizeState(await store(context).read());
-        const subscribed = state.subscriptions.includes(invocation.message.chatId);
-        const hint = subscribed ? "unsub" : "sub";
-        await context.telegram.edit(invocation.message,
-          `<b>订阅状态</b>\n\n• 当前聊天: <code>${subscribed ? "✅ 已订阅" : "❌ 未订阅"}</code>\n` +
-          `• 总订阅数: <code>${state.subscriptions.length}</code>\n\n` +
-          `使用 <code>${invocation.prefix}lu_bs ${hint}</code> ${subscribed ? "退订" : "订阅"}`, {parseMode: "html"});
-        return;
-      }
-      if (!await permitted(context, invocation.message)) {
-        await context.telegram.edit(invocation.message, "❌ 权限不足，无法操作整点报时", {parseMode: "html"});
-        return;
-      }
+  const subscription = (enable: boolean): SubcommandDefinition => ({
+    description: enable ? "订阅整点报时" : "退订整点报时", aliases: [enable ? "订阅" : "退订"], args: "", examples: [{args: enable ? "sub" : "unsub"}],
+    async authorize(invocation, context) {
+      if (await permitted(context, invocation.message)) return true;
+      await context.telegram.edit(invocation.message, "❌ 权限不足，无法操作整点报时", {parseMode: "html"});
+      return false;
+    },
+    async handle(invocation, context) {
       await withChatLock(invocation.message.chatId, async () => {
         let changed = false;
         await store(context).update(source => {
           const state = normalizeState(source);
           const present = state.subscriptions.includes(invocation.message.chatId);
-          const enable = normalized === "sub";
           if (present === enable) return state;
           changed = true;
           state.subscriptions = enable
@@ -182,19 +146,50 @@ export default function createLuBs() {
           if (!enable) delete state.lastMessages[invocation.message.chatId];
           return state;
         });
-        const text = normalized === "sub"
+        const text = enable
           ? changed ? "✅ 你已经成功订阅了整点报时" : "❌ 你已经订阅了整点报时"
           : changed ? "✅ 你已经成功退订了整点报时" : "❌ 你还没有订阅整点报时";
         await context.telegram.edit(invocation.message, text, {parseMode: "html"});
       });
-    },
-  };
 
-  return definePlugin({renderHelp: renderPluginHelp,
-    apiVersion: 1,
+    },
+  });
+  const command: CommandDefinition = {
+    description: "管理鲁小迅整点贴纸报时", helpArgs: ["help"], args: "", subcommandsCaseSensitive: false,
+    subcommands: {
+      sub: subscription(true), unsub: subscription(false),
+      reload: {description: "重新加载贴纸包", aliases: ["重载"], args: "", examples: [{args: "reload"}], async handle(invocation, context) {
+        try {
+          await getStickerSet(context, true);
+          await context.telegram.edit(invocation.message, "✅ 贴纸包重新加载成功", {parseMode: "html"});
+        } catch {
+          if (!context.signal.aborted) {
+            await context.telegram.edit(invocation.message, "❌ 贴纸包加载失败，请检查贴纸包名称是否正确", {parseMode: "html"});
+          }
+        }
+
+      }},
+      list: {description: "查看当前聊天状态与总订阅数", aliases: ["列表"], args: "", examples: [{args: "list"}], async handle(invocation, context) {
+        const state = normalizeState(await store(context).read());
+        const subscribed = state.subscriptions.includes(invocation.message.chatId);
+        const hint = subscribed ? "unsub" : "sub";
+        await context.telegram.edit(invocation.message,
+          `<b>订阅状态</b>\n\n• 当前聊天: <code>${subscribed ? "✅ 已订阅" : "❌ 未订阅"}</code>\n` +
+          `• 总订阅数: <code>${state.subscriptions.length}</code>\n\n` +
+          `使用 <code>${invocation.prefix}lu_bs ${hint}</code> ${subscribed ? "退订" : "订阅"}`, {parseMode: "html"});
+
+      }},
+    },
+    help: [{heading: "说明：", body: "按 Asia/Shanghai 时区每小时整点发送鲁小迅贴纸，并删除上一条报时消息。支持群组和私聊订阅；操作群组订阅需要当前账号具有管理员权限。请先添加贴纸包：<code>https://t.me/addstickers/luxiaoxunbs</code>。"}],
+    async handle(invocation, context) { await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); },
+  };
+  const help = (prefix: string) => renderCommandHelp("lu_bs", command, {prefix, title: "🕒 鲁小迅整点报时"});
+
+  return definePlugin({renderHelp: help,
+    apiVersion: STRUCTURED_PLUGIN_API_VERSION,
     id: "lu_bs",
     description: "鲁小迅整点贴纸报时",
-    commands: {lu_bs: {...command, helpArgs: ["help"]}},
+    commands: {lu_bs: command},
     async setup(context) {
       await store(context).update(source => normalizeState(source));
     },

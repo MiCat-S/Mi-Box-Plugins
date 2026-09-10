@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin} from "telebox/sdk";
 import type {Api} from "teleproto";
 import {openAsBlob} from "node:fs";
 import {open, stat} from "node:fs/promises";
@@ -8,7 +7,6 @@ import path from "node:path";
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
-const help = (prefix: string) => `<b>0x0.st 文件上传</b>\n回复媒体后发送 <code>${escape(prefix)}0x0 [expires=小时] [secret]</code>。\n<code>secret</code> 生成更难猜的链接。`;
 
 function uploadName(raw: Api.Message, data: Buffer): string {
   const document = raw.document as {attributes?: unknown[]} | undefined;
@@ -35,8 +33,11 @@ function resultUrl(text: string): string {
 }
 
 export default function createOxost() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "oxost", description: "上传回复中的媒体到 0x0.st",
-    commands: {"0x0": {helpArgs: ["help","h"], description: "上传回复中的媒体到 0x0.st", async handle(invocation, context) {
+  const command: CommandDefinition = {
+    args: "[expires=小时] [secret]", arguments: [{name: "expires=小时", description: "有效期，范围 1–8760 小时"}, {name: "secret", description: "生成更难猜的链接"}],
+    examples: [{args: "", description: "回复文件、图片、视频或音频后上传"}, {args: "expires=72 secret"}],
+    help: [{heading: "说明：", body: "将回复消息中的媒体上传至 <a href='https://0x0.st/'>0x0.st</a> 并返回下载链接，单个文件上限 100 MiB。"}],
+    helpArgs: ["help","h"], description: "上传回复中的媒体到 0x0.st", async handle(invocation, context) {
       if (invocation.args.some(value => ["help", "h"].includes(value.toLowerCase()))) {
         await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
         return;
@@ -86,6 +87,9 @@ export default function createOxost() {
         context.log.error("oxost_upload_failed");
         await context.telegram.edit(invocation.message, "<b>上传失败</b>\n请检查回复媒体并稍后重试", {parseMode: "html"});
       }
-    }}},
+    }};
+  const help = (prefix: string) => renderCommandHelp("0x0", command, {prefix, title: "🗂️ 0x0.st 文件上传"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "oxost", description: "上传回复中的媒体到 0x0.st",
+    commands: {"0x0": command},
   });
 }

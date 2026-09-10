@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition} from "telebox/sdk";
 
 const escape = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
@@ -12,16 +11,21 @@ function* chunks(text: string): Generator<string> {
   if (chunk) yield chunk;
 }
 
-export default function createGt() {
-  return definePlugin({renderHelp: renderPluginHelp,
-    apiVersion: 1, id: "gt", description: "使用 AI 插件当前聊天模型翻译文本",
-    commands: {
-      gt: {helpArgs: ["help","h"], description: "AI 翻译", async handle({message, prefix}, context) {
+const gtCommand: CommandDefinition = {
+  description: "AI 翻译",
+  helpArgs: ["help", "h"],
+  args: "[en] [文本]",
+  arguments: [{name: "en", description: "可选；指定时翻译为英文，否则翻译为简体中文"}, {name: "文本", description: "待翻译文本，或回复一条消息；单次最多 5000 字符"}],
+  examples: [{args: "你好世界"}, {args: "en 你好世界"}, {args: "", description: "回复消息后翻译为中文"}, {args: "en", description: "回复消息后翻译为英文"}],
+  help: [
+    {heading: "说明：", body: "使用 ai 插件当前聊天 API、模型与超时设置；请先安装配套 ai 插件并通过 <code>{prefix}ai config add</code>、<code>{prefix}ai model chat</code> 配置。待翻译文本会发送至该 API，可能产生调用费用；长译文自动分段发送。"},
+  ],
+  async handle({message, prefix}, context) {
         try {
           let text = message.text.replace(/^\S+\s*/, "");
           const first = text.match(/^\S+/)?.[0].toLowerCase();
           if (first === "help" || first === "h") {
-            await context.telegram.edit(message, renderPluginHelp(prefix), {parseMode: "html"});
+            await context.telegram.edit(message, renderCommandHelp("gt", gtCommand, {prefix, title: "📘 AI 翻译"}), {parseMode: "html"});
             return;
           }
           const target = first === "en" ? "en" : "zh-CN";
@@ -61,7 +65,11 @@ export default function createGt() {
           if (!context.signal.aborted) await context.telegram.edit(message,
             "❌ AI 翻译失败，请检查 ai 聊天配置、API 可用性及超时设置后重试");
         }
-      }},
-    },
+      },
+};
+export default function createGt() {
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "gt", description: "使用 AI 插件当前聊天模型翻译文本",
+    renderHelp: prefix => renderCommandHelp("gt", gtCommand, {prefix, title: "📘 AI 翻译"}),
+    commands: {gt: gtCommand},
   });
 }

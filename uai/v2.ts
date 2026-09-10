@@ -1,6 +1,5 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {readFile} from "node:fs/promises";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type CommandInvocation, definePlugin, type PluginContext} from "telebox/sdk";
 
 type ProviderType = "openai" | "gemini";
 type AuthMethod = "bearer_token" | "api_key_header" | "query_param";
@@ -36,7 +35,7 @@ function normalize(raw:unknown):State{
     timeoutMs:Math.min(300_000,Math.max(10_000,Number(x.timeoutMs??x.timeout??120_000)||120_000)),collapse:x.collapse!==false,legacyImported:x.legacyImported===true};
 }
 async function migrate(c:PluginContext){let current=normalize(await store(c).read());if(!current.legacyImported){try{const text=await c.tasks.run("uai:legacy-read",()=>readFile(c.files.dataPath("config.json"),"utf8"));const legacy=normalize(JSON.parse(text));current=normalize({...current,...legacy,providers:{...legacy.providers,...current.providers},prompts:{...legacy.prompts,...current.prompts}});}catch{}current.legacyImported=true;}return store(c).update(()=>current);}
-function help(p:string){return `<b>UAI 用户消息分析</b>\n<code>${esc(p)}uai zj [数量|2h]</code> · <code>fx</code>\n<code>${esc(p)}uai add 名称 URL KEY openai|gemini</code>（仅收藏夹）\n<code>${esc(p)}uai set|del|model|list</code> · <code>prompt add|del|list</code> · <code>collapse on|off</code>`;}
+
 const id=(v:any):string=>v===undefined||v===null?"":typeof v==="object"?id(v.userId??v.channelId??v.chatId??v.value):String(v);
 function limit(args:readonly string[]){let result:{kind:"count";value:number}|{kind:"time";value:number}|{kind:"today"}={kind:"today"};for(const arg of args){if(/^\d+$/u.test(arg))result={kind:"count",value:Math.min(500,Math.max(1,Number(arg)))};else{const m=/^(\d+)([hm])$/iu.exec(arg);if(m)result={kind:"time",value:Math.min(7*86400,Number(m[1])*(m[2].toLowerCase()==="h"?3600:60))};}}return result;}
 async function collect(c:PluginContext,peer:any,sender:string|null,rule:ReturnType<typeof limit>){return c.telegram.withClient(async client=>{const now=Math.floor(Date.now()/1000),start=rule.kind==="today"?new Date().setHours(0,0,0,0)/1000:rule.kind==="time"?now-rule.value:0;const maximum=rule.kind==="count"?rule.value:500;const options:any={limit:sender?Math.min(maximum*20,3000):maximum};if(sender)try{options.fromUser=await client.getEntity(sender);}catch{}const output:string[]=[];let characters=0;for await(const value of client.iterMessages(peer,options)){c.signal.throwIfAborted();const m:any=value;if(rule.kind!=="count"&&Number(m.date)<start)break;if(sender&&!options.fromUser&&id(m.senderId)!==sender)continue;if(typeof m.message!=="string"||!m.message||/^📊 (分析|总结)结果/u.test(m.message))continue;const who=String(m.sender?.firstName??m.sender?.username??"未知"),line=`[${new Date(Number(m.date)*1000).toISOString().slice(0,16).replace("T"," ")}] ${who}: ${m.message}`;if(characters+line.length>100_000)break;characters+=line.length;output.push(line);if(output.length>=maximum)break;}return output.reverse();});}
@@ -46,14 +45,74 @@ async function ai(c:PluginContext,p:Provider,prompt:string,content:string,timeou
   const data=await c.http.withResponse(target,{method:"POST",redirect:"manual",credentials:"omit",headers,body:JSON.stringify(body)},responseJson,{timeoutMs,signal:c.signal,redirects:{allowedHosts:[target.hostname],maxRedirects:2}}) as any;
   const text=p.type==="gemini"?data?.candidates?.[0]?.content?.parts?.map((x:any)=>typeof x?.text==="string"?x.text:"").join(""):data?.choices?.[0]?.message?.content;if(typeof text!=="string"||!text.trim())throw new Error("无有效响应");return text.trim();}
 
-export default function createUai(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"uai",description:"引用消息并使用 AI 汇总或分析历史消息",commands:{uai:{helpArgs: ["help","h"], helpOnEmpty: true, description:"AI 汇总或分析引用来源",async handle(i,c){const edit=(text:string,html=false)=>c.telegram.edit(i.message,text,html?{parseMode:"html",linkPreview:false}:{});const [sub,...rest]=i.args;try{
-  if(!sub||sub==="help"||sub==="h"){await edit(help(i.prefix),true);return;}let state=normalize(await store(c).read());
-  if(sub==="add"){if(!i.message.saved){await edit("API Key 配置仅限收藏夹");return;}if(rest.length<4)throw new Error("用法：uai add 名称 URL KEY openai|gemini");const[name,url,key,typeRaw]=rest,type=typeRaw as ProviderType;if(type!=="openai"&&type!=="gemini")throw new Error("类型必须是 openai 或 gemini");const p=provider({name,baseUrl:url,apiKey:key,type,model:type==="gemini"?"gemini-2.0-flash":"gpt-4o"});if(!p)throw new Error("供应商配置无效");await store(c).update(v=>normalize({...v,providers:{...normalize(v).providers,[name]:p},defaultProvider:normalize(v).defaultProvider??name,legacyImported:true}));await edit(`供应商 ${name} 已添加`);return;}
-  if(sub==="del"){const name=rest[0];if(!name||!state.providers[name])throw new Error("供应商不存在");delete state.providers[name];state.defaultProvider=state.defaultProvider===name?Object.keys(state.providers)[0]??null:state.defaultProvider;await store(c).update(()=>state);await edit("供应商已删除");return;}
-  if(sub==="set"||sub==="model"){const name=rest[0];if(!name||!state.providers[name])throw new Error("供应商不存在");if(sub==="set")state.defaultProvider=name;else{if(!rest[1])throw new Error("请提供模型");state.providers[name]={...state.providers[name],model:rest[1]};}await store(c).update(()=>state);await edit("配置已更新");return;}
-  if(sub==="list"){await edit(Object.values(state.providers).map(p=>`${p.name}${p.name===state.defaultProvider?" *":""} (${p.type}, ${p.model})`).join("\n")||"暂无供应商");return;}
-  if(sub==="collapse"){if(rest[0]!=="on"&&rest[0]!=="off")throw new Error("用法：collapse on|off");await store(c).update(v=>normalize({...v,collapse:rest[0]==="on"}));await edit("折叠设置已更新");return;}
-  if(sub==="prompt"){const[action,name,...words]=rest;if(action==="list"){await edit([...Object.keys(BUILTIN),...Object.keys(state.prompts)].join("\n"));return;}if(!name||BUILTIN[name])throw new Error("提示词名称无效");if(action==="add"&&words.join(" "))state.prompts[name]=words.join(" ").slice(0,10_000);else if(action==="del")delete state.prompts[name];else throw new Error("用法：prompt add|del|list");await store(c).update(()=>state);await edit("提示词已更新");return;}
+const guarded = (operation: (i: CommandInvocation, c: PluginContext, state: State, edit: (text: string, html?: boolean) => Promise<void>) => Promise<void>): CommandDefinition["handle"] => async (i, c) => {
+  const edit = (text: string, html = false) => c.telegram.edit(i.message, text, html ? {parseMode: "html", linkPreview: false} : {});
+  try {
+    if (!i.subcommand && (!i.args[0] || i.args[0] === "help" || i.args[0] === "h")) { await edit(help(i.prefix), true); return; }
+    await operation(i, c, normalize(await store(c).read()), edit);
+  } catch { if (c.signal.aborted) return; c.log.error("uai_failed"); await edit("UAI 执行失败，请检查配置、引用消息和网络"); }
+};
+const analyze = (selectedPrompt?: string): CommandDefinition["handle"] => guarded(async (i, c, state, edit) => {
   const reply=await c.telegram.getReply(i.message);if(!reply)throw new Error("请引用一条消息");const raw:any=i.message.raw,replyRaw:any=reply.raw;if(!raw?.peerId||!replyRaw)throw new Error("消息上下文不可用");let source:string|null=id(replyRaw.senderId),peer:any=raw.peerId,name=String(replyRaw.sender?.firstName??replyRaw.sender?.username??"用户");const forwarded=replyRaw.fwdFrom?.fromId;if(forwarded?.channelId){source=null;peer=`-100${id(forwarded.channelId)}`;name="频道";}else if(forwarded?.userId)source=id(forwarded.userId);if(!source&&!(forwarded?.channelId))throw new Error("无法确定消息来源");
-  const promptKey=Object.hasOwn(BUILTIN,sub)||Object.hasOwn(state.prompts,sub)?sub:"zj";const messages=await collect(c,peer,source,limit(i.args));if(!messages.length)throw new Error("没有找到消息");const selected=state.defaultProvider&&state.providers[state.defaultProvider];if(!selected)throw new Error("请先配置 AI 供应商");await edit("正在分析消息…");const result=await ai(c,selected,state.prompts[promptKey]??BUILTIN[promptKey]??BUILTIN.zj!,`${name}\n\n${messages.join("\n")}`,state.timeoutMs);const points=Array.from(result),content=esc(points.length>3000?`${points.slice(0,3000).join("")}\n…（输出已截断）`:result);await edit(`📊 <b>${promptKey==="fx"?"分析":"总结"}结果</b>（${esc(name)}，${messages.length} 条）\n\n${state.collapse?`<blockquote expandable>${content}</blockquote>`:content}`,true);
- }catch{if(c.signal.aborted)return;c.log.error("uai_failed");await edit("UAI 执行失败，请检查配置、引用消息和网络");}}}},settings:c=>({id:"uai",title:"UAI",description:"AI 消息分析供应商与提示词",category:"插件配置",icon:"🤖",getSchema:()=>[{key:"providers",label:"供应商",type:"provider-list",secret:true},{key:"defaultProvider",label:"默认供应商",type:"string"},{key:"prompts",label:"提示词",type:"prompt-map"},{key:"timeoutMs",label:"超时（毫秒）",type:"number",min:10_000,max:300_000},{key:"collapse",label:"折叠输出",type:"boolean"}],getValues:()=>store(c).read(),async setValues(patch){await store(c).update(value=>normalize({...value,...patch,legacyImported:true}));}}),async setup(c){await migrate(c);}});}
+  const sub = selectedPrompt ?? i.args[0];const promptKey=Object.hasOwn(BUILTIN,sub)||Object.hasOwn(state.prompts,sub)?sub:"zj";const messages=await collect(c,peer,source,limit(i.args));if(!messages.length)throw new Error("没有找到消息");const selected=state.defaultProvider&&state.providers[state.defaultProvider];if(!selected)throw new Error("请先配置 AI 供应商");await edit("正在分析消息…");const result=await ai(c,selected,state.prompts[promptKey]??BUILTIN[promptKey]??BUILTIN.zj!,`${name}\n\n${messages.join("\n")}`,state.timeoutMs);const points=Array.from(result),content=esc(points.length>3000?`${points.slice(0,3000).join("")}\n…（输出已截断）`:result);await edit(`📊 <b>${promptKey==="fx"?"分析":"总结"}结果</b>（${esc(name)}，${messages.length} 条）\n\n${state.collapse?`<blockquote expandable>${content}</blockquote>`:content}`,true);
+
+});
+const promptChange = (adding: boolean): CommandDefinition["handle"] => guarded(async (i, c, state, edit) => {
+  const [name, ...words] = i.args;
+  if (!name || BUILTIN[name]) throw new Error("提示词名称无效");
+  if (adding && words.join(" ")) state.prompts[name] = words.join(" ").slice(0, 10_000);
+  else if (!adding) delete state.prompts[name];
+  else throw new Error("用法：prompt add|del|list");
+  await store(c).update(() => state); await edit("提示词已更新");
+});
+const collapse = (enabled: boolean): CommandDefinition["handle"] => guarded(async (i, c, state, edit) => {
+  await store(c).update(v => normalize({...v, collapse: enabled})); await edit("折叠设置已更新");
+});
+const command: CommandDefinition = {
+  description: "AI 汇总或分析引用来源", helpArgs: ["help", "h"], helpOnEmpty: true, args: "自定义提示词名 [数量|时间]", subcommandsCaseSensitive: true,
+  subcommands: {
+    zj: {description: "总结引用来源消息，提取关键信息", args: "[数量|时间]", examples: [{args: "zj"}, {args: "zj 50"}], handle: analyze("zj")},
+    fx: {description: "分析引用来源消息的观点和态度", args: "[数量|时间]", examples: [{args: "fx 100"}, {args: "fx 2h"}], handle: analyze("fx")},
+    add: {description: "添加 AI 供应商，仅收藏夹", args: "名称 URL KEY openai|gemini", examples: [{args: "add myai https://api.example.com YOUR_KEY openai"}], handle: guarded(async (i, c, state, edit) => {
+      if (!i.message.saved) { await edit("API Key 配置仅限收藏夹"); return; }
+      if (i.args.length < 4) throw new Error("用法：uai add 名称 URL KEY openai|gemini");
+      const [name, url, key, typeRaw] = i.args, type = typeRaw as ProviderType;
+      if (type !== "openai" && type !== "gemini") throw new Error("类型必须是 openai 或 gemini");
+      const p = provider({name, baseUrl: url, apiKey: key, type, model: type === "gemini" ? "gemini-2.0-flash" : "gpt-4o"});
+      if (!p) throw new Error("供应商配置无效");
+      await store(c).update(v => normalize({...v, providers: {...normalize(v).providers, [name]: p}, defaultProvider: normalize(v).defaultProvider ?? name, legacyImported: true}));
+      await edit(`供应商 ${name} 已添加`);
+    })},
+    del: {description: "删除供应商", args: "名称", handle: guarded(async (i, c, state, edit) => {
+      const name = i.args[0]; if (!name || !state.providers[name]) throw new Error("供应商不存在");
+      delete state.providers[name]; state.defaultProvider = state.defaultProvider === name ? Object.keys(state.providers)[0] ?? null : state.defaultProvider;
+      await store(c).update(() => state); await edit("供应商已删除");
+    })},
+    set: {description: "设置默认供应商", args: "名称", handle: guarded(async (i, c, state, edit) => {
+      const name = i.args[0]; if (!name || !state.providers[name]) throw new Error("供应商不存在");
+      state.defaultProvider = name; await store(c).update(() => state); await edit("配置已更新");
+    })},
+    model: {description: "修改供应商模型", args: "名称 模型", handle: guarded(async (i, c, state, edit) => {
+      const [name, model] = i.args; if (!name || !state.providers[name]) throw new Error("供应商不存在");
+      if (!model) throw new Error("请提供模型"); state.providers[name] = {...state.providers[name], model};
+      await store(c).update(() => state); await edit("配置已更新");
+    })},
+    list: {description: "列出供应商，星号标识默认项", args: "", handle: guarded(async (i, c, state, edit) => {
+      await edit(Object.values(state.providers).map(p => `${p.name}${p.name === state.defaultProvider ? " *" : ""} (${p.type}, ${p.model})`).join("\n") || "暂无供应商");
+    })},
+    collapse: {description: "设置 AI 回答折叠，默认开启", subcommands: {
+      on: {description: "开启折叠", args: "", handle: collapse(true)}, off: {description: "关闭折叠", args: "", handle: collapse(false)},
+    }, handle: guarded(async () => { throw new Error("用法：collapse on|off"); })},
+    prompt: {description: "管理自定义提示词", subcommands: {
+      add: {description: "添加或更新提示词", args: "名称 内容", examples: [{args: "add brief 用一句话总结主要观点"}], handle: promptChange(true)},
+      del: {description: "删除自定义提示词", args: "名称", handle: promptChange(false)},
+      list: {description: "列出内置和自定义提示词", args: "", handle: guarded(async (i, c, state, edit) => { await edit([...Object.keys(BUILTIN), ...Object.keys(state.prompts)].join("\n")); })},
+    }, help: [{body: "内置 zj/fx 名称不能修改；自定义内容最多 10000 字符，直接用提示词名称调用。"}], handle: guarded(async () => { throw new Error("用法：prompt add|del|list"); })},
+  },
+  help: [{heading: "引用与范围：", body: "先引用用户消息，再用 zj 总结或 fx 分析；转发来源为频道时汇总该频道，转发来源为用户时分析该用户。默认取服务器本地当天消息，支持 50 等数量或 2h/30m 等时间参数；最多 500 条、7 天和 100000 输入字符。"},
+    {heading: "供应商与输出：", body: "支持 OpenAI/Gemini 接口，API 基础地址须为不带凭据、端口、查询参数和片段的 HTTPS 地址。密钥仅收藏夹配置；结果超过 3000 个 Unicode 字符时截断并说明，默认折叠。未知提示词名使用 zj。"}],
+  handle: analyze(),
+};
+const help = (prefix: string) => renderCommandHelp("uai", command, {prefix, title: "⚙️ UAI 用户消息分析"});
+export default function createUai() { return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "uai", description: "引用消息并使用 AI 汇总或分析历史消息", commands: {uai: command},
+settings:c=>({id:"uai",title:"UAI",description:"AI 消息分析供应商与提示词",category:"插件配置",icon:"🤖",getSchema:()=>[{key:"providers",label:"供应商",type:"provider-list",secret:true},{key:"defaultProvider",label:"默认供应商",type:"string"},{key:"prompts",label:"提示词",type:"prompt-map"},{key:"timeoutMs",label:"超时（毫秒）",type:"number",min:10_000,max:300_000},{key:"collapse",label:"折叠输出",type:"boolean"}],getValues:()=>store(c).read(),async setValues(patch){await store(c).update(value=>normalize({...value,...patch,legacyImported:true}));}}),async setup(c){await migrate(c);}});}

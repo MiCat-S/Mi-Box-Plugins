@@ -106,7 +106,7 @@ test('dc builds a pure default SDK factory with declared protocol dependencies',
   const first = createPlugin();
   assert.notEqual(first, createPlugin());
   assert.equal(first.id, 'dc');
-  assert.equal(first.apiVersion, 1);
+  assert.equal(first.apiVersion, 2);
   assert.deepEqual(Object.keys(first.commands), ['dc']);
   assert.deepEqual(manifest.imports, ['telebox/sdk', 'teleproto', 'teleproto/Helpers.js']);
   assert.equal(first.setup, undefined);

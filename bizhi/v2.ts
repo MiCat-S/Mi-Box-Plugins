@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext} from "telebox/sdk";
 import type {Api} from "teleproto";
 
 const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
@@ -9,10 +8,8 @@ const CATEGORIES: Readonly<Record<string, {categories?: string; tags: readonly s
   fengjing: {categories: "100", tags: ["nature", "Japan", "night", "architecture", "oil painting"]},
   suiji: {tags: ["anime", "oil painting", "photography", "Japan", "night", "illustration"]},
 };
-
 type Wallpaper = {id: string; path: string; dimension_x: number; dimension_y: number; file_size: number; file_type: string};
 type Download = {data: Buffer; filename: string; source: string};
-
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
 
@@ -20,7 +17,7 @@ async function image(context: PluginContext, url: URL): Promise<Buffer> {
   return context.http.withResponse(url, {
     method: "GET", redirect: "manual", credentials: "omit",
     headers: {Accept: "image/*", "User-Agent": "MiBot-Bizhi/2.0"},
-  }, async (response, signal) => {
+  }, async (response: Response, signal: AbortSignal) => {
     if (response.status !== 200 || !response.body) throw new Error("Image unavailable");
     const type = response.headers.get("content-type") ?? "";
     if (type && !type.toLowerCase().startsWith("image/")) throw new Error("Invalid image type");
@@ -43,7 +40,6 @@ async function image(context: PluginContext, url: URL): Promise<Buffer> {
     }
   }, {timeoutMs: 120_000, signal: context.signal, redirects:{allowedHosts:[url.hostname],maxRedirects:2}});
 }
-
 function safeImageUrl(value: unknown, hosts: readonly string[]): URL {
   if (typeof value !== "string") throw new Error("Invalid image URL");
   const url = new URL(value);
@@ -52,7 +48,6 @@ function safeImageUrl(value: unknown, hosts: readonly string[]): URL {
   }
   return url;
 }
-
 async function wallhaven(context: PluginContext, category: string): Promise<Download> {
   const config = CATEGORIES[category] ?? CATEGORIES.suiji!;
   const sortingRoll = Math.random();
@@ -83,7 +78,6 @@ async function wallhaven(context: PluginContext, category: string): Promise<Down
     source: `${url.href}\n${selected.dimension_x}×${selected.dimension_y} · ${(selected.file_size / 1048576).toFixed(2)} MB`,
   };
 }
-
 async function fallback(context: PluginContext, category: string): Promise<Download> {
   const url = new URL("https://api.btstu.cn/sjbz/api.php");
   url.searchParams.set("method", "pc");
@@ -96,36 +90,50 @@ async function fallback(context: PluginContext, category: string): Promise<Downl
   return {data: await image(context, target), filename: `bizhi_${category || "suiji"}.jpg`, source: `${target.href}\n来源：btstu.cn`};
 }
 
+const bizhiCommand: CommandDefinition = {
+  description: "随机获取高品质桌面壁纸",
+  args: "[meizi|dongman|fengjing|suiji] [-f]",
+  arguments: [
+    {name: "分类", description: "meizi、dongman、fengjing、suiji；省略时随机"},
+    {name: "-f", description: "以源文件发送而非压缩图片"},
+  ],
+  examples: [{args: ""}, {args: "dongman"}, {args: "fengjing -f"}],
+  help: [
+    {heading: "内容偏好：", body: "✨ 优先从 wallhaven.cc 获取高品质原图（≥1920×1080）\n🎨 优先内容：动漫、二次元、油画、摄影、日本风景、夜景\n📐 只获取 16:9 宽高比壁纸，适配主流显示器\n💾 文件大小 ≥3MB，确保高清画质\n📊 显示分辨率和文件大小信息\n📁 使用 -f 参数发送源文件而非图片"},
+  ],
+  async handle(invocation, context) {
+    const sendAsFile = invocation.args.includes("-f");
+    const category = invocation.args.find(value => !value.startsWith("-"))?.toLowerCase() ?? "";
+    if (category && !Object.hasOwn(CATEGORIES, category) || invocation.args.some(value => value.startsWith("-") && value !== "-f")) {
+      await context.telegram.edit(invocation.message, renderCommandHelp("bizhi", bizhiCommand, {prefix: invocation.prefix}), {parseMode: "html"});
+      return;
+    }
+    await context.telegram.edit(invocation.message, "正在获取高品质壁纸…");
+    try {
+      let result: Download;
+      try { result = await wallhaven(context, category); }
+      catch { context.signal.throwIfAborted(); result = await fallback(context, category); }
+      if (!result.data.length) throw new Error("Empty image");
+      await context.telegram.withClient(async client => {
+        const {CustomFile} = await import("teleproto/client/uploads.js");
+        const raw = invocation.message.raw as Api.Message | undefined;
+        if (!raw?.peerId) throw new Error("Missing peer");
+        const file = new CustomFile(result.filename, result.data.length, "", result.data);
+        await client.sendFile(raw.peerId, {file, replyTo: invocation.message.replyToId ?? invocation.message.id,
+          caption: `${sendAsFile ? "源文件" : "壁纸来源"}：${result.source}`, forceDocument: sendAsFile});
+        if (typeof raw.delete === "function") await raw.delete({revoke: true});
+      });
+    } catch {
+      if (context.signal.aborted) return;
+      context.log.error("bizhi_failed");
+      await context.telegram.edit(invocation.message, "获取壁纸失败，请稍后重试");
+    }
+  },
+};
+
 export default function createBizhi() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "bizhi", description: "随机获取高品质桌面壁纸",
-    commands: {bizhi: {description: "随机获取高品质桌面壁纸", async handle(invocation, context) {
-      const sendAsFile = invocation.args.includes("-f");
-      const category = invocation.args.find(value => !value.startsWith("-"))?.toLowerCase() ?? "";
-      if (category && !Object.hasOwn(CATEGORIES, category) || invocation.args.some(value => value.startsWith("-") && value !== "-f")) {
-        await context.telegram.edit(invocation.message,
-          `<b>高品质壁纸</b>\n<code>${escape(invocation.prefix)}bizhi [meizi|dongman|fengjing|suiji] [-f]</code>`, {parseMode: "html"});
-        return;
-      }
-      await context.telegram.edit(invocation.message, "正在获取高品质壁纸…");
-      try {
-        let result: Download;
-        try { result = await wallhaven(context, category); }
-        catch { context.signal.throwIfAborted(); result = await fallback(context, category); }
-        if (!result.data.length) throw new Error("Empty image");
-        await context.telegram.withClient(async client => {
-          const {CustomFile} = await import("teleproto/client/uploads.js");
-          const raw = invocation.message.raw as Api.Message | undefined;
-          if (!raw?.peerId) throw new Error("Missing peer");
-          const file = new CustomFile(result.filename, result.data.length, "", result.data);
-          await client.sendFile(raw.peerId, {file, replyTo: invocation.message.replyToId ?? invocation.message.id,
-            caption: `${sendAsFile ? "源文件" : "壁纸来源"}：${result.source}`, forceDocument: sendAsFile});
-          if (typeof raw.delete === "function") await raw.delete({revoke: true});
-        });
-      } catch {
-        if (context.signal.aborted) return;
-        context.log.error("bizhi_failed");
-        await context.telegram.edit(invocation.message, "获取壁纸失败，请稍后重试");
-      }
-    }}},
-  });
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "bizhi", description: "随机获取高品质桌面壁纸",
+    renderHelp: prefix => renderCommandHelp("bizhi", bizhiCommand, {prefix, title: "高品质壁纸",
+      intro: "随机获取一张高品质壁纸。"}),
+    commands: {bizhi: bizhiCommand}});
 }

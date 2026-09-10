@@ -1,9 +1,8 @@
 import {generateChartConfig} from "./v2/chart";
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {createHmac} from "node:crypto";
 import path from "node:path";
 import {open,type FileHandle} from "node:fs/promises";
-import {definePlugin,ui,type MessageEnvelope,type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type CommandInvocation, definePlugin,ui,type MessageEnvelope,type PluginContext} from "telebox/sdk";
 type Config={schemaVersion:1;url:string;secret:string;serviceMonitor:boolean;legacyImported:boolean;[key:string]:unknown};
 type Server={id:number;name:string;display_index?:number;last_active?:string;host?:any;state?:any;geoip?:any};
 const defaults:Config={schemaVersion:1,url:"",secret:"",serviceMonitor:true,legacyImported:false};
@@ -56,5 +55,63 @@ async function chart(c:PluginContext,m:MessageEnvelope,config:Config,target:stri
   });
 }
 async function migrate(c:PluginContext){const current=await store(c).read();if(current.legacyImported)return;let legacy:any={};try{legacy=JSON.parse(await (await import("node:fs/promises")).readFile(c.files.dataPath("config.json"),"utf8"));}catch{}await store(c).update(v=>({...v,url:v.url||String(legacy.url??""),secret:v.secret||String(legacy.secret??""),serviceMonitor:typeof legacy.serviceMonitor==="boolean"?legacy.serviceMonitor:v.serviceMonitor,legacyImported:true}));}
-async function command(m:MessageEnvelope,args:readonly string[],c:PluginContext){try{const sub=args[0]?.toLowerCase();if(sub==="set"){if(!m.saved)throw new Error("密钥配置仅限收藏夹");if(!args[1]||!args[2])throw new Error("用法：nezha set URL JWT_SECRET");root(args[1]);const candidate={...(await store(c).read()),url:args[1].replace(/\/+$/,"")!,secret:args.slice(2).join(" ")};await get(c,candidate,"/api/v1/server");await store(c).update(v=>({...v,url:candidate.url,secret:candidate.secret}));await c.telegram.edit(m,"哪吒配置已验证并保存。");return;}const config=await store(c).read();if(!config.url||!config.secret)throw new Error("请先配置哪吒地址和 JWT Secret");if(sub==="service"){if(!["on","off"].includes(args[1]??""))throw new Error("用法：nezha service on|off");await store(c).update(v=>({...v,serviceMonitor:args[1]==="on"}));await c.telegram.edit(m,"服务监控设置已更新。");return;}await c.telegram.edit(m,"正在获取哪吒监控数据…");if(sub==="chart"){if(!args.slice(1).length)throw new Error("请提供服务器名称或 ID");await chart(c,m,config,args.slice(1).join(" "));return;}const pages=await list(c,config);const delivery=await ui.deliverPages(pages,c.signal,(page,index)=>index?c.telegram.reply(m,page,{parseMode:"html"}):c.telegram.edit(m,page,{parseMode:"html"}));if(delivery.interrupted){c.log.info("pagination_delivery_interrupted",{plugin:"nezha",published:delivery.published,total:delivery.total,category:ui.deliveryErrorCategory(delivery.error)});if(!delivery.published)throw delivery.error;try{await c.telegram.reply(m,ui.interruptedNotice(delivery),{parseMode:"html"});}catch{}}}catch(e){if(!c.signal.aborted)await c.telegram.edit(m,`❌ ${esc(e instanceof Error?e.message:"哪吒请求失败")}`,{parseMode:"html"});}}
-export default function createNezha(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"nezha",description:"查询哪吒监控服务器与服务延迟",commands:{nezha:{helpArgs: ["help", "h"], description:"查询或配置哪吒监控",async handle(i,c){await command(i.message,i.args,c);}}},settings:c=>({id:"nezha",title:"哪吒监控",category:"插件配置",icon:"📊",getSchema:()=>[{key:"url",label:"面板地址",type:"string"},{key:"secret",label:"JWT Secret",type:"password",secret:true},{key:"serviceMonitor",label:"服务监控",type:"boolean"}],getValues:async()=>{const v=await store(c).read();return{url:v.url,secret:v.secret,serviceMonitor:v.serviceMonitor};},async setValues(p){await store(c).update(v=>{const url=typeof p.url==="string"?p.url:v.url;if(url)root(url);return{...v,url,secret:typeof p.secret==="string"?p.secret:v.secret,serviceMonitor:typeof p.serviceMonitor==="boolean"?p.serviceMonitor:v.serviceMonitor};});}}),setup:migrate});}
+const guarded = (operation: CommandDefinition["handle"]): CommandDefinition["handle"] => async (i, c) => {
+  try { await operation(i, c); }
+  catch(e) { if (!c.signal.aborted) await c.telegram.edit(i.message, `❌ ${esc(e instanceof Error ? e.message : "哪吒请求失败")}`, {parseMode: "html"}); }
+};
+const configured = (operation: (i: CommandInvocation, c: PluginContext, config: Config) => Promise<void>): CommandDefinition["handle"] => guarded(async (i, c) => {
+  const config = await store(c).read();
+  if (!config.url || !config.secret) throw new Error("请先配置哪吒地址和 JWT Secret");
+  await operation(i, c, config);
+});
+const service = (enabled: boolean): CommandDefinition["handle"] => configured(async (i, c) => {
+  await store(c).update(v => ({...v, serviceMonitor: enabled}));
+  await c.telegram.edit(i.message, "服务监控设置已更新。");
+});
+const command: CommandDefinition = {
+  description: "查询或配置哪吒监控", helpArgs: ["help", "h"], args: "", subcommandsCaseSensitive: false,
+  examples: [{args: "", description: "查看全部服务器，在线服务器优先，长列表自动分页"}],
+  subcommands: {
+    set: {description: "验证并保存面板连接配置", args: "面板地址 JWT_SECRET", examples: [{args: "set https://nezha.example.com your_jwt_secret"}],
+      help: [{heading: "首次配置：", body: "在收藏夹设置面板地址与面板配置的 jwt_secret_key 原始值。先验证 /api/v1/server 接口，成功后保存，保留服务延迟显示开关。"}],
+      async authorize(i, c) { if (i.message.saved) return true; if (!c.signal.aborted) await c.telegram.edit(i.message, "❌ 密钥配置仅限收藏夹", {parseMode: "html"}); return false; },
+      handle: guarded(async (i, c) => {
+        if (!i.args[0] || !i.args[1]) throw new Error("用法：nezha set URL JWT_SECRET");
+        root(i.args[0]);
+        const candidate = {...(await store(c).read()), url: i.args[0].replace(/\/+$/, ""), secret: i.args.slice(1).join(" ")};
+        await get(c, candidate, "/api/v1/server");
+        await store(c).update(v => ({...v, url: candidate.url, secret: candidate.secret}));
+        await c.telegram.edit(i.message, "哪吒配置已验证并保存。");
+      })},
+    service: {description: "设置列表中的服务延迟显示，默认开启", subcommandsCaseSensitive: true,
+      subcommands: {
+        on: {description: "开启服务延迟显示", args: "", handle: service(true)},
+        off: {description: "关闭服务延迟显示", args: "", handle: service(false)},
+      }, examples: [{args: "service off"}],
+      handle: configured(async () => { throw new Error("用法：nezha service on|off"); })},
+    chart: {description: "生成指定服务器的服务延迟图表", args: "服务器名或ID", examples: [{args: "chart 1"}, {args: "chart 香港节点"}],
+      help: [{heading: "图表数据：", body: "通过 QuickChart 生成图表，相关图表数据会发送到 quickchart.io。服务器须存在服务监控记录。"}],
+      handle: configured(async (i, c, config) => {
+        await c.telegram.edit(i.message, "正在获取哪吒监控数据…");
+        if (!i.args.length) throw new Error("请提供服务器名称或 ID");
+        await chart(c, i.message, config, i.args.join(" "));
+      })},
+  },
+  help: [
+    {heading: "配置与数据范围：", body: "面板使用 HTTP/HTTPS 地址，可包含部署子路径；需提供 /api/v1/server 与服务监控接口并接受 JWT 认证。连接配置在各对话间共用，也可通过插件设置填写面板地址和 JWT Secret。"},
+    {heading: "常见提示：", body: "未配置时先在收藏夹完成 set；HTTP 或验证失败时检查面板地址、JWT Secret 和接口兼容性；图表缺少数据时核对服务器名/ID 与服务监控记录。"},
+  ],
+  handle: configured(async (i, c, config) => {
+    const m = i.message;
+    await c.telegram.edit(m, "正在获取哪吒监控数据…");
+    const pages = await list(c, config);
+    const delivery = await ui.deliverPages(pages, c.signal, (page, index) => index ? c.telegram.reply(m, page, {parseMode: "html"}) : c.telegram.edit(m, page, {parseMode: "html"}));
+    if (delivery.interrupted) {
+      c.log.info("pagination_delivery_interrupted", {plugin: "nezha", published: delivery.published, total: delivery.total, category: ui.deliveryErrorCategory(delivery.error)});
+      if (!delivery.published) throw delivery.error;
+      try { await c.telegram.reply(m, ui.interruptedNotice(delivery), {parseMode: "html"}); } catch {}
+    }
+  }),
+};
+const help = (prefix: string) => renderCommandHelp("nezha", command, {prefix, title: "📊 哪吒监控"});
+export default function createNezha(){return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION,id:"nezha",description:"查询哪吒监控服务器与服务延迟",commands:{nezha: command},settings:c=>({id:"nezha",title:"哪吒监控",category:"插件配置",icon:"📊",getSchema:()=>[{key:"url",label:"面板地址",type:"string"},{key:"secret",label:"JWT Secret",type:"password",secret:true},{key:"serviceMonitor",label:"服务监控",type:"boolean"}],getValues:async()=>{const v=await store(c).read();return{url:v.url,secret:v.secret,serviceMonitor:v.serviceMonitor};},async setValues(p){await store(c).update(v=>{const url=typeof p.url==="string"?p.url:v.url;if(url)root(url);return{...v,url,secret:typeof p.secret==="string"?p.secret:v.secret,serviceMonitor:typeof p.serviceMonitor==="boolean"?p.serviceMonitor:v.serviceMonitor};});}}),setup:migrate});}

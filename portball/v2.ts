@@ -1,5 +1,4 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
@@ -13,12 +12,11 @@ function duration(value: string | undefined): number | undefined {
 }
 
 export default function createPortball() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "portball", description: "回复消息临时禁言群组成员",
-    commands: {portball: {description: "回复消息临时禁言群组成员", async handle(invocation, context) {
+  const command: CommandDefinition = {"args":"[理由] 时间","arguments":[{"name":"时间","required":true,"description":"放在末尾，支持 s（默认秒）、m、h、d，范围 60 秒至 366 天"}],"examples":[{"args":"广告 5m"},{"args":"10m"},{"args":"刷屏 1h"},{"args":"300"}],"help":[{"heading":"条件：","body":"回复目标用户的消息；需要管理员权限及可用的群组成员限制接口。不能对自己操作，到期自动解除。"}],description: "回复消息临时禁言群组成员", async handle(invocation, context) {
       const seconds = duration(invocation.args.at(-1));
       if (!seconds || invocation.message.replyToId === undefined) {
         await context.telegram.edit(invocation.message,
-          `<b>临时禁言</b>\n回复目标消息后发送 <code>${escape(invocation.prefix)}portball [理由] 时间</code>\n支持 s、m、h、d，最短 60 秒。`,
+          help(invocation.prefix),
           {parseMode: "html"});
         return;
       }
@@ -57,6 +55,9 @@ export default function createPortball() {
         context.log.error("portball_failed");
         await context.telegram.edit(invocation.message, "禁言失败，请确认目标、群组类型和管理员权限");
       }
-    }}},
+    }};
+  const help = (prefix: string) => renderCommandHelp("portball", command, {prefix, title: "🔇 Portball 临时禁言"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "portball", description: "回复消息临时禁言群组成员",
+    commands: {portball: command},
   });
 }

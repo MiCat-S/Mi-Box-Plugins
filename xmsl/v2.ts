@@ -1,8 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, open, readFile, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 type Mode = "openai" | "gemini";
 type State = {schemaVersion: 1; apiMode: Mode; baseUrl: string; apiKey: string; model: string; importedLegacy: boolean; [key: string]: unknown};
@@ -164,34 +163,38 @@ async function generate(context: PluginContext, config: State, text: string, ima
   return withoutThink.length > 16_000 ? `${withoutThink.slice(0, 1000)}…` : withoutThink;
 }
 
-function help(prefix: string): string {
-  return `<b>羡慕死了</b>\n<code>${escape(prefix)}xmsl 内容</code> / <code>${escape(prefix)}xm 内容</code>\n` +
-    `可回复文字、图片或贴纸。\n<code>${escape(prefix)}xm set mode openai|gemini</code>\n` +
-    `<code>${escape(prefix)}xm set key API_KEY</code>（仅收藏夹）\n<code>${escape(prefix)}xm set url 地址</code> · <code>model 模型</code>\n<code>${escape(prefix)}xm show</code>`;
-}
-
-async function configure(context: PluginContext, invocation: any): Promise<boolean> {
-  const [action, rawKey, ...rest] = invocation.args; if (action?.toLowerCase() !== "set") return false;
-  const key = rawKey?.toLowerCase(), value = rest.join(" ").trim();
-  if (!key || !value || !["mode","key","url","model"].includes(key)) { await context.telegram.edit(invocation.message, `用法：${invocation.prefix}xm set mode|key|url|model 值`); return true; }
-  if (key === "key" && !invocation.message.saved) { await context.telegram.edit(invocation.message, "API Key 仅允许在收藏夹中设置"); return true; }
+const guarded = (operation: CommandDefinition["handle"]): CommandDefinition["handle"] => async (invocation, context) => {
+  try { await operation(invocation, context); }
+  catch {
+    if (context.signal.aborted) return;
+    context.log.error("xmsl_failed");
+    await context.telegram.edit(invocation.message, "XMSL 调用失败，请检查配置、媒体依赖和网络");
+  }
+};
+const configure = (key: "mode" | "key" | "url" | "model"): CommandDefinition["handle"] => guarded(async (invocation, context) => {
+  const value = invocation.args.join(" ").trim();
+  if (!key || !value || !["mode","key","url","model"].includes(key)) { await context.telegram.edit(invocation.message, `用法：${invocation.prefix}xm set mode|key|url|model 值`); return; }
+  if (key === "key" && !invocation.message.saved) { await context.telegram.edit(invocation.message, "API Key 仅允许在收藏夹中设置"); return; }
   try {
     if (key === "mode" && !["openai","gemini"].includes(value.toLowerCase())) throw new Error("invalid_mode");
     await store(context).update(current => applyPatch(current, {
       ...(key === "mode" ? {apiMode: value.toLowerCase() as Mode} : {}), ...(key === "key" ? {apiKey: value} : {}),
       ...(key === "url" ? {baseUrl: value} : {}), ...(key === "model" ? {model: value} : {})}));
-    await context.telegram.edit(invocation.message, `${key} 已更新`); return true;
-  } catch { await context.telegram.edit(invocation.message, "配置值无效"); return true; }
+    await context.telegram.edit(invocation.message, `${key} 已更新`); return;
+  } catch { await context.telegram.edit(invocation.message, "配置值无效"); return; }
+});
+
+async function showState(invocation: Parameters<CommandDefinition["handle"]>[0], context: PluginContext, state: State): Promise<void> {
+      await context.telegram.edit(invocation.message, `<b>XMSL 状态</b>\n模式：${state.apiMode}\n密钥：${state.apiKey ? "已配置" : "未配置"}\n地址：<code>${escape(state.baseUrl)}</code>\n模型：<code>${escape(state.model)}</code>`, {parseMode: "html"});
 }
 
 async function handle(invocation: any, context: PluginContext): Promise<void> {
   try {
-    if (await configure(context, invocation)) return;
     const state = normalize(await store(context).read());
     const first = invocation.args[0]?.toLowerCase();
     if (first === "help") { await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"}); return; }
-    if (first === "show" || (!invocation.args.length && invocation.message.replyToId === undefined)) {
-      await context.telegram.edit(invocation.message, `<b>XMSL 状态</b>\n模式：${state.apiMode}\n密钥：${state.apiKey ? "已配置" : "未配置"}\n地址：<code>${escape(state.baseUrl)}</code>\n模型：<code>${escape(state.model)}</code>`, {parseMode: "html"}); return;
+    if (!invocation.args.length && invocation.message.replyToId === undefined) {
+      await showState(invocation, context, state); return;
     }
     if (!state.apiKey) { await context.telegram.edit(invocation.message, "未配置 API Key，请先在收藏夹中设置"); return; }
     let text = invocation.args.join(" ").trim(), image: Image | undefined;
@@ -210,11 +213,30 @@ async function handle(invocation: any, context: PluginContext): Promise<void> {
   }
 }
 
+  const command: CommandDefinition = {
+    description: "生成羡慕调侃短句", ignoreEdited: true, helpArgs: ["help"], args: "[内容]", subcommandsCaseSensitive: false,
+    examples: [{args: "今天吃大餐"}, {args: "", description: "回复文字、图片或贴纸生成短句；无回复时查看状态"}],
+    subcommands: {
+      set: {description: "修改模型配置", subcommands: {
+        mode: {description: "设置接口模式", args: "openai|gemini", examples: [{args: "mode gemini"}], handle: configure("mode")},
+        key: {description: "设置 API 密钥，仅收藏夹", args: "API_KEY", handle: configure("key")},
+        url: {description: "设置 HTTPS API 基础地址", args: "地址", help: [{body: "OpenAI 模式地址应包含 /v1；Gemini 模式地址应包含 /v1beta。地址不能带查询参数、片段或内嵌凭据。"}], handle: configure("url")},
+        model: {description: "设置模型名称", args: "模型", handle: configure("model")},
+      }, handle: guarded(async (i, context) => { await context.telegram.edit(i.message, `用法：${i.prefix}xm set mode|key|url|model 值`); })},
+      show: {description: "查看模式、地址、模型及密钥是否配置", args: "", async handle(i, context) {
+        try { await showState(i, context, normalize(await store(context).read())); }
+        catch { if (!context.signal.aborted) { context.log.error("xmsl_failed"); await context.telegram.edit(i.message, "XMSL 调用失败，请检查配置、媒体依赖和网络"); } }
+      }},
+    },
+    help: [{heading: "图片和贴纸：", body: "支持 JPEG/PNG/GIF/WebP、WebM 视频贴纸和 TGS 动态贴纸。WebM 需要 FFmpeg；TGS 需要 Python、rlottie-python 和 FFmpeg，读取首帧。媒体最多 20 MiB，文本最多 50000 字符。"},
+      {heading: "命令别名：", body: "<code>{prefix}xm</code> 与 <code>{prefix}xmsl</code> 使用相同参数。密钥只在收藏夹设置，状态页仅显示是否已配置。"}],
+    handle,
+  };
+const help = (prefix: string) => renderCommandHelp("xmsl", command, {prefix, title: "🤢 羡慕死了"});
 export default function createXmsl() {
-  const command = {description: "生成羡慕调侃短句", ignoreEdited: true, handle};
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "xmsl", description: "使用 OpenAI 或 Gemini 生成羡慕调侃短句",
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "xmsl", description: "使用 OpenAI 或 Gemini 生成羡慕调侃短句",
     resources: {processes: {concurrency: 1, queueCapacity: 1, timeoutMs: 90_000, maxOutputBytes: 256 * 1024}},
-    commands: {xmsl: {...command, helpArgs: ["help"]}, xm: {...command, helpArgs: ["help"]}}, setup: migrate,
+    commands: {xmsl: command, xm: command}, setup: migrate,
     settings: context => ({id: "xmsl", title: "XMSL", description: "羡慕短句模型配置", category: "插件配置", icon: "🤢",
       getSchema: () => [{key:"apiMode",label:"API 模式",type:"select",options:[{label:"OpenAI",value:"openai"},{label:"Gemini",value:"gemini"}]},
         {key:"apiKey",label:"API Key",type:"password",secret:true},{key:"baseUrl",label:"API 地址",type:"string",required:true},{key:"model",label:"模型",type:"string",required:true}],

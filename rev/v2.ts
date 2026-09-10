@@ -1,8 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 type Flip = "h" | "v" | undefined;
@@ -168,9 +167,7 @@ async function editReversedReply(context: PluginContext, invocation: any, reply:
 }
 
 export default function createRev() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "rev", description: "反转文字或翻转回复的媒体",
-    resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 180_000, maxOutputBytes: 512 * 1024}}, commands: {
-    rev: {description: "反转文字或翻转回复的媒体", async handle(invocation, context) {
+  const command: CommandDefinition = {"args":"[h|v] [c] [文字]","arguments":[{"name":"h / v","description":"媒体水平翻转（h，默认）或垂直翻转（v），多个方向以最后一个为准"},{"name":"c","description":"颜色反转；单独使用只反色，可与方向组合"}],"examples":[{"args":"你好世界","description":"得到“界世好你”，支持 emoji"},{"args":"","description":"回复文字反转内容；回复媒体默认水平翻转"},{"args":"v","description":"回复图片上下翻转"},{"args":"c","description":"回复 GIF 反色"},{"args":"h c","description":"回复 WebM 水平翻转并反色"}],"help":[{"heading":"支持与依赖：","body":"文字按行反转并保留 emoji 组合；回复文字尽量保留格式实体。媒体支持图片、GIF、WebM、WebP，需要服务器已安装 FFmpeg，输出最多 50 MiB。"}],description: "反转文字或翻转回复的媒体", async handle(invocation, context) {
       const selected = parse(invocation.args);
       if (selected.text) { await context.telegram.edit(invocation.message, reverse(selected.text)); return; }
       const reply = invocation.message.replyToId === undefined ? undefined : await context.telegram.getReply(invocation.message);
@@ -178,7 +175,7 @@ export default function createRev() {
       if (!info && reply?.text) { await editReversedReply(context, invocation, reply); return; }
       if (!info) {
         await context.telegram.edit(invocation.message,
-          `<b>内容反转</b>\n<code>${invocation.prefix}rev 文字</code>\n回复媒体可使用 <code>${invocation.prefix}rev [h|v] [c]</code>。`, {parseMode: "html"});
+          help(invocation.prefix), {parseMode: "html"});
         return;
       }
       try {
@@ -215,6 +212,10 @@ export default function createRev() {
         context.log.error("rev_failed");
         await context.telegram.edit(invocation.message, "媒体处理失败，请确认服务器已安装 FFmpeg 且媒体格式受支持");
       }
-    }},
+    }};
+  const help = (prefix: string) => renderCommandHelp("rev", command, {prefix, title: "🔄 内容反转"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "rev", description: "反转文字或翻转回复的媒体",
+    resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 180_000, maxOutputBytes: 512 * 1024}}, commands: {
+    rev: command,
   }});
 }

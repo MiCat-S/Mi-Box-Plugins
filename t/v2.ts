@@ -1,8 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, open, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type CommandInvocation, definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 const FFMPEG = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"] as const;
@@ -85,16 +84,13 @@ async function send(context: PluginContext, invocation: any, file: string, optio
 function userId(invocation: any): string { return String(invocation.message.senderId ?? ""); }
 
 export default function createT() {
-  const commandT = {description: "使用 Fish Audio 合成语音或音乐", async handle(invocation: any, context: PluginContext) {
+  const withProfile = (operation: (invocation: CommandInvocation, context: PluginContext, loaded: Awaited<ReturnType<typeof state>>, config: Profile) => Promise<void>): CommandDefinition["handle"] => async (invocation, context) => {
     const id = userId(invocation); if (!id) return;
-    const loaded = await state(context); const config = profile(loaded.value, id);
+    const loaded = await state(context), config = profile(loaded.value, id);
     if (!config?.apiKey) { await context.telegram.edit(invocation.message, `请先在收藏夹使用 ${invocation.prefix}tk APIKey`); return; }
-    if (invocation.args[0]?.toLowerCase() === "fm" && invocation.args[1]) {
-      let parsed: URL; try { parsed = new URL(invocation.args[1]); } catch { await context.telegram.edit(invocation.message, "封面必须是 HTTPS URL"); return; }
-      if (parsed.protocol !== "https:") { await context.telegram.edit(invocation.message, "封面必须是 HTTPS URL"); return; }
-      await loaded.store.update(value => ({...value, covers: {...value.covers, [config.defaultRole]: parsed.toString()}}));
-      await context.telegram.edit(invocation.message, `已为角色 ${config.defaultRole} 设置封面`); return;
-    }
+    await operation(invocation, context, loaded, config);
+  };
+  const renderAudio = async (invocation: CommandInvocation, context: PluginContext, loaded: Awaited<ReturnType<typeof state>>, config: Profile): Promise<void> => {
     try {
       const reply = invocation.message.replyToId === undefined ? undefined : await context.telegram.getReply(invocation.message);
       await context.files.withTemp(async (directory, signal) => {
@@ -126,8 +122,26 @@ export default function createT() {
       });
     } catch { if (context.signal.aborted) return; context.log.error("t_failed");
       await context.telegram.edit(invocation.message, "语音生成失败，请确认 API Key、FFmpeg 和外部服务可用"); }
-  }};
-  const commandTs = {description: "查看、切换或增加语音角色", async handle(invocation: any, context: PluginContext) {
+    };
+  const commandT: CommandDefinition = {
+    description: "使用 Fish Audio 合成语音或音乐", args: "[文本]", subcommandsCaseSensitive: false,
+    alternates: [{args: "歌曲名 歌手 [专辑名] 文本", description: "音乐模式，添加音频标题、歌手及专辑信息"}],
+    examples: [{args: "你好世界"}, {args: "", description: "回复文字合成普通语音"}, {args: "示例歌曲 示例歌手 你好世界"}],
+    subcommands: {fm: {description: "设置当前角色封面", args: "HTTPS链接", examples: [{args: "fm https://example.com/cover.jpg"}], handle: withProfile(async (invocation, context, loaded, config) => {
+      if (!invocation.args[0]) { await renderAudio({...invocation, args: [invocation.message.text.trim().split(/\s+/)[1] ?? "fm"]}, context, loaded, config); return; }
+      let parsed: URL; try { parsed = new URL(invocation.args[0]); } catch { await context.telegram.edit(invocation.message, "封面必须是 HTTPS URL"); return; }
+      if (parsed.protocol !== "https:") { await context.telegram.edit(invocation.message, "封面必须是 HTTPS URL"); return; }
+      await loaded.store.update(value => ({...value, covers: {...value.covers, [config.defaultRole]: parsed.toString()}}));
+      await context.telegram.edit(invocation.message, `已为角色 ${config.defaultRole} 设置封面`);
+    })}},
+    help: [{heading: "角色与密钥命令：", body: "<code>{prefix}ts [页码]</code> 查看角色（每页 20 个）；<code>{prefix}ts 角色名</code> 切换角色；<code>{prefix}ts 角色名 角色ID</code> 新增/更新并切换；<code>{prefix}tk APIKey</code> 在收藏夹设置密钥。"}, {heading: "语音与音乐：", body: "普通模式发送 OGG 语音；三个及以上参数进入音乐模式：前三项为歌曲名、歌手、文本；四个及以上时第三项为专辑，其余为文本。需要 FFmpeg，清理后文本最多 5000 字符。发送成功后删除命令消息。fm 不带链接时作为普通文本合成。"},
+      {heading: "开始使用：", body: "先在收藏夹用 <code>{prefix}tk APIKey</code> 设置密钥，再用 <code>{prefix}ts</code> 查看角色。Fish Audio 密钥：<a href=\"https://fish.audio/\">fish.audio</a>；更多角色：<a href=\"https://fish.audio/zh-CN/app/discovery/\">角色发现页</a>。"}],
+    handle: withProfile(renderAudio),
+  };
+  const commandTs: CommandDefinition = {args: "[页码|角色名] [角色ID]",
+    examples: [{args: ""}, {args: "2"}, {args: "雷军"}, {args: "自定义角色 ROLE_ID"}],
+    help: [{body: "默认每页 20 个角色。角色名与 ID 需各为一个参数；带 ID 时新增或更新角色并切换，单个纯数字参数按页码处理。"}],
+    description: "查看、切换或增加语音角色", async handle(invocation: any, context: PluginContext) {
     const id = userId(invocation); if (!id) return; const loaded = await state(context); const names = Object.keys(loaded.value.roles);
     const page = invocation.args.length === 1 && /^\d+$/.test(invocation.args[0]) ? Math.max(1, Number(invocation.args[0])) : undefined;
     if (!invocation.args.length || page) { const pages = Math.max(1, Math.ceil(names.length / 20)); const selected = Math.min(page ?? 1, pages); const start = (selected - 1) * 20;
@@ -140,14 +154,16 @@ export default function createT() {
         defaultRoleId: roleId ?? value.roles[name]}}}));
     await context.telegram.edit(invocation.message, roleId ? `已新增/更新角色：${name}，并切换为默认` : `默认角色已切换为：${name}`);
   }};
-  const commandTk = {description: "在收藏夹设置 Fish Audio API Key", async handle(invocation: any, context: PluginContext) {
+  const commandTk: CommandDefinition = {args: "APIKey", examples: [{args: "YOUR_KEY"}], help: [{body: "仅收藏夹可设置，取第一个参数作为密钥。首次默认角色为雷军；密钥不回显。"}],
+    description: "在收藏夹设置 Fish Audio API Key", async handle(invocation: any, context: PluginContext) {
     if (!invocation.message.saved) { await context.telegram.edit(invocation.message, "请仅在收藏夹中设置 API Key"); return; }
     const id = userId(invocation); const key = invocation.args[0] ?? ""; if (!id || !key) { await context.telegram.edit(invocation.message, "请提供 API Key"); return; }
     const loaded = await state(context); const existing = profile(loaded.value, id) ?? {apiKey: "", defaultRole: "雷军", defaultRoleId: loaded.value.roles["雷军"]};
     await loaded.store.update(value => ({...value, users: {...value.users, [id]: {...existing, apiKey: key}}}));
     await context.telegram.edit(invocation.message, "API Key 设置成功");
   }};
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "t", description: "Fish Audio 文字转语音与音乐",
+  const help = (prefix: string) => [renderCommandHelp("t", commandT, {prefix, title: "🔊 Fish Audio 文字转语音与音乐"}), renderCommandHelp("ts", commandTs, {prefix, title: "🎭 语音角色"}), renderCommandHelp("tk", commandTk, {prefix, title: "🔑 Fish Audio 配置"})].join("\n\n");
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "t", description: "Fish Audio 文字转语音与音乐",
     resources: {processes: {concurrency: 1, queueCapacity: 2, timeoutMs: 180_000, maxOutputBytes: 256 * 1024}},
     commands: {t: commandT, ts: commandTs, tk: commandTk},
     settings: context => ({title: "TTS 语音", category: "插件配置", icon: "🔊", getSchema: () => [

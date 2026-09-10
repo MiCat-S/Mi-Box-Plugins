@@ -106,7 +106,7 @@ test('pure synchronous factory, SDK-only imports and no setup side effects', asy
   assert.notEqual(first, second);
   assert.equal(typeof first.then, 'undefined');
   assert.equal(first.id, 'rate');
-  assert.equal(first.apiVersion, 1);
+  assert.equal(first.apiVersion, 2);
   assert.deepEqual(Object.keys(first.commands), ['rate']);
   assert.deepEqual(manifest.imports, ['telebox/sdk']);
   assert.equal(first.setup, undefined);
