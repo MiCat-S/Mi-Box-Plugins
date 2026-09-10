@@ -2,7 +2,17 @@ import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition
 import type {Api} from "teleproto";
 
 export default function createRe() {
-  const command: CommandDefinition = {"args":"[消息数] [复读次数]","arguments":[{"name":"消息数","description":"默认 1，范围 1–20；截至被回复消息的若干条消息"},{"name":"复读次数","description":"默认 1，范围 1–10"}],"examples":[{"args":"","description":"回复消息转发一条、一次"},{"args":"3"},{"args":"3 2"}],"help":[{"heading":"条件：","body":"目标消息需要允许转发，成功后删除命令消息。"}],description: "回复消息后重复转发，可指定数量和次数", async handle(invocation, ctx) {
+  const command: CommandDefinition = {
+    description: "回复消息后重复转发，可指定数量和次数",
+    args: "[消息数] [复读次数]",
+    arguments: [
+      {name: "消息数", description: "默认 1，范围 1–20；截至被回复消息的若干条消息"},
+      {name: "复读次数", description: "默认 1，范围 1–10"},
+    ],
+    examples: [{args: "", description: "回复消息转发一条、一次"}, {args: "3"}, {args: "3 2"}],
+    help: [{heading: "转发范围与条件：", body: "先回复目标消息，再发送命令；按被回复消息的 ID 向前推断消息范围，并转发到当前对话。目标消息需要允许转发，成功后删除命令消息。"},
+      {heading: "操作提示：", body: "未回复消息时提示先回复；目标禁止转发或输入来源不可用时提示“复读失败：目标消息可能禁止转发”。"}],
+    async handle(invocation, ctx) {
       const reply = await ctx.telegram.getReply(invocation.message);
       const raw = reply?.raw as Api.Message | undefined;
       const count = Math.min(Math.max(Number(invocation.args[0]) || 1, 1), 20);

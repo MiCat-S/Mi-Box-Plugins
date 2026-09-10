@@ -267,6 +267,10 @@
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/komari/komari.ts",
     "desc": "Komari 服务器监控"
   },
+  "leech": {
+    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/leech/v2.ts",
+    "desc": "归档数据库统计与 Telegram 会话检查"
+  },
   "listusernames": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/listusernames/listusernames.ts",
     "desc": "列出属于自己的公开群组/频道"
@@ -371,6 +375,10 @@
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/rate/rate.ts",
     "desc": "货币实时汇率查询与计算"
   },
+  "re": {
+    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/re/v2.ts",
+    "desc": "回复消息后重复转发"
+  },
   "restore_pin": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/restore_pin/restore_pin.ts",
     "desc": "恢复群组被取消的置顶消息"
@@ -438,6 +446,10 @@
   "sum": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/sum/sum.ts",
     "desc": "群消息总结"
+  },
+  "sure": {
+    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/sure/v2.ts",
+    "desc": "代发用户、对话和消息白名单"
   },
   "t": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/t/t.ts",
