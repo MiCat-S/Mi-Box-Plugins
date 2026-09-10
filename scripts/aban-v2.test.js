@@ -55,7 +55,7 @@ function environment(options = {}) {
     getMe: async () => user(1),
     getEntity: async value => {if (options.missing) throw new Error('CACHE_MISS'); return user(Number(value) || 2);},
     getInputEntity: async value => {if (options.missing && !(value instanceof Api.User)) throw new Error('CACHE_MISS'); return input(Number(value.id ?? value));},
-    getDialogs: async () => (options.groups ?? [channel()]).map(entity => ({id: '-100' + entity.id, entity, title: entity.title,
+    getDialogs: async () => (options.groups ?? [channel()]).map(entity => ({id: (entity instanceof Api.Channel ? '-100' : '-') + entity.id, entity, title: entity.title,
       isGroup: true, isChannel: entity instanceof Api.Channel})),
     invoke: async request => {
       if (options.invoke) {const value = await options.invoke(request); if (value !== undefined) return value;}
@@ -127,7 +127,10 @@ test('archived dialogs, deleteMessages rights, persistent cache and refresh matc
   });
 });
 test('target admin lookup error retains original batch behavior', async () => {
-  const e = await compare({lookupFails: true}, (r, e) => r.CommandHandlers.handleSuperBan(e.client, message()));
+  const e = environment({lookupFails: true});
+  const r = await createRuntime(e.ctx, {});
+  await r.CommandHandlers.handleSuperBan(e.client, message());
+  assert.match(e.edits.at(-1), /当前群组消息: ✗ PARTICIPANT_ID_INVALID/);
   assert.ok(e.calls.some(c => c.args[0]?.className === 'channels.EditBanned'));
 });
 test('administrator confirmation precedes mutation', async () => {
@@ -142,7 +145,7 @@ test('batch partial failures and history cleanup match original', async () => {
   }}, (r, e) => r.CommandHandlers.handleSuperBan(e.client, message()));
 });
 test('basic group actions follow original RPC branching', async () => {
-  for (const action of ['ban', 'kick', 'mute', 'unban']) {
+  for (const action of ['kick', 'mute', 'unban']) {
     await compare({}, (r, e) => r.CommandHandlers.handleBasicCommand(e.client, message(['2'], true), action));
   }
 });
@@ -161,7 +164,7 @@ async function hostFixture(t, options = {}) {
   await host.load(factory());
   t.after(async () => {assert.equal((await host.shutdown(1000)).completed, true);});
   const send = (text, id = 9, extra = {}) => host.dispatchPrimary({id, chatId: '-100100', senderId: '1', text, outgoing: true, ...extra});
-  return {...e, host, send};
+  return {...e, host, send, dir};
 }
 test('factory commands, help and edited-message protection', async t => {
   assert.deepEqual(Object.keys(factory().commands).sort(), ['aban','ban','kick','mute','refresh','sb','unban','unmute','unsb']);
@@ -195,4 +198,76 @@ test('a pending result acknowledgement permits a second batch', async t => {
   await e.send('.sb 2'); await entered.promise;
   await e.send('.sb 3', 10); await second.promise;
   finish.resolve();
+});
+
+test('managed groups exclude migrated, deactivated and left dialogs', async () => {
+  const e = environment({groups: [channel(),
+    new Api.Chat({id: integer(301), title: 'Migrated', creator: true, migratedTo: new Api.InputChannel({channelId: integer(100), accessHash: integer(20)})}),
+    new Api.Chat({id: integer(302), title: 'Deactivated', creator: true, deactivated: true}),
+    new Api.Chat({id: integer(303), title: 'Left', creator: true, left: true}),
+    new Api.Chat({id: integer(304), title: 'Active basic', creator: true}),
+  ]});
+  const r = await createRuntime(e.ctx, {});
+  assert.deepEqual((await r.GroupManager.getManagedGroups(e.client)).map(g => g.id), [100, 304]);
+});
+test('mixed group cache persists through the real host JSON store', async t => {
+  const entered = deferred();
+  const e = await hostFixture(t, {groups: [channel(), new Api.Chat({id: integer(300), title: 'Basic', creator: true})],
+    onEdit: async (_msg, text) => {if (text.startsWith('✅ 在')) entered.resolve();}});
+  await e.send('.sb 2'); await entered.promise;
+  const files = await fs.readdir(path.join(e.dir, 'aban'));
+  assert.ok(files.includes('aban_cache.json'));
+  const cached = JSON.parse(await fs.readFile(path.join(e.dir, 'aban/aban_cache.json'), 'utf8'));
+  assert.equal(cached.cache.managed_groups_v6.groups.length, 2);
+});
+test('history cleanup repeats until Telegram returns zero offset', async () => {
+  let pages = 0;
+  const e = environment({invoke: async req => {
+    if (req instanceof Api.channels.DeleteParticipantHistory) return {offset: ++pages < 3 ? 10 : 0};
+  }});
+  const r = await createRuntime(e.ctx, {});
+  await r.BanManager.deleteHistoryInCurrentChat(e.client, message().peerId, 2, input());
+  assert.equal(pages, 3);
+});
+
+test('ordinary group ban reports unsupported history cleanup and uses DeleteChatUser', async () => {
+  const e = environment(), r = await createRuntime(e.ctx, {});
+  await r.CommandHandlers.handleBasicCommand(e.client, message(['2'], true), 'ban');
+  assert.ok(e.calls.some(c => c.args[0]?.className === 'messages.DeleteChatUser'));
+  assert.ok(!e.calls.some(c => c.args[0]?.className === 'channels.DeleteParticipantHistory'));
+  assert.match(e.edits.at(-1), /BASIC_GROUP_HISTORY_UNSUPPORTED/);
+});
+test('expired and old-schema group caches are refreshed', async () => {
+  const e = environment(), r = await createRuntime(e.ctx, {});
+  await e.cache.set('managed_groups_v5', [{id: 999, kind: 'chat', title: 'Stale'}]);
+  const groups = await r.GroupManager.getManagedGroups(e.client);
+  assert.deepEqual(groups.map(g => g.id), [100]);
+  await e.cache.set('managed_groups_v6', {updatedAt: Date.now() - 300001, groups});
+  await r.GroupManager.getManagedGroups(e.client);
+  assert.equal(e.calls.filter(c => c.method === 'getDialogs').length, 4);
+});
+test('RPC errorMessage appears separately for batch bans and current history cleanup', async () => {
+  const e = environment({groups: [channel(), new Api.Chat({id: integer(300), title: 'Basic', creator: true})], invoke: async req => {
+    if (req instanceof Api.messages.DeleteChatUser) throw Object.assign(new Error('The provided chat id is invalid.'), {errorMessage: 'CHAT_ID_INVALID'});
+    if (req instanceof Api.channels.DeleteParticipantHistory) throw Object.assign(new Error('Admin rights required.'), {errorMessage: 'CHAT_ADMIN_REQUIRED'});
+  }}), r = await createRuntime(e.ctx, {});
+  await r.CommandHandlers.handleSuperBan(e.client, message());
+  assert.match(e.edits.at(-1), /CHAT_ID_INVALID×1/);
+  assert.match(e.edits.at(-1), /当前群组消息: ✗ CHAT_ADMIN_REQUIRED/);
+  assert.match(e.edits.at(-1), /在1个频道/);
+});
+test('missing delete permission is reported without a history mutation', async () => {
+  const e = environment({invoke: async req => {
+    if (req instanceof Api.channels.GetParticipant) return {participant: new Api.ChannelParticipantAdmin({userId: integer(1), adminRights: new Api.ChatAdminRights({banUsers: true})})};
+  }}), r = await createRuntime(e.ctx, {});
+  assert.deepEqual(await r.BanManager.deleteHistoryInCurrentChat(e.client, message().peerId, 2, input()),
+    {success: false, reason: 'DELETE_MESSAGES_PERMISSION_REQUIRED'});
+  assert.ok(!e.calls.some(c => c.args[0]?.className === 'channels.DeleteParticipantHistory'));
+});
+test('history cleanup stops between pages when unloaded', async () => {
+  const e = environment({invoke: async req => {
+    if (req instanceof Api.channels.DeleteParticipantHistory) {e.controller.abort(); return {offset: 10};}
+  }}), r = await createRuntime(e.ctx, {});
+  await assert.rejects(r.BanManager.deleteHistoryInCurrentChat(e.client, message().peerId, 2, input()), {name: 'AbortError'});
+  assert.equal(e.calls.filter(c => c.args[0]?.className === 'channels.DeleteParticipantHistory').length, 1);
 });
