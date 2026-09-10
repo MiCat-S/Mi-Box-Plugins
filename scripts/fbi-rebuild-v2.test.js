@@ -23,7 +23,7 @@ async function fixture(t, {cache = {}, cacheLimit = 10, surveillance = {}, clien
     cache, extension: {keep: 'cache'}}));
   const edits = [], sent = [];
   const client = {
-    async getEntity(value) { return {id: value, username: `group${String(value).replace(/\D/g, '')}`, title: 'Public group'}; },
+    async getEntity(value) { return {className: 'Channel', id: String(value).replace(/^-100/, ''), username: `group${String(value).replace(/\D/g, '')}`, title: 'Public group'}; },
     async sendMessage(target, message) { sent.push({target, message}); },
     ...clientPatch,
   };

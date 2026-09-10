@@ -24,7 +24,7 @@ async function fixture(t, {cache = {}, cacheLimit = 10, surveillance = {}, clien
     cache, extension: {keep: 'cache'}}));
   const edits = [], sent = [];
   const client = {
-    async getEntity(value) { return {id: value, username: `group${String(value).replace(/\D/g, '')}`, title: 'Public group'}; },
+    async getEntity(value) { return {className: 'Channel', id: String(value).replace(/^-100/, ''), username: `group${String(value).replace(/\D/g, '')}`, title: 'Public group'}; },
     async sendMessage(target, message) { sent.push({target, message}); },
     ...clientPatch,
   };
@@ -178,7 +178,7 @@ test('a listener resolving a new group after rebuild keeps the rebuilt history',
   const f = await fixture(t, {client: {
     async getEntity() {
       if (++entityCalls === 1) { started(); await gate; }
-      return {username: 'publicgroup', title: 'Public group'};
+      return {className: 'Channel', id: 1, username: 'publicgroup', title: 'Public group'};
     },
     async getDialogs() { return [{id: peer(1), isGroup: true}]; },
     async *iterMessages() { yield cached(1, now - 1); },
