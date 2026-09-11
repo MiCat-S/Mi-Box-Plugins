@@ -4,8 +4,11 @@ import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sd
 type Data = {schemaVersion: 1; userDeleteMode: Record<string, boolean>};
 const store = (ctx: PluginContext) => ctx.storage.json<Data>("bulk_delete_config.json", {schemaVersion: 1, userDeleteMode: {}});
 const sleep = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
-  const timer = setTimeout(resolve, ms);
-  signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, {once: true});
+  if (signal.aborted) { reject(signal.reason); return; }
+  const timer = setTimeout(done, ms);
+  function done() { signal.removeEventListener("abort", abort); resolve(); }
+  function abort() { clearTimeout(timer); signal.removeEventListener("abort", abort); reject(signal.reason); }
+  signal.addEventListener("abort", abort, {once: true});
 });
 
 async function removeLater(ctx: PluginContext, chat: any, ids: number[], ms: number) {
@@ -52,7 +55,7 @@ async function handle(message: MessageEnvelope, args: readonly string[], ctx: Pl
       if (entity?.className !== "Channel" && entity?.className !== "Chat") admin = true;
       else {
         const {Api} = await import("teleproto");
-        const result: any = await client.invoke(new Api.channels.GetParticipant({channel: chat, participant: me.id}));
+        const result: any = await client.invoke(new Api.channels.GetParticipant({channel: chat, participant: new Api.InputPeerSelf()}));
         const participant = result?.participant;
         admin = participant?.className === "ChannelParticipantCreator" ||
           (participant?.className === "ChannelParticipantAdmin" && !!participant.adminRights?.deleteMessages);

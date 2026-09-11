@@ -6,6 +6,8 @@ const path = require('node:path');
 const os = require('node:os');
 const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
+const {Api}=require(path.join(core,'node_modules/teleproto'));
+const {returnBigInt}=require(path.join(core,'node_modules/teleproto/Helpers.js'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 
 function load(id) {
@@ -20,7 +22,7 @@ async function fixture(t, id, {reply, initial, file, now} = {}) {
   const edits = [], sends = [], invokes = [];
   const client = {
     async getMe() { return {id: 7, firstName: 'Alice 12:30', lastName: 'User'}; },
-    async getEntity(value) { return {id: value === 'me' ? 7 : value}; },
+    async getEntity(value) { return new Api.User({id:returnBigInt(value === 'me' ? 7 : value),firstName:'Target'}); },
     async sendMessage(peer, value) { sends.push({peer, value}); return {id: 100}; },
     async getMessages() { return [{id: 8, message: 'source'}]; },
     async deleteMessages() {}, async pinMessage() {}, async unpinMessage() {},

@@ -1,10 +1,10 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {Api} from "teleproto";
+import {Api, utils} from "teleproto";
 import {returnBigInt} from "teleproto/Helpers";
 import {definePlugin, ui, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 type TaskType = "send" | "copy" | "forward" | "del" | "del_re" | "pin" | "unpin" | "cmd";
-interface Task { id: string; type: TaskType; cron: string; chat: string; chatId?: string; createdAt: string; lastRunAt?: string; lastResult?: string; lastError?: string; disabled?: boolean; remark?: string; message?: string; replyTo?: string; fromChatId?: string; fromMsgId?: string; msgId?: string; limit?: string; regex?: string; notify?: boolean; pmOneSide?: boolean; delivery?: "pending" | "prepared" | "sent"; }
+interface Task { id: string; type: TaskType; cron: string; chat: string; chatId?: string; resolvedPeer?: boolean; createdAt: string; lastRunAt?: string; lastResult?: string; lastError?: string; disabled?: boolean; remark?: string; message?: string; replyTo?: string; fromChatId?: string; fromMsgId?: string; msgId?: string; limit?: string; regex?: string; notify?: boolean; pmOneSide?: boolean; delivery?: "pending" | "prepared" | "sent"; }
 interface State extends Record<string, unknown> { schemaVersion: number; seq: string; tasks: Task[]; }
 const defaults: State = {schemaVersion: 1, seq: "0", tasks: []};
 const types: TaskType[] = ["send", "copy", "forward", "del", "del_re", "pin", "unpin", "cmd"];
@@ -25,7 +25,11 @@ export default function createAcron() {
     try {
       let result = "已执行";
       await context.telegram.withClient(async client => {
-        const target = peer(task.chatId) ?? task.chat;
+        const target = task.resolvedPeer ? peer(task.chatId) ?? task.chat : await client.getEntity(peer(task.chat)!);
+        if (!task.resolvedPeer) {
+          const chatId = utils.getPeerId(target);
+          await store.update(current => {const found = current.tasks.find(item => item.id === id); if (found) {found.chatId = chatId; found.resolvedPeer = true;} return current;});
+        }
         if (task.type === "send" || task.type === "cmd") { await client.sendMessage(target, {message: task.message || "", ...(task.replyTo ? {replyTo: numeric(task.replyTo)} : {})}); result = task.type === "cmd" ? "已发送命令" : "已发送 1 条消息"; }
         else if (task.type === "copy") { const messages = await client.getMessages(peer(task.fromChatId), {ids: numeric(task.fromMsgId)}); if (!messages?.[0]) throw new Error("未能获取源消息"); await client.sendMessage(target, {message: messages[0], ...(task.replyTo ? {replyTo: numeric(task.replyTo)} : {})}); result = "已复制发送 1 条消息"; }
         else if (task.type === "forward") { await client.invoke(new Api.messages.ForwardMessages({fromPeer: peer(task.fromChatId)!, id: [numeric(task.fromMsgId)!], toPeer: target, ...(task.replyTo ? {topMsgId: numeric(task.replyTo)} : {})})); result = "已转发 1 条消息"; }
@@ -47,15 +51,15 @@ export default function createAcron() {
       if (!types.includes(sub as TaskType)) return context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
       const cron = invocation.args.slice(1, 7).join(" "); if (!validCron(cron)) return context.telegram.edit(invocation.message, "Cron 表达式必须为 6 段", {});
       const type = sub as TaskType; const target = invocation.args[7]; if (!target) return context.telegram.edit(invocation.message, "缺少目标对话", {}); const [chat, replyTo] = target.split("|");
-      const state = await store.read(); const id = (BigInt(state.seq || "0") + 1n).toString(); let resolved = chat;
-      try { resolved = await context.telegram.withClient(async client => String((await client.getEntity(chat)).id)); } catch {}
-      const task: Task = {id, type, cron, chat, chatId: resolved, createdAt: String(Date.now()), delivery: "pending", ...(replyTo ? {replyTo} : {})}; const rest = [...invocation.args.slice(8)];
+      let resolved = chat, resolvedPeer = false;
+      try { resolved = await context.telegram.withClient(async client => utils.getPeerId(await client.getEntity(peer(chat)!))); resolvedPeer = true; } catch {}
+      const task: Task = {id: "", type, cron, chat, chatId: resolved, resolvedPeer, createdAt: String(Date.now()), delivery: "pending", ...(replyTo ? {replyTo} : {})}; const rest = [...invocation.args.slice(8)];
       if (["send", "copy", "forward", "cmd"].includes(type)) { const reply = await context.telegram.getReply(invocation.message); if (type === "send") {if (!reply?.text) return context.telegram.edit(invocation.message, "请回复要定时发送的文本消息", {}); task.message = reply.text;} else if (type === "cmd") {task.message = invocation.message.text.split(/\r?\n/).slice(1).join("\n").trim(); if (!task.message) return context.telegram.edit(invocation.message, "请换行填写要执行的命令", {});} else {if (!reply) return context.telegram.edit(invocation.message, "请回复源消息", {}); task.fromChatId = reply.chatId; task.fromMsgId = String(reply.id);} task.remark = rest.join(" "); }
       else if (type === "del") {task.msgId = rest.shift(); task.remark = rest.join(" "); if (!numeric(task.msgId)) return context.telegram.edit(invocation.message, "无效的消息ID", {});}
       else if (type === "del_re") {task.limit = rest.shift(); task.regex = rest.shift(); task.remark = rest.join(" "); try {parseRegex(task.regex || "");} catch {return context.telegram.edit(invocation.message, "无效的正则表达式", {});} }
       else if (type === "pin") {task.msgId = rest.shift(); task.notify = ["1", "true"].includes(rest.shift()?.toLowerCase() || ""); task.pmOneSide = ["1", "true"].includes(rest.shift()?.toLowerCase() || ""); task.remark = rest.join(" ");}
       else {task.msgId = rest.shift(); task.remark = rest.join(" ");}
-      await store.update(current => ({...current, schemaVersion: 1, seq: id, tasks: [...current.tasks, task]})); try {await register(context, task);} catch {await store.update(current => ({...current, tasks: current.tasks.filter(item => item.id !== id), seq: state.seq})); return context.telegram.edit(invocation.message, "无效的 Cron 表达式", {});} return context.telegram.edit(invocation.message, `已添加定时任务 <code>${id}</code>`, {parseMode: "html"});
+      await store.update(current => {task.id = (BigInt(current.seq || "0") + 1n).toString(); return {...current, schemaVersion: 1, seq: task.id, tasks: [...current.tasks, task]};}); const id = task.id; try {await register(context, task);} catch {await store.update(current => ({...current, tasks: current.tasks.filter(item => item.id !== id)})); return context.telegram.edit(invocation.message, "无效的 Cron 表达式", {});} return context.telegram.edit(invocation.message, `已添加定时任务 <code>${id}</code>`, {parseMode: "html"});
     }}},
     async setup(context) { const state = await context.storage.json<State>("acron_config.json", defaults).update(current => ({...current, schemaVersion: 1, seq: String(current.seq || "0"), tasks: (current.tasks || []).map(task => ({...task, id: String(task.id), chatId: task.chatId === undefined ? undefined : String(task.chatId), delivery: task.delivery || "pending"}))})); for (const task of state.tasks) await register(context, task); },
     async cleanup() {await Promise.all([...disposers.values()].map(dispose => dispose())); disposers.clear();},

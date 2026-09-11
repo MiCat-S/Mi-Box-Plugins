@@ -135,3 +135,18 @@ test('default PluginHost rejects getstickers process budget without retaining re
   assert.deepEqual(host.listPlugins(),[]);assert.deepEqual(host.listCommands(),[]);assert.equal(host.snapshot().processes,undefined);
   assert.equal((await host.shutdown(2000)).completed,true);
 });
+
+test('sticker factory instances own independent bot queues and response cursors',async()=>{
+  let entered,release;const started=new Promise(r=>entered=r),gate=new Promise(r=>release=r);
+  function make(next,blocked=false){const messages=[];return directContext({storage:{'config.json':{schemaVersion:1,sticker_default_pack:'Existing'}},reply:{raw:{id:44,peerId:'peer',sticker:document()}},client:{
+    async getMe(){return{username:'tester'};},async invoke(){return{set:{count:1}};},async getMessages(){return messages.slice(-8).reverse();},
+    async sendMessage(_peer,value){if(blocked&&value.message==='/addsticker'){entered();await gate;}messages.push({id:++next,date:Math.floor(Date.now()/1000),out:false,message:'ok'});},
+    async forwardMessages(){messages.push({id:++next,date:Math.floor(Date.now()/1000),out:false,message:'Now send me an emoji'});}
+  }});}
+  const a=make(100,true),b=make(1),first=plugins.sticker.create(),second=plugins.sticker.create();
+  const invoke=(plugin,f)=>plugin.commands.sticker.handle({command:'sticker',prefix:'.',args:[],message:{id:1,chatId:'1',text:'.sticker',outgoing:true,replyToId:44}},f.context);
+  const running=invoke(first,a);let other;
+  try{await settlesWithin(started);other=invoke(second,b);await settlesWithin(other);assert.match(b.edits.at(-1).text,/贴纸已添加/);await second.cleanup();}
+  finally{release();await running;if(other)await other;await first.cleanup();}
+  assert.match(a.edits.at(-1).text,/贴纸已添加/);
+});

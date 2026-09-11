@@ -315,10 +315,6 @@
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/nezha/nezha.ts",
     "desc": "哪吒监控"
   },
-  "nodeseek": {
-    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/nodeseek/nodeseek.ts",
-    "desc": "NodeSeek 论坛每日签到，领取鸡腿"
-  },
   "ntp": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/ntp/ntp.ts",
     "desc": "NTP 时间同步"

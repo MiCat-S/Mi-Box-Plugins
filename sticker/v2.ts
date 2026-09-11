@@ -3,23 +3,11 @@ import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes, TelegramClient} from "teleproto";
 
 const defaults = {schemaVersion: 1, sticker_default_pack: ""};
-const tails = new Map<string, Promise<void>>();
-const cursors = new Map<string, number>();
 const BOT = "stickers";
 const emojis = ["😀", "😁", "😂", "🤣", "😊", "🙂", "😉", "😎", "😍", "🤔"];
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, character =>
   ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;"})[character]!);
-
-async function serial<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  const previous = tails.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>(resolve => { release = resolve; });
-  tails.set(key, current);
-  await previous.catch(() => undefined);
-  try { return await operation(); }
-  finally { release(); if (tails.get(key) === current) tails.delete(key); }
-}
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -44,56 +32,68 @@ async function latest(client: TelegramClient): Promise<any[]> {
   return Array.isArray(values) ? values : [];
 }
 
-async function waitBot(client: TelegramClient, signal: AbortSignal, after: number,
-  accept: (message: any) => boolean): Promise<any> {
-  for (let attempt = 0; attempt < 18; attempt++) {
-    signal.throwIfAborted();
-    const cursor = cursors.get(BOT) ?? 0;
-    const result = (await latest(client)).slice().reverse().find(message => {
-      const id = Number(message?.id ?? 0);
-      return !message?.out && id > cursor && Number(message?.date ?? 0) >= after && accept(message);
-    });
-    if (result) { cursors.set(BOT, Number(result.id)); return result; }
-    await delay(650, signal);
-  }
-  throw new Error("Sticker bot timeout");
-}
-
-async function addWithBot(client: TelegramClient, signal: AbortSignal, source: ApiTypes.Message,
-  packName: string, emoji: string): Promise<void> {
-  await serial(BOT, async () => {
-    const baseline = await latest(client);
-    cursors.set(BOT, Math.max(cursors.get(BOT) ?? 0, ...baseline.map(item => Number(item?.id ?? 0))));
-    const started = Math.floor(Date.now() / 1000) - 1;
-    try {
-      await client.sendMessage(BOT, {message: "/addsticker"});
-      await waitBot(client, signal, started, message => Boolean(message?.message));
-      await client.sendMessage(BOT, {message: packName});
-      const pack = await waitBot(client, signal, started, message => Boolean(message?.message));
-      if (/invalid set/i.test(String(pack.message))) throw new Error("Invalid sticker set");
-      await client.forwardMessages(BOT, {messages: [source.id], fromPeer: source.peerId});
-      const response = await waitBot(client, signal, started, message => Boolean(message?.message));
-      const text = String(response.message).toLowerCase();
-      if (!text.includes("now send me an emoji")) {
-        if (text.includes("video is too long") || text.includes("3 seconds or less")) throw new Error("Video too long");
-        if (text.includes("dimensions should be")) throw new Error("Invalid dimensions");
-        throw new Error("Unexpected sticker bot response");
-      }
-      await client.sendMessage(BOT, {message: emoji});
-      await waitBot(client, signal, started, message => Boolean(message?.message));
-      await client.sendMessage(BOT, {message: "/done"});
-    } catch (error) {
-      if (!signal.aborted) await client.sendMessage(BOT, {message: "/cancel"}).catch(() => undefined);
-      throw error;
-    }
-  });
-}
-
 function validPack(value: string): boolean { return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value); }
 function help(prefix: string): string { return `<b>贴纸收藏</b>\n回复贴纸：<code>${escape(prefix)}sticker [to 包名]</code>\n` +
   `<code>${escape(prefix)}sticker 包名</code> 设置默认包 · <code>${escape(prefix)}sticker cancel</code> 取消`; }
 
 export default function createSticker() {
+  const tails = new Map<string, Promise<void>>();
+  const cursors = new Map<string, number>();
+  async function serial<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const previous = tails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    tails.set(key, current);
+    await previous.catch(() => undefined);
+    try { return await operation(); }
+    finally { release(); if (tails.get(key) === current) tails.delete(key); }
+  }
+
+  async function waitBot(client: TelegramClient, signal: AbortSignal, after: number,
+    accept: (message: any) => boolean): Promise<any> {
+    for (let attempt = 0; attempt < 18; attempt++) {
+      signal.throwIfAborted();
+      const cursor = cursors.get(BOT) ?? 0;
+      const result = (await latest(client)).slice().reverse().find(message => {
+        const id = Number(message?.id ?? 0);
+        return !message?.out && id > cursor && Number(message?.date ?? 0) >= after && accept(message);
+      });
+      if (result) { cursors.set(BOT, Number(result.id)); return result; }
+      await delay(650, signal);
+    }
+    throw new Error("Sticker bot timeout");
+  }
+
+  async function addWithBot(client: TelegramClient, signal: AbortSignal, source: ApiTypes.Message,
+    packName: string, emoji: string): Promise<void> {
+    await serial(BOT, async () => {
+      const baseline = await latest(client);
+      cursors.set(BOT, Math.max(cursors.get(BOT) ?? 0, ...baseline.map(item => Number(item?.id ?? 0))));
+      const started = Math.floor(Date.now() / 1000) - 1;
+      try {
+        await client.sendMessage(BOT, {message: "/addsticker"});
+        await waitBot(client, signal, started, message => Boolean(message?.message));
+        await client.sendMessage(BOT, {message: packName});
+        const pack = await waitBot(client, signal, started, message => Boolean(message?.message));
+        if (/invalid set/i.test(String(pack.message))) throw new Error("Invalid sticker set");
+        await client.forwardMessages(BOT, {messages: [source.id], fromPeer: source.peerId});
+        const response = await waitBot(client, signal, started, message => Boolean(message?.message));
+        const text = String(response.message).toLowerCase();
+        if (!text.includes("now send me an emoji")) {
+          if (text.includes("video is too long") || text.includes("3 seconds or less")) throw new Error("Video too long");
+          if (text.includes("dimensions should be")) throw new Error("Invalid dimensions");
+          throw new Error("Unexpected sticker bot response");
+        }
+        await client.sendMessage(BOT, {message: emoji});
+        await waitBot(client, signal, started, message => Boolean(message?.message));
+        await client.sendMessage(BOT, {message: "/done"});
+      } catch (error) {
+        if (!signal.aborted) await client.sendMessage(BOT, {message: "/cancel"}).catch(() => undefined);
+        throw error;
+      }
+    });
+  }
+
   return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "sticker", description: "收藏贴纸到自己的贴纸包", commands: {
     sticker: {helpArgs: ["help","h"], description: "收藏贴纸或配置默认贴纸包", async handle(invocation, context) {
       const args = invocation.args;

@@ -10,7 +10,7 @@ async function deletion(client:any,chat:any,ids:number[],signal:AbortSignal){
 async function run(message:MessageEnvelope,ctx:PluginContext){
   const raw:any=message.raw;if(raw?.isPrivate||!message.chatId.startsWith("-")){await ctx.telegram.edit(message,"❌ 仅群组可用",{parseMode:"html"});return;}
   await ctx.telegram.withClient(async(client:any,signal)=>{const {Api}=await import("teleproto");const chat=await client.getEntity(raw?.peerId??message.chatId),me=await client.getMe();let participant:any;
-    try{participant=(await client.invoke(new Api.channels.GetParticipant({channel:chat,participant:me.id}))).participant;}catch{await ctx.telegram.edit(message,"❌ 无法确认管理员权限",{parseMode:"html"});return;}
+    try{participant=(await client.invoke(new Api.channels.GetParticipant({channel:chat,participant: new Api.InputPeerSelf()}))).participant;}catch{await ctx.telegram.edit(message,"❌ 无法确认管理员权限",{parseMode:"html"});return;}
     const rights=participant?.adminRights;if(participant?.className!=="ChannelParticipantCreator"&&(participant?.className!=="ChannelParticipantAdmin"||!rights?.banUsers||!rights?.deleteMessages)){await ctx.telegram.edit(message,"❌ 需要封禁成员和删除消息权限才能执行此操作",{parseMode:"html"});return;}
     await ctx.telegram.edit(message,"🚨 <b>一键跑路</b>\n\n正在处理中...",{parseMode:"html"});let muted=false,deleted=0,failed=0;
     try{await client.invoke(new Api.messages.EditChatDefaultBannedRights({peer:chat,bannedRights:new Api.ChatBannedRights({sendMessages:true,sendMedia:true,sendStickers:true,sendGifs:true,sendGames:true,sendInline:true,sendPolls:true,changeInfo:true,inviteUsers:true,pinMessages:true,untilDate:0})}));muted=true;}catch{ctx.log.error("paolu:mute");}

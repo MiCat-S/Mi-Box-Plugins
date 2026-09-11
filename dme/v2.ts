@@ -74,7 +74,7 @@ async function execute(ctx: PluginContext, client: TelegramClient, signal: Abort
   let direct = saved;
   if (anti && chat.className === "Channel" && chat.broadcast === true) {
     try {
-      const result = await call(() => client.invoke(new Api.channels.GetParticipant({ channel: chat, participant: me.id })));
+      const result = await call(() => client.invoke(new Api.channels.GetParticipant({ channel: chat, participant: new Api.InputPeerSelf() })));
       direct = result.participant.className === "ChannelParticipantCreator";
     } catch { signal.throwIfAborted(); log("permission"); }
   }

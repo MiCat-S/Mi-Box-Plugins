@@ -122,7 +122,7 @@ export default function createDa() {
             let admin = false;
             if (chat.className === "Channel") {
               try {
-                const result = await call(() => client.invoke(new Api.channels.GetParticipant({ channel: chat, participant: me.id })));
+                const result = await call(() => client.invoke(new Api.channels.GetParticipant({ channel: chat, participant: new Api.InputPeerSelf() })));
                 admin = ["ChannelParticipantAdmin", "ChannelParticipantCreator"].includes(result.participant.className);
               } catch (error) {
                 signal.throwIfAborted(); ctx.log.error("da:permission");

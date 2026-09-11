@@ -25,7 +25,7 @@ export default function createSure() {
       const store = ctx.storage.json<SureConfig>("config.json", defaults);
       const [scope, action, value] = invocation.args;
       if (scope === "user" || scope === "chat") {
-        if ((action !== "add" && action !== "del") || !value || !/^[0-9]+$/.test(value)) {
+        if ((action !== "add" && action !== "del") || !value || !(scope === "user" ? /^[1-9][0-9]*$/ : /^-?[1-9][0-9]*$/).test(value)) {
           await ctx.telegram.edit(invocation.message, `用法：${invocation.prefix}sure user|chat add|del ID`);
           return;
         }

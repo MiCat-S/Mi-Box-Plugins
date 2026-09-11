@@ -108,7 +108,6 @@ V2 入口为各插件的 `v2.ts`；其余源码仍待迁移，不代表可以直
 - `netease` - 网易云音乐  
 - `news` - 每日新闻  
 - `nezha` - 哪吒监控  
-- `nodeseek` - NodeSeek 论坛每日签到，领取鸡腿  
 - `ntp` - NTP 时间同步  
 - `openlist` - openlist管理  
 - `oxost` - 回复聊天中的文件与媒体 得到一个临时的下载链接  

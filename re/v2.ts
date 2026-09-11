@@ -10,7 +10,7 @@ export default function createRe() {
       const count = Math.min(Math.max(Number(invocation.args[0]) || 1, 1), 20);
       const repeat = Math.min(Math.max(Number(invocation.args[1]) || 1, 1), 10);
       if (!raw || !reply) {
-        await ctx.telegram.edit(invocation.message, "请回复一条消息使用 .re [消息数] [复读次数]");
+        await ctx.telegram.edit(invocation.message, `请回复一条消息使用 ${invocation.prefix}re [消息数] [复读次数]`);
         return;
       }
       try {
