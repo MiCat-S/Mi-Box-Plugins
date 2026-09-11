@@ -583,35 +583,31 @@ class PermissionManager {
     client: TelegramClient,
     chatId: any
   ): Promise<boolean> {
-    try {
-      const me = await safeGetMe(client);
-      if (!me) return false;
-      if (this.getChatKind(chatId) === 'chat') {
-        const participants = await this.getBasicGroupParticipants(client, chatId);
-        if (!participants) {
-          return false;
-        }
-
-        const meParticipant = participants.find((p: any) => Number(p?.userId) === Number((me as any).id));
-        return meParticipant instanceof Api.ChatParticipantCreator || meParticipant instanceof Api.ChatParticipantAdmin;
+    const me = await safeGetMe(client);
+    if (!me) return false;
+    if (this.getChatKind(chatId) === 'chat') {
+      const participants = await this.getBasicGroupParticipants(client, chatId);
+      if (!participants) {
+        return false;
       }
 
-      const participant = await client.invoke(
-        new Api.channels.GetParticipant({
-          channel: chatId,
-          participant: me.id
-        })
-      );
-
-      const p = participant.participant;
-      if (p instanceof Api.ChannelParticipantCreator) return true;
-      if (p instanceof Api.ChannelParticipantAdmin) {
-        return !!p.adminRights?.deleteMessages;
-      }
-      return false;
-    } catch {
-      return false;
+      const meParticipant = participants.find((p: any) => Number(p?.userId) === Number((me as any).id));
+      return meParticipant instanceof Api.ChatParticipantCreator || meParticipant instanceof Api.ChatParticipantAdmin;
     }
+
+    const participant = await client.invoke(
+      new Api.channels.GetParticipant({
+        channel: chatId,
+        participant: me.id
+      })
+    );
+
+    const p = participant.participant;
+    if (p instanceof Api.ChannelParticipantCreator) return true;
+    if (p instanceof Api.ChannelParticipantAdmin) {
+      return !!p.adminRights?.deleteMessages;
+    }
+    return false;
   }
 }
 
@@ -638,7 +634,7 @@ class GroupManager {
 
   private static dialogHasManageRights(dialog: any): boolean {
     const entity = dialog?.entity;
-    if (!entity) return false;
+    if (!entity || entity.left || entity.deactivated || entity.migratedTo) return false;
     if (entity.creator) return true;
     const rights = entity.adminRights;
     if (!rights) return false;
@@ -649,8 +645,9 @@ class GroupManager {
     client: TelegramClient
   ): Promise<ManagedGroup[]> {
 
-    const cached = await this.cache.get("managed_groups_v5");
-    if (cached && Array.isArray(cached) && cached.length > 0) return cached;
+    const cached = await this.cache.get("managed_groups_v6");
+    const age = Date.now() - cached?.updatedAt;
+    if (cached && Array.isArray(cached.groups) && age >= 0 && age < 5 * 60_000) return cached.groups;
 
     const groups: ManagedGroup[] = [];
 
@@ -668,26 +665,19 @@ class GroupManager {
         const rawHash = isChannel ? dialog.entity?.accessHash : undefined;
         const accessHash = rawHash != null ? String(rawHash) : undefined;
 
-        const rawId = Number(dialog.entity?.id ?? dialog.id);
-        if (!Number.isFinite(rawId) || rawId === 0) continue;
+        const rawId = Number(dialog.entity?.id);
+        if (!Number.isSafeInteger(rawId) || rawId <= 0) continue;
         groups.push({
           id: rawId,
           title: dialog.title || "Unknown",
           kind: isChannel ? 'channel' as const : 'chat' as const,
-          accessHash,
+          ...(accessHash !== undefined ? {accessHash} : {}),
         });
       }
       ctx.log.info("aban:operation");
 
       try {
-        await this.cache.set("managed_groups_v5", groups);
-
-        try {
-          await this.cache.set("managed_groups_v4", []);
-        } catch {}
-        try {
-          await this.cache.set("managed_groups_v3", []);
-        } catch {}
+        await this.cache.set("managed_groups_v6", {updatedAt: Date.now(), groups});
       } catch (cacheError) {
         ctx.log.info("aban:operation");
       }
@@ -731,7 +721,9 @@ class BanManager {
     return client.getInputEntity(userId);
   }
 
-  private static getErrorReason(error: unknown): string {
+  static getErrorReason(error: unknown): string {
+    const rpcMessage = (error as any)?.errorMessage;
+    if (typeof rpcMessage === "string" && /^[A-Z][A-Z0-9_]{3,}$/.test(rpcMessage)) return rpcMessage;
     const message = error instanceof Error ? error.message : String(error || "UNKNOWN_ERROR");
 
     const rpcCodes = message.match(/\b[A-Z][A-Z0-9_]{4,}\b/g) || [];
@@ -902,31 +894,29 @@ class BanManager {
     chatId: any,
     userId: number,
     participant?: any
-  ): Promise<boolean> {
+  ): Promise<{success: boolean; reason?: string}> {
     try {
-      const canDelete = await PermissionManager.canDeleteMessages(client, chatId);
-      if (!canDelete) {
-        ctx.log.info("aban:operation");
-        return false;
+      if (this.getChatKind(chatId) === 'chat') {
+        return {success: false, reason: 'BASIC_GROUP_HISTORY_UNSUPPORTED'};
       }
+      const canDelete = await PermissionManager.canDeleteMessages(client, chatId);
+      if (!canDelete) return {success: false, reason: 'DELETE_MESSAGES_PERMISSION_REQUIRED'};
 
       const resolvedParticipant = participant || await client.getEntity(userId);
-
-      await client.invoke(
-        new Api.channels.DeleteParticipantHistory({
+      let result: Api.messages.AffectedHistory;
+      do {
+        ctx.signal.throwIfAborted();
+        result = await client.invoke(new Api.channels.DeleteParticipantHistory({
           channel: chatId,
           participant: resolvedParticipant,
-        })
-      );
-
-      ctx.log.info("aban:operation");
-      return true;
-    } catch (error: any) {
-
-      if (!/CHANNEL_INVALID|CHAT_ADMIN_REQUIRED|USER_NOT_PARTICIPANT/.test(error?.message || "")) {
-        ctx.log.info("aban:operation");
-      }
-      return false;
+        }));
+      } while (result.offset > 0);
+      return {success: true};
+    } catch (error) {
+      ctx.signal.throwIfAborted();
+      const reason = this.getErrorReason(error);
+      ctx.log.info("aban:history-delete-failed", {reason: /^[A-Z][A-Z0-9_]{3,}$/.test(reason) ? reason : 'UNKNOWN_ERROR'});
+      return {success: false, reason};
     }
   }
 
@@ -1205,9 +1195,9 @@ class CommandHandlers {
           break;
         case 'ban':
 
-          const deleteSuccess = await BanManager.deleteHistoryInCurrentChat(client, message.peerId, uid, participant);
+          const deletion = await BanManager.deleteHistoryInCurrentChat(client, message.peerId, uid, participant);
           success = await BanManager.banUser(client, message.peerId, uid, 0, participant);
-          const deleteText = deleteSuccess ? '(已清理消息)' : '';
+          const deleteText = deletion.success ? '(已清理消息)' : `(消息清理失败：${htmlEscape(deletion.reason || 'UNKNOWN_ERROR')})`;
           resultText = chatType === 'chat'
             ? `✅ 已移出 ${htmlEscape(display)} ${deleteText}`
             : `✅ 已封禁 ${htmlEscape(display)} ${deleteText}`;
@@ -1332,7 +1322,9 @@ class CommandHandlers {
 
         const elapsed = (Date.now() - startTime) / 1000;
 
-        const deleteSuccess = deletedInCurrent.status === 'fulfilled' && deletedInCurrent.value;
+        const deletion = deletedInCurrent.status === 'fulfilled'
+          ? deletedInCurrent.value
+          : {success: false, reason: BanManager.getErrorReason(deletedInCurrent.reason)};
         const {
           success = 0,
           failed = groups.length,
@@ -1342,22 +1334,6 @@ class CommandHandlers {
         } = banResult.status === 'fulfilled'
           ? banResult.value
           : { failureDetails: [], unresolved: true, unresolvedReason: 'UNKNOWN_ERROR' };
-
-        const summarizeReasonsPlain = (details: BatchGroupFailure[]): string => {
-          const counts = new Map<string, number>();
-          for (const item of details) {
-            counts.set(item.reason, (counts.get(item.reason) || 0) + 1);
-          }
-          return Array.from(counts.entries())
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 5)
-            .map(([reason, count]) => `${reason}×${count}`)
-            .join(', ');
-        };
-
-        if (failureDetails.length > 0) {
-          ctx.log.info("aban:operation");
-        }
 
         const summarizeReasons = (details: BatchGroupFailure[]): string => {
           const counts = new Map<string, number>();
@@ -1381,7 +1357,7 @@ class CommandHandlers {
           : '';
 
         const finalActionText = (message as any).isGroup && !(message as any).isChannel ? '移出' : '封禁';
-        const result = `✅ 在${success}个频道/群组中${finalActionText}该用户 ${htmlEscape(display)}${failureSummary}${capabilityNote}\n🗑️当前群组消息: ${deleteSuccess ? '✓已清理' : '✗'} | ⏱️${elapsed.toFixed(1)}s`;
+        const result = `✅ 在${success}个频道/群组中${finalActionText}该用户 ${htmlEscape(display)}${failureSummary}${capabilityNote}\n🗑️当前群组消息: ${deletion.success ? '✓已清理' : `✗ ${htmlEscape(deletion.reason || 'UNKNOWN_ERROR')}`} | ⏱️${elapsed.toFixed(1)}s`;
 
         await MessageManager.smartEdit(status, result, 30);
       };
