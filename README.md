@@ -5,16 +5,27 @@
 
 ## 安装方式
 
-核心与插件仓库均使用 `main`。按核心仓库的
-[安装指南](https://github.com/MiCat-S/Mi-Box/blob/main/INSTALL.md)
-将本仓库放到核心仓库同级的 `TeleBox-Plugins` 目录，然后在核心仓库执行：
+插件由 MiBot 主程序加载，`ai`、`gt` 等扩展均通过 Telegram 中的 TPM 安装。
+首次使用按下面的顺序操作：
 
-```bash
-npm run package:v2
-```
+1. 按 [MiBot 从零部署教程](https://github.com/MiCat-S/Mi-Box/blob/main/INSTALL.md)
+   在服务器安装主程序、登录自己的 Telegram 账号并启动后台服务。
+   部署时下载主仓库，插件源码由 TPM 在安装时自动获取。
+2. 打开该账号的 Telegram“收藏夹”，发送 `.tpm search 翻译` 查找插件，
+   也可用 `.tpm search ai` 按名称搜索。
+3. 发送 `.tpm install ai gt` 安装 AI 和翻译插件。等待安装结果，再发送
+   `.tpm list` 确认它们已安装，随后用 `.help ai` 和 `.help gt` 查看配置方法。
 
-默认打包 `ai、gt`，其余 V2 扩展通过 `.tpm search`、
-`.tpm install 插件名` 按需安装，使用 `.tpm remove 插件名` 卸载并保留数据。
+安装其他插件时，把名称换成搜索结果中的名称，例如 `.tpm install dig ip ids`。
+这些命令在 Telegram 发送；服务器终端用于部署和管理主程序。
+
+| 用途 | Telegram 命令 |
+| --- | --- |
+| 一次安装多个插件 | `.tpm install ai gt dig` |
+| 更新全部已安装插件 | `.tpm update all` |
+| 卸载插件并保留配置 | `.tpm remove dig` |
+| 查看插件帮助 | `.help 插件名` |
+
 V2 入口为各插件的 `v2.ts`；其余源码仍待迁移，不代表可以直接安装到 V2。
 
 ## 插件源码目录
