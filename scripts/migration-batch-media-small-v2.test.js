@@ -30,7 +30,7 @@ function base(overrides = {}) {
   const edits = [], sends = [], controller = new AbortController();
   const storage = overrides.storage ?? memoryStorage();
   const client = overrides.client ?? {};
-  const context = {signal: controller.signal, tasks: {}, commands: {parse() {}}, jobs: {}, services: {}, storage,
+  const context = {signal: controller.signal, tasks: {}, commands: {parse() {}}, jobs: {}, services: overrides.services ?? {}, storage,
     files: overrides.files ?? tempFiles(), log: {info() {}, error() {}},
     http: overrides.http ?? {async json() { throw new Error('offline'); }, async withResponse() { throw new Error('offline'); }},
     processes: overrides.processes ?? {async run() { throw new Error('offline'); }},
@@ -79,13 +79,39 @@ test('convert streams Telegram media through bounded FFmpeg and sends MP3', asyn
   assert.equal(sent.length, 1); assert.equal(sent[0].options.replyTo, 9); assert.equal(sent[0].options.file.endsWith('.mp3'), true);
 });
 
-test('convert keeps API keys in saved messages/settings and does not retry helper exit failures', async () => {
+test('convert AI mode uses the unified search service for metadata', async () => {
+  const serviceCalls = [], sent = [];
+  const replyRaw = {media: {}, document: {attributes: [{fileName: '现场版.mp4'}]}};
+  const client = {async downloadMedia(_media, options) { await fs.writeFile(options.outputFile, Buffer.alloc(1024)); },
+    async sendFile(peer, options) { sent.push({peer, options}); }};
+  const processes = {async run(command, args) {
+    if (command.includes('ffprobe')) return {stdout: Buffer.from('8.2'), stderr: Buffer.alloc(0), exitCode: 0};
+    await fs.writeFile(args.at(-1), Buffer.from('mp3')); return {stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 0};
+  }};
+  const services = {available(plugin, service) { return plugin === 'ai' && service === 'search'; },
+    async call(plugin, service, input) { serviceCalls.push({plugin, service, input});
+      return {text: '歌曲名：稻香\n歌手：周杰伦\n专辑：我很忙'}; }};
+  const f = base({client, processes, services, reply: {id: 9, raw: replyRaw},
+    http: {async json() { return {resultCount: 0, results: []}; }, async withResponse() { throw new Error('unexpected download'); }}});
+  const subcommand = factories.convert().commands.convert.subcommands.u;
+  await subcommand.handle({command: 'convert', prefix: '.', args: ['稻香'], subcommands: ['u'],
+    message: {id: 1, chatId: '10', outgoing: true, text: '.convert u 稻香', replyToId: 9,
+      raw: {peerId: 10, async delete() {}}}}, f.context);
+  assert.equal(serviceCalls.length, 1);
+  assert.deepEqual({plugin: serviceCalls[0].plugin, service: serviceCalls[0].service}, {plugin: 'ai', service: 'search'});
+  assert.match(serviceCalls[0].input.text, /稻香/);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].options.attributes[0].title, '稻香');
+  assert.equal(sent[0].options.attributes[0].performer, '周杰伦');
+});
+
+test('convert delegates AI provider settings and does not retry helper exit failures', async () => {
   const f = base();
   await invoke(factories.convert, 'convert', '.convert apikey private-key', f);
-  assert.match(f.edits.at(-1).text, /收藏夹/);
+  assert.match(f.edits.at(-1).text, /ai 插件统一管理/);
   await invoke(factories.convert, 'convert', '.convert apikey private-key', f, {saved: true});
   assert.equal(f.edits.some(entry => entry.text.includes('private-key')), false);
-  const loaded = f.storage.values.get('config.json'); assert.equal(loaded.apiKey, 'private-key');
+  assert.equal(f.storage.values.has('config.json'), false);
   const source = await fs.readFile(path.resolve(__dirname, '../convert/v2.ts'), 'utf8');
   assert.match(source, /code !== "SPAWN_FAILED"\) throw error/);
 });
@@ -117,7 +143,7 @@ test('eatgif validates and renders the remote catalog without loading native med
 
 test('all four artifacts load, unload and reload through the real PluginHost', async () => {
   const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-host-media-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-host-media-')));
   const unavailable = async () => { throw new Error('offline'); };
   const host = new PluginHost({storageRoot: path.join(root, 'assets'), tempRoot: path.join(root, 'temp'), logger: {info() {}, error() {}},
     telegram: {edit: unavailable, reply: unavailable, invoke: unavailable, getReply: unavailable, withClient: unavailable},

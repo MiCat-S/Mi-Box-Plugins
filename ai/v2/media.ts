@@ -9,7 +9,7 @@ import {
 import {escape} from "./text";
 
 export interface MediaInput {data: Buffer; mimeType: string}
-interface MediaResult {data?: Buffer; url?: string; mimeType: string}
+export interface MediaResult {data?: Buffer; url?: string; mimeType: string; revisedPrompt?: string}
 
 function endpoint(base: string, relative: string): string {
   return new URL(relative, base.endsWith("/") ? base : `${base}/`).toString();
@@ -52,6 +52,86 @@ async function raw(ctx: PluginContext, provider: ProviderConfig, url: string, bo
   return result.text!;
 }
 
+type CodexResult = {image?: string; revisedPrompt?: string; status?: string; id?: string};
+function visitCodex(value: unknown, result: CodexResult): void {
+  if (!value || typeof value !== "object") return;
+  const item = value as Record<string, unknown>;
+  if (typeof item.partial_image_b64 === "string") result.image = item.partial_image_b64;
+  if (typeof item.revised_prompt === "string") result.revisedPrompt = item.revised_prompt;
+  if (typeof item.status === "string") result.status = item.status;
+  if (typeof item.id === "string" && item.id.startsWith("resp_")) result.id = item.id;
+  for (const child of Array.isArray(value) ? value : Object.values(item)) visitCodex(child, result);
+}
+async function codexStream(response: Response, signal: AbortSignal): Promise<CodexResult> {
+  if (!response.ok) throw new ProviderError("HTTP_STATUS", response.status);
+  if (!response.body) throw new ProviderError("INVALID_RESPONSE");
+  const reader = response.body.getReader(); const decoder = new TextDecoder();
+  let pending = "", total = 0, done = false; const result: CodexResult = {};
+  const consume = (block: string): void => {
+    for (const line of block.split(/\r?\n/)) {
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim(); if (!data || data === "[DONE]") continue;
+      try { visitCodex(JSON.parse(data), result); } catch { /* ignore malformed progress frames */ }
+    }
+  };
+  try {
+    for (;;) {
+      signal.throwIfAborted(); const part = await reader.read(); signal.throwIfAborted();
+      if (part.done) {done = true; break;}
+      total += part.value.byteLength; if (total > 48 * 1024 * 1024) throw new ProviderError("RESPONSE_TOO_LARGE");
+      pending += decoder.decode(part.value, {stream: true});
+      let boundary = /\r?\n\r?\n/.exec(pending);
+      while (boundary?.index !== undefined) {
+        consume(pending.slice(0, boundary.index)); pending = pending.slice(boundary.index + boundary[0].length);
+        boundary = /\r?\n\r?\n/.exec(pending);
+      }
+    }
+    pending += decoder.decode(); if (pending.trim()) consume(pending);
+    return result;
+  } finally { try {if (!done) await reader.cancel();} finally {reader.releaseLock();} }
+}
+const delay = (ms: number, signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
+  if (signal.aborted) {reject(signal.reason); return;}
+  const timer = setTimeout(done, ms);
+  function done(): void { signal.removeEventListener("abort", abort); resolve(); }
+  function abort(): void { clearTimeout(timer); reject(signal.reason); }
+  signal.addEventListener("abort", abort, {once: true});
+});
+function codexEndpoint(value: string): string {
+  const url = new URL(value);
+  if (url.pathname === "/" || !url.pathname) url.pathname = "/backend-api/codex/responses";
+  url.search = ""; url.hash = ""; return url.toString();
+}
+async function codexImages(ctx: PluginContext, cfg: Config, provider: ProviderConfig, model: string, prompt: string,
+  input: MediaInput | undefined, signal: AbortSignal): Promise<MediaResult[]> {
+  const endpointUrl = codexEndpoint(provider.url);
+  const content = input ? [{type: "input_text", text: prompt},
+    {type: "input_image", image_url: `data:${input.mimeType};base64,${input.data.toString("base64")}`}] : prompt;
+  const body = {model, instructions: "Generate the requested image.", input: [{role: "user", content}], store: false,
+    tools: [{type: "image_generation"}], reasoning: {effort: "low"}, stream: true};
+  const headers = {Authorization: `Bearer ${provider.key}`, "Content-Type": "application/json"};
+  let result = await ctx.http.withResponse(endpointUrl, {method: "POST", redirect: "manual", credentials: "omit", headers,
+    body: JSON.stringify(body)}, codexStream, {timeoutMs: cfg.timeout * 1000, signal, redirects: {allowedHosts: [new URL(endpointUrl).hostname], maxRedirects: 0}});
+  const deadline = Date.now() + cfg.timeout * 1000;
+  while (!result.image && result.id && result.status === "in_progress" && Date.now() < deadline) {
+    await delay(Math.min(20_000, Math.max(1, deadline - Date.now())), signal);
+    if (Date.now() >= deadline) break;
+    const pollUrl = `${endpointUrl}/${encodeURIComponent(result.id)}`;
+    const response = await ctx.http.withResponse(pollUrl, {method: "GET", redirect: "manual", credentials: "omit", headers},
+      async (current, active) => {
+        if (!current.ok) throw new ProviderError("HTTP_STATUS", current.status);
+        return readBody(current, active, 48 * 1024 * 1024);
+      }, {timeoutMs: Math.max(1000, Math.min(60_000, deadline - Date.now())), signal,
+        redirects: {allowedHosts: [new URL(endpointUrl).hostname], maxRedirects: 0}});
+    const next: CodexResult = {}; visitCodex(JSON.parse(response), next);
+    result = {...result, ...next};
+  }
+  if (!result.image) throw new ProviderError(result.status === "in_progress" ? "TIMEOUT" : "EMPTY_OUTPUT");
+  const data = Buffer.from(result.image, "base64");
+  if (!data.length || data.length > 32 * 1024 * 1024) throw new ProviderError("RESPONSE_TOO_LARGE");
+  return [{data, mimeType: "image/png", ...(result.revisedPrompt ? {revisedPrompt: result.revisedPrompt} : {})}];
+}
+
 function selected(cfg: Config, mode: "Image" | "Video"): {provider: ProviderConfig; model: string} {
   const tag = cfg[`current${mode}Tag`]; const model = cfg[`current${mode}Model`];
   const provider = cfg.configs[tag];
@@ -91,6 +171,7 @@ export async function messageMedia(ctx: PluginContext, message?: MessageEnvelope
 export async function generateImages(ctx: PluginContext, cfg: Config, prompt: string, input: MediaInput | undefined, signal: AbortSignal): Promise<MediaResult[]> {
   const {provider, model} = selected(cfg, "Image");
   const type = resolveProviderType(provider);
+  if (type === "codex") return codexImages(ctx, cfg, provider, model, prompt, input, signal);
   if (type === "gemini" || type === "local-cliproxy" && model.toLowerCase().includes("gemini")) {
     const base = geminiBase(provider.url);
     if (model.toLowerCase().includes("imagen") && !input) {
@@ -103,7 +184,8 @@ export async function generateImages(ctx: PluginContext, cfg: Config, prompt: st
     }
     const parts: any[] = [{text: prompt}];
     if (input) parts.push({inlineData: {data: input.data.toString("base64"), mimeType: input.mimeType}});
-    const payload = await json(ctx, provider, endpoint(base, `models/${model}:generateContent`), {contents: [{parts}]}, signal, cfg.timeout);
+    const payload = await json(ctx, provider, endpoint(base, `models/${model}:generateContent`),
+      {contents: [{parts}], generationConfig: {responseModalities: ["TEXT", "IMAGE"]}}, signal, cfg.timeout);
     const root = payload.response ?? payload.data ?? payload;
     const result = (root.candidates ?? []).flatMap((candidate: any) => candidate?.content?.parts ?? []).flatMap((part: any) => {
       const inline = part?.inlineData ?? part?.inline_data;
@@ -160,6 +242,16 @@ async function downloadBinary(ctx: PluginContext, item: MediaResult, signal: Abo
     if (!total) throw new ProviderError("EMPTY_OUTPUT");
     return {data: Buffer.concat(chunks, total), mimeType: declared || item.mimeType};
   }, {signal, timeoutMs: 120_000});
+}
+
+export async function materializeMedia(ctx: PluginContext, items: readonly MediaResult[], signal: AbortSignal): Promise<MediaResult[]> {
+  const output: MediaResult[] = [];
+  for (const item of items.slice(0, 4)) {
+    signal.throwIfAborted();
+    const value = await downloadBinary(ctx, item, signal);
+    output.push({...item, data: value.data, mimeType: value.mimeType, url: undefined});
+  }
+  return output;
 }
 
 export async function sendMedia(ctx: PluginContext, message: MessageEnvelope, items: readonly MediaResult[], prompt: string,

@@ -120,27 +120,17 @@ test('autochangename exposes the declared tree and keeps unknown/case behaviour'
   assert.equal(acnState.users['1'].timezone_format, 'GMT');
 });
 
-test('aitc subcommands keep the original config error catch and exact missing-value messages', async t => {
+test('aitc redirects provider configuration to ai while keeping prompt controls local', async t => {
   const f = await fixture(t, 'aitc');
-  f.edits.length = 0;
-  assert.equal(await f.send('.aitc url not-a-url'), true);
-  assert.match(f.visible(), /AITC 调用失败，请检查配置和网络/);
-  assert.ok(f.errors.some(entry => entry.event === 'aitc_failed'), 'invalid URL is logged as aitc_failed');
-  f.edits.length = 0;
-  assert.equal(await f.send('.aitc model'), true);
-  assert.equal(f.visible(), '请提供模型名称');
+  for (const input of ['.aitc url not-a-url', '.aitc model', '.aitc key', '.aitc model gpt-4o-mini']) {
+    f.edits.length = 0;
+    assert.equal(await f.send(input), true);
+    assert.match(f.visible(), /ai 插件统一管理/);
+  }
+  assert.equal(f.errors.some(entry => entry.event === 'aitc_failed'), false);
   f.edits.length = 0;
   assert.equal(await f.send('.aitc prompt'), true);
   assert.equal(f.visible(), '请提供 Prompt 文本');
-  f.edits.length = 0;
-  assert.equal(await f.send('.aitc key'), true);
-  assert.equal(f.visible(), '涉及 API Key 的配置仅限在收藏夹中使用');
-  f.edits.length = 0;
-  assert.equal(await f.send('.aitc key', {saved: true, outgoing: false}), true);
-  assert.equal(f.visible(), '请提供 API Key');
-  f.edits.length = 0;
-  assert.equal(await f.send('.aitc model gpt-4o-mini'), true);
-  assert.equal(f.visible(), '模型已更新');
   f.edits.length = 0;
   assert.equal(await f.send('.aitc prompt 翻译为英文'), true);
   assert.equal(f.visible(), '默认 Prompt 已更新');
@@ -209,7 +199,7 @@ test('migrated extension help keeps the original detailed anchors', async t => {
     'aban': ['基本群仅支持踢出'],
     'botmzt': ['剧透'],
     'aff': ['最多保存 32 条'],
-    'aitc': ['收藏夹'],
+    'aitc': ['统一管理'],
     'autodelcmd': ['规则冲突'],
     'autorepeat': ['每日限制'],
     'banana': ['256KB 至 25MB'],

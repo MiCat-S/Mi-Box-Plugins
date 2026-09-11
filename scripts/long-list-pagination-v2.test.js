@@ -24,6 +24,13 @@ async function fixture(t, id, {files = {}, http, replyFails = false} = {}) {
   for (const [name, value] of Object.entries(files)) {
     await fs.writeFile(path.join(root, id, name), JSON.stringify(value));
   }
+  if (id === 'checkapi') {
+    await fs.mkdir(path.join(root, 'ai'));
+    await fs.writeFile(path.join(root, 'ai', 'config.json'), JSON.stringify({configs: {}, currentChatTag: '', currentChatModel: '',
+      currentChatReasoningEffort: 'auto', currentChatServiceTier: 'auto', currentSearchTag: '', currentSearchModel: '',
+      currentSearchReasoningEffort: 'auto', currentSearchServiceTier: 'auto', currentImageTag: '', currentImageModel: '',
+      currentVideoTag: '', currentVideoModel: '', prompt: '', timeout: 30}));
+  }
   const edits = [], replies = [];
   const host = new PluginHost({
     storageRoot: root, tempRoot: path.join(root, 'temp'), logger: {info() {}, error() {}},
@@ -37,6 +44,7 @@ async function fixture(t, id, {files = {}, http, replyFails = false} = {}) {
       return http(new URL(url), init);
     }},
   });
+  if (id === 'checkapi') await host.load(load('ai')());
   await host.load(load(id)());
   t.after(async () => {await host.shutdown(2000); await fs.rm(root, {recursive: true, force: true});});
   return {
@@ -84,7 +92,7 @@ test('checkapi paginates every model and reports the real total', async t => {
     files: {'keys-v2.json': {schemaVersion: 1, legacyImported: true,
       entries: [{name: 'test', key: 'k'.repeat(20), baseUrl: 'https://api.invalid', addedAt: 1}]}},
     http: async target => {
-      assert.equal(target.pathname, '/models');
+      assert.equal(target.pathname, '/v1/models');
       return Response.json({data: names.map(id => ({id}))});
     },
   });

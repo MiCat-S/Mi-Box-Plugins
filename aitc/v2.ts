@@ -1,13 +1,13 @@
 import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type CommandInvocation, type PluginContext} from "telebox/sdk";
 
-type Config = {apiKey: string; apiUrl: string; model: string; prompt: string; prompts: Record<string, string>; temperature: number;};
+type Config = {apiKey: string; apiUrl: string; model: string; prompt: string; prompts: Record<string, string>; temperature: number; aiMigrated?: boolean};
 const defaults: Config = {
   apiKey: "",
-  apiUrl: "https://api.openai.com",
-  model: "gpt-4o-mini",
+  apiUrl: "",
+  model: "",
   prompt: "Translate the user's Chinese text into natural colloquial English. Preserve meaning and tone. Output only the translation.",
   prompts: {},
-  temperature: 0.2,
+  temperature: 0.2, aiMigrated: true,
 };
 const RESERVED = new Set(["apikey", "key", "api", "url", "model", "prompt", "temp", "temperature", "info", "spn"]);
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
@@ -20,29 +20,21 @@ function endpoint(base: string): URL {
   value.search = ""; value.hash = "";
   return value;
 }
-async function responseJson(response: Response, signal: AbortSignal): Promise<unknown> {
-  if (!response.body) throw new Error("Empty response");
-  const reader = response.body.getReader();
-  const parts: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      signal.throwIfAborted();
-      const part = await reader.read();
-      if (part.done) break;
-      total += part.value.byteLength;
-      if (total > 1024 * 1024) throw new Error("Response too large");
-      parts.push(part.value);
-    }
-    const text = Buffer.concat(parts, total).toString("utf8");
-    let data: unknown;
-    try { data = JSON.parse(text); } catch { throw new Error("Invalid response"); }
-    if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
-    return data;
-  } finally {
-    await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
+async function migrateAi(context: PluginContext): Promise<void> {
+  const current = await store(context).read();
+  if (current.aiMigrated) return;
+  if (!current.apiKey) {
+    await store(context).update(value => ({...value, apiUrl: "", model: "", aiMigrated: true}));
+    return;
   }
+  if (!context.services.available("ai", "import_provider")) return;
+  let target: URL;
+  try { target = endpoint(current.apiUrl); } catch { return; }
+  if (!current.model.trim()) return;
+  target.pathname = target.pathname.replace(/\/chat\/completions$/, "");
+  await context.services.call("ai", "import_provider", {tag: "aitc", url: target.toString(), key: current.apiKey,
+    type: "openai-compatible", models: {chat: current.model}, select: ["chat"]}, context.signal);
+  await store(context).update(value => ({...value, apiKey: "", apiUrl: "", model: "", aiMigrated: true}));
 }
 function validateConfig(current: Config, patch: Record<string, unknown>): Config {
   const next: Config = {...current, prompts: {...current.prompts}};
@@ -91,7 +83,7 @@ export default function createAitc() {
         await edit(context, invocation, "AITC 调用失败，请检查配置和网络", false);
       }
     };
-  const setString = (field: "apiKey" | "apiUrl" | "model" | "prompt", missing: string, success: string) => async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+  const setString = (field: "prompt", missing: string, success: string) => async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
     const rest = invocation.args.join(" ").trim();
     if (!rest) { await edit(context, invocation, missing, false); return; }
     await store(context).update(current => validateConfig(current, {[field]: rest}));
@@ -112,29 +104,33 @@ export default function createAitc() {
     await edit(context, invocation, `Prompt「${escape(name)}」已保存`);
   };
   const info = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
+    await migrateAi(context);
     const config = await store(context).read();
     const names = Object.keys(config.prompts).sort();
-    await edit(context, invocation, `<b>AITC 配置</b>\nAPI：<code>${escape(config.apiUrl)}</code>\n模型：<code>${escape(config.model)}</code>\n温度：<code>${config.temperature}</code>\n默认 Prompt：${escape(config.prompt)}\n预设：${names.length ? names.map(name => `<code>${escape(name)}</code>`).join(" · ") : "未保存"}\nAPI Key：${config.apiKey ? "已配置" : "未配置"}`);
+    let selection = "请先安装并配置 ai 插件";
+    if (context.services.available("ai", "selection")) {
+      const selected = await context.services.call<{chat?: {tag?: string; model?: string}}>("ai", "selection", null, context.signal);
+      selection = selected.chat?.tag && selected.chat.model ? `${selected.chat.tag} / ${selected.chat.model}` : "请在 ai 插件中设置聊天模型";
+    }
+    await edit(context, invocation, `<b>AITC 配置</b>\nAI：<code>${escape(selection)}</code>\n温度：<code>${config.temperature}</code>\n默认 Prompt：${escape(config.prompt)}\n预设：${names.length ? names.map(name => `<code>${escape(name)}</code>`).join(" · ") : "未保存"}`);
   };
-  const key = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
-    if (!invocation.message.saved) { await edit(context, invocation, "涉及 API Key 的配置仅限在收藏夹中使用", false); return; }
-    return setString("apiKey", "请提供 API Key", "API Key 已更新")(invocation, context);
-  };
+  const centralConfig = async (invocation: CommandInvocation, context: PluginContext): Promise<void> =>
+    edit(context, invocation, `供应商与模型由 ai 插件统一管理，请使用 ${invocation.prefix}ai config 和 ${invocation.prefix}ai model chat。`, false);
   const aitc: CommandDefinition = {
     description: "AI 转写与 Prompt 预设管理",
     helpArgs: ["help", "h"],
     args: "[预设] [文本]",
     arguments: [{name: "预设", description: "已保存的 Prompt 预设名；省略时使用默认 Prompt"}, {name: "文本", description: "要转写的文本；也可回复一条文字消息"}],
-    examples: [{args: "文本"}, {args: "预设 文本"}, {args: "key <API Key>"}, {args: "info"}],
+    examples: [{args: "文本"}, {args: "预设 文本"}, {args: "info"}],
     help: [
-      {heading: "说明：", body: "自定义 API 地址需兼容 OpenAI SDK，默认使用 OpenAI；默认模型 gpt-4o-mini，默认温度 0.2，默认 Prompt 转写为英文。\n检索 Prompt 预设名后跟文本即使用该预设，否则使用默认 Prompt。"},
-      {heading: "密钥配置：", body: "涉及 API Key、Token 或其他登录凭据的设置命令请在收藏夹中执行。"},
+      {heading: "说明：", body: "使用 ai 插件当前聊天供应商与模型，温度默认 0.2，默认 Prompt 转写为英文。检索 Prompt 预设名后跟文本即使用该预设，否则使用默认 Prompt。"},
+      {heading: "AI 配置：", body: "先安装 ai 插件，再用 <code>{prefix}ai config</code> 与 <code>{prefix}ai model chat</code> 统一管理供应商、密钥和模型。"},
     ],
     subcommandsCaseSensitive: false,
     subcommands: {
-      key: {aliases: ["apikey", "_set_key"], description: "设置 API Key（仅收藏夹）", args: "API_KEY", examples: [{args: "key <API Key>"}], handle: guard(key)},
-      url: {aliases: ["api", "_set_url", "_set_api"], description: "设置 API 地址", args: "地址", examples: [{args: "url https://api.openai.com"}], handle: guard(setString("apiUrl", "请提供 API 地址", "API 地址已更新"))},
-      model: {aliases: ["_set_model"], description: "设置模型名称", args: "模型名", examples: [{args: "model gpt-4o-mini"}], handle: guard(setString("model", "请提供模型名称", "模型已更新"))},
+      key: {aliases: ["apikey", "_set_key"], description: "查看统一 AI 配置方式", args: "", handle: guard(centralConfig)},
+      url: {aliases: ["api", "_set_url", "_set_api"], description: "查看统一 AI 配置方式", args: "", handle: guard(centralConfig)},
+      model: {aliases: ["_set_model"], description: "查看统一 AI 配置方式", args: "", handle: guard(centralConfig)},
       prompt: {aliases: ["_set_prompt"], description: "设置默认 Prompt", args: "Prompt 文本", examples: [{args: "prompt 翻译为英文"}], handle: guard(setString("prompt", "请提供 Prompt 文本", "默认 Prompt 已更新"))},
       temp: {aliases: ["temperature", "_set_temperature"], description: "设置模型温度", args: "0-2", examples: [{args: "temp 0.2"}], handle: guard(setTemperature)},
       spn: {description: "保存或更新 Prompt 预设", args: "名称 Prompt", arguments: [{name: "名称", required: true, description: "字母、数字、下划线或连字符，1-32 位"}, {name: "Prompt", required: true, description: "预设内容"}], examples: [{args: "spn en Translate to English"}], handle: guard(setPreset)},
@@ -155,14 +151,10 @@ export default function createAitc() {
         if (!input && invocation.message.replyToId !== undefined) input = (await context.telegram.getReply(invocation.message))?.text.trim() ?? "";
         if (!input) { await edit(context, invocation, "请提供文本或回复一条文字消息", false); return; }
         if (input.length > 50_000) { await edit(context, invocation, "输入文本过长", false); return; }
-        if (!config.apiKey) { await edit(context, invocation, "未配置 API Key，请先在收藏夹中使用 aitc key 设置", false); return; }
+        await migrateAi(context);
+        if (!context.services.available("ai", "chat")) { await edit(context, invocation, "请先安装并配置 ai 插件", false); return; }
         await edit(context, invocation, "正在请求…", false);
-        const target=endpoint(config.apiUrl);const data = await context.http.withResponse(target, {
-          method: "POST", redirect: "manual", credentials: "omit",
-          headers: {Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json"},
-          body: JSON.stringify({model: config.model, messages: [{role: "system", content: prompt}, {role: "user", content: input}], temperature: config.temperature}),
-        }, responseJson, {timeoutMs: 30_000, signal: context.signal, redirects:{allowedHosts:[new URL(target).hostname],maxRedirects:2}});
-        const content = (data as any)?.choices?.[0]?.message?.content;
+        const content = await context.services.call<string>("ai", "chat", {text: input, systemPrompt: prompt, temperature: config.temperature}, context.signal);
         if (typeof content !== "string" || !content.trim()) throw new Error("Empty output");
         await edit(context, invocation, content.trim(), false);
       } catch {
@@ -172,21 +164,19 @@ export default function createAitc() {
       }
     },
   };
-  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "aitc", description: "使用自定义 Prompt 和 OpenAI 兼容接口转写文本",
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "aitc", description: "使用统一 AI 服务和自定义 Prompt 转写文本",
     renderHelp: prefix => renderCommandHelp("aitc", aitc, {prefix, title: "自定义 Prompt 的 AI 转写插件："}),
     commands: {aitc},
     settings: context => ({
-      id: "aitc", title: "AITC", description: "OpenAI 兼容转写配置", category: "插件配置", icon: "✨",
+      id: "aitc", title: "AITC", description: "Prompt 与转写参数", category: "插件配置", icon: "✨",
       getSchema: () => [
-        {key: "apiKey", label: "API Key", type: "password", secret: true},
-        {key: "apiUrl", label: "API 地址", type: "string", required: true},
-        {key: "model", label: "模型", type: "string", required: true},
         {key: "temperature", label: "温度", type: "number", min: 0, max: 2},
         {key: "prompt", label: "默认 Prompt", type: "textarea", required: true},
         {key: "prompts", label: "Prompt 预设", type: "prompt-map"},
       ],
-      getValues: () => store(context).read(),
+      async getValues() { const value = await store(context).read(); return {temperature:value.temperature, prompt:value.prompt, prompts:value.prompts}; },
       setValues: async patch => { await store(context).update(current => validateConfig(current, patch)); },
     }),
+    setup: migrateAi,
   });
 }

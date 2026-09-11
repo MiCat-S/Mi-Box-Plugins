@@ -63,13 +63,13 @@ const HELP_ANCHORS = {
   bs: ['首次使用请先', 'toggle mode', '话题ID'],
   bulk_delete: ['1–99', '删除他人消息开关默认开启', '管理员删除消息权限'],
   calc: ['3+7', '8/2+5', '括号、小数'],
-  checkapi: ['20 秒', '1 MiB', 'gpt-4o-mini', '100 tokens'],
+  checkapi: ['统一配置', 'ai 配置标签', '100 tokens'],
   checkin: ['时间范围', 'Asia/Shanghai', '跨天'],
   clean: ['跳过机器人', '权限要求', '封禁用户权限'],
   clean_member: ['24 小时缓存', 'chat:-100', 'limit:', 'search'],
   clear_sticker: ['默认 2000', '群组删除消息权限', 'cs'],
-  codex_image: ['20 MiB', '32 MiB', '600000', 'gpt-5.4', 'token'],
-  convert: ['元数据嵌入', '视频原名', 'apikey', 'convert u'],
+  codex_image: ['20 MiB', '32 MiB', '600000', 'ai config', 'codex'],
+  convert: ['元数据嵌入', '视频原名', 'AI 配置', 'convert u'],
   copy_sticker_set: ['最多允许 120 张', 'limit=数量', 'css'],
   cosplay: ['同一套图', '原套图链接', '最大 10'],
   crazy4: ['疯狂星期四'],
@@ -314,20 +314,20 @@ test('bs manages targets and keeps numeric fallback', async t => {
   assert.match(f.visible(), /请回复需要保送的消息/);
 });
 
-test('checkapi keeps connection management errors and help', async t => {
+test('checkapi directs connection management to ai when the central service is unavailable', async t => {
   const f = await fixture(t, 'checkapi');
   f.edits.length = 0;
   await f.send('.checkapi');
   assert.match(f.visible(), /API 检测工具/);
   f.edits.length = 0;
   await f.send('.checkapi bogus');
-  assert.match(f.visible(), /请提供已保存名称/);
+  assert.match(f.visible(), /API 检测失败/);
   f.edits.length = 0;
   await f.send('.checkapi save demo https://api.example.com/v1 sk-x');
-  assert.match(f.visible(), /仅限收藏夹/);
+  assert.match(f.visible(), /ai 插件统一管理/);
   f.edits.length = 0;
   await f.send('.checkapi list');
-  assert.match(f.visible(), /尚未保存 API/);
+  assert.match(f.visible(), /API 检测失败/);
 });
 
 test('checkin handles settings, reset and empty target list', async t => {
@@ -348,17 +348,17 @@ test('checkin handles settings, reset and empty target list', async t => {
   assert.equal(state.runTime, '08:30');
 });
 
-test('codex_image enforces token storage location and reports missing tokens', async t => {
+test('codex_image directs credentials and models to ai', async t => {
   const f = await fixture(t, 'codex_image');
   f.edits.length = 0;
   await f.send('.cximg hello');
-  assert.match(f.visible(), /未配置 Codex Access Token/);
+  assert.match(f.visible(), /ai 插件的图片模型/);
   f.edits.length = 0;
   await f.send('.cximg token abc');
-  assert.match(f.visible(), /仅允许在收藏夹/);
+  assert.match(f.visible(), /ai 插件统一管理/);
   f.edits.length = 0;
   await f.send('.cximg token abc', {saved: true, outgoing: false});
-  assert.match(f.visible(), /已更新/);
+  assert.match(f.visible(), /ai 插件统一管理/);
 });
 
 test('convert keeps reply requirement, key location and clear output', async t => {
@@ -368,7 +368,7 @@ test('convert keeps reply requirement, key location and clear output', async t =
   assert.match(f.visible(), /视频转音频|MP3/);
   f.edits.length = 0;
   await f.send('.convert apikey');
-  assert.match(f.visible(), /仅在收藏夹/);
+  assert.match(f.visible(), /ai 插件统一管理/);
   f.edits.length = 0;
   await f.send('.convert clear');
   assert.match(f.visible(), /临时文件/);
@@ -588,13 +588,13 @@ test('bs missing IDs and checkapi unknown-action fallback match the baseline', a
   }, withClient: async () => {throw new Error('no client needed');}});
   checkapi.edits.length = 0;
   await checkapi.send('.checkapi bogus https://api.example.com/v1 key');
-  assert.match(checkapi.visible(), /未知子命令/);
+  assert.match(checkapi.visible(), /API 检测失败/);
   checkapi.edits.length = 0;
   await checkapi.send('.checkapi bogus demo');
-  assert.match(checkapi.visible(), /未知子命令/);
+  assert.match(checkapi.visible(), /API 检测失败/);
   checkapi.edits.length = 0;
   await checkapi.send('.checkapi bogus');
-  assert.match(checkapi.visible(), /请提供已保存名称/);
+  assert.match(checkapi.visible(), /API 检测失败/);
 });
 
 test('checkin and diss listeners honor the fixed filters at the real host boundary', async t => {

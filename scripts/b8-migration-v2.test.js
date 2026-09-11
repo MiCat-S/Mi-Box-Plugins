@@ -10,7 +10,7 @@ const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 const {createHelp} = require(path.join(core, 'dist/v2/builtins/help.js'));
 const {HTMLParser} = require(path.join(core, 'node_modules/teleproto/extensions/html.js'));
 const keys = {"sum": ["sum"], "sure": ["sure"], "t": ["t", "ts", "tk"], "teletype": ["teletype"], "tmp_admin": ["tmp_admin"], "trace": ["trace"], "tts": ["tts"], "uai": ["uai"], "weather": ["weather"], "whois": ["whois"], "xmsl": ["xmsl", "xm"], "yinglish": ["yinglish"], "yvlu": ["yvlu"], "zhijiao": ["zhijiao"], "zpr": ["zpr"]};
-const paths = {"sum": ["add", "list", "run", "del", "disable", "enable", "config", "config list", "config add", "config del", "config set", "config set default", "config set preview", "config set preview on", "config set preview off", "config set spoiler", "config set spoiler on", "config set spoiler off", "config set reasoning", "config set service", "config set prompt", "config set prompt show", "config set prompt reset"], "sure": ["user", "user add", "user del", "chat", "chat add", "chat del", "msg", "msg add", "ls", "list"], "t": ["fm"], "teletype": ["on", "off", "status"], "tmp_admin": ["add", "set", "rm", "remove", "del", "ls", "list"], "trace": ["kw", "kw add", "kw del", "status", "clean", "reset", "log", "big"], "tts": ["config", "voice", "voices", "style", "rate", "list"], "uai": ["zj", "fx", "add", "set", "del", "model", "list", "collapse", "collapse on", "collapse off", "prompt", "prompt add", "prompt del", "prompt list"], "whois": ["history", "clear", "batch"], "xmsl": ["show", "set", "set mode", "set key", "set url", "set model"], "yvlu": ["r", "f", "fr", "u", "ur", "webp", "image", "png", "stories", "s", "config", "config sticker", "config stickerset", "config set"], "zpr": ["proxy"]};
+const paths = {"sum": ["add", "list", "run", "del", "disable", "enable", "config", "config list", "config add", "config del", "config set", "config set default", "config set preview", "config set preview on", "config set preview off", "config set spoiler", "config set spoiler on", "config set spoiler off", "config set reasoning", "config set service", "config set prompt", "config set prompt show", "config set prompt reset"], "sure": ["user", "user add", "user del", "chat", "chat add", "chat del", "msg", "msg add", "ls", "list"], "t": ["fm"], "teletype": ["on", "off", "status"], "tmp_admin": ["add", "set", "rm", "remove", "del", "ls", "list"], "trace": ["kw", "kw add", "kw del", "status", "clean", "reset", "log", "big"], "tts": ["config", "voice", "voices", "style", "rate", "list"], "uai": ["zj", "fx", "add", "set", "del", "model", "list", "collapse", "collapse on", "collapse off", "prompt", "prompt add", "prompt del", "prompt list"], "whois": ["history", "clear", "batch"], "xmsl": ["show", "set"], "yvlu": ["r", "f", "fr", "u", "ur", "webp", "image", "png", "stories", "s", "config", "config sticker", "config stickerset", "config set"], "zpr": ["proxy"]};
 function load(id) {
   const {artifactDir} = buildPlugin({id, packageRoot: path.resolve(__dirname, '..', id), entry: 'v2.ts'});
   return require(path.join(artifactDir, 'index.cjs')).default();
@@ -46,6 +46,11 @@ async function fixture(t, id, options = {}) {
       async withClient(operation, signal) { calls.push('withClient'); return operation(client, signal); },
     }});
   t.after(async () => { assert.equal((await host.shutdown(2000)).completed, true); await fs.rm(root, {recursive: true, force: true}); });
+  if (options.ai) {
+    await fs.mkdir(path.join(root, 'ai'), {recursive: true});
+    await fs.writeFile(path.join(root, 'ai', 'config.json'), JSON.stringify(options.ai));
+    await host.load(load('ai'));
+  }
   await host.load(load(id)); await host.load(createHelp(host));
   const send = (text, extra = {}) => host.dispatchPrimary({id: 1, chatId: '-10010', chatType: 'supergroup', senderId: '1', outgoing: true, text, ...extra});
   return {host, root, edits, calls, logs, send, visible: () => edits.map(plain).join('\n')};
@@ -76,17 +81,17 @@ for (const [id, commands] of Object.entries(keys)) test(`B8 ${id} preserves entr
 
 test('B8 help preserves complete workflows, examples, prerequisites and limits', () => {
   const anchors = {
-    sum: ['!sum 100 --provider myai', '!sum config add myai', '!sum config set myai key', '!sum config set prompt show', '!sum config set spoiler on', '10–500', '整除 60', 'Responses', '收藏夹'],
+    sum: ['!sum 100 --provider main', '!sum config list', '!sum config set prompt show', '!sum config set spoiler on', '10–500', '整除 60', 'ai 插件统一管理', '收藏夹'],
     sure: ['!sure user add', '!sure chat del', '!sure msg add hello', '第一个词', '整条消息', '仅接受纯数字'],
     t: ['Fish Audio', 'FFmpeg', '5000', '!ts 角色名 角色ID', '!tk APIKey', '角色发现页', '四个及以上'],
     teletype: ['!teletype Hello World!', '!teletype on', '!teletype off', '4096', '80', '2–100'],
     tmp_admin: ['!tmp_admin add @username 60', '!tmp_admin rm', '525600', '默认 30', '1 分钟后重试一次', '已有到期任务继续执行', '权限或头衔变化'],
     trace: ['!trace kw add 开心 👍🥰', '!trace kw del 开心', '10 秒', 'Premium', '标准表情', '默认 true'],
     tts: ['!tts config YOUR_KEY eastus', '!tts voices all', '!tts style clear', 'cheerful', '0.5–2.0', '3000', '64 MiB', 'XiaoxiaoNeural'],
-    uai: ['!uai zj 50', '!uai fx 2h', '!uai prompt add brief', '当天', '7 天', '500 条', '100000', '3000', '收藏夹'],
+    uai: ['!uai zj 50', '!uai fx 2h', '!uai prompt add 名称 内容', '当天', '7 天', '500 条', '100000', '3000', 'ai 插件统一管理'],
     weather: ['Open-Meteo', 'New York', '北京', 'beijing', '东京', '日出日落', '80 字符'],
     whois: ['namebeta.com', '24 小时', '10 个', '临近到期', '!whois batch google.com github.com'],
-    xmsl: ['!xmsl set key', '!xm', 'rlottie-python', 'FFmpeg', '20 MiB', '50000', '/v1beta'],
+    xmsl: ['!xmsl set', '!xmsl show', '!xm', 'rlottie-python', 'FFmpeg', '20 MiB', '50000', 'ai 插件统一管理'],
     yinglish: ['!yinglish 你好世界', '4000', '随机', '回复'],
     yvlu: ['!yvlu r image 3', '!yvlu fr', '!yvlu ur', '部分引用', '格式实体', '5 条', '720×1280', 'stickerset'],
     zhijiao: ['三次', '系统加密随机数', '廿七句'], zpr: ['Lolicon', '1–10', '25 MiB', 'r18 2', 'i.pixiv.nl', '默认 i.pximg.net'],
@@ -100,7 +105,7 @@ test('B8 help preserves complete workflows, examples, prerequisites and limits',
 });
 const state = (f, file) => fs.readFile(path.join(f.root, file), 'utf8').then(JSON.parse);
 
-test('B8 sum task and provider lifecycle persists through the real JSON contract', async t => {
+test('B8 sum task and display settings persist while provider commands redirect to ai', async t => {
   const f = await fixture(t, 'sum');
   const data = () => state(f, 'sum/database.json');
   await f.send('!sum ADD here 2h 100');
@@ -109,14 +114,14 @@ test('B8 sum task and provider lifecycle persists through the real JSON contract
   await f.send('!sum ENABLE 1'); assert.equal((await data()).tasks[0].disabled, false);
   await f.send('!sum config add myai https://api.example.test secret gpt-4o'); assert.deepEqual((await data()).aiConfig.providers, {});
   await f.send('!sum config add myai https://api.example.test secret gpt-4o', {saved: true});
-  assert.equal((await data()).aiConfig.default_provider, 'myai');
-  await f.send('!sum config set myai model sample model'); assert.equal((await data()).aiConfig.providers.myai.model, 'sample model');
+  assert.equal((await data()).aiConfig.default_provider, undefined); assert.match(f.visible(), /ai 插件统一管理/);
+  await f.send('!sum config set myai model sample model'); assert.deepEqual((await data()).aiConfig.providers, {});
   await f.send('!sum config set prompt one two\nthree'); assert.equal((await data()).aiConfig.default_prompt, 'one two three');
   await f.send('!sum config set spoiler on'); assert.equal((await data()).aiConfig.default_spoiler, true);
-  await f.send('!sum config set reasoning high'); assert.equal((await data()).aiConfig.default_reasoning_effort, 'high');
-  await f.send('!sum config set service priority'); assert.equal((await data()).aiConfig.default_service_tier, 'priority');
+  await f.send('!sum config set reasoning high'); assert.equal((await data()).aiConfig.default_reasoning_effort, undefined);
+  await f.send('!sum config set service priority'); assert.equal((await data()).aiConfig.default_service_tier, undefined);
   const before = await data();
-  for (const args of ['config SET spoiler off', 'config set spoiler OFF', 'config set myai key changed', 'config set prompt key']) await f.send(`!sum ${args}`);
+  for (const args of ['config SET spoiler off', 'config set spoiler OFF', 'config set myai key changed']) await f.send(`!sum ${args}`);
   assert.deepEqual(await data(), before);
   await f.send('!sum config set prompt reset'); assert.notEqual((await data()).aiConfig.default_prompt, 'one two three');
   await f.send('!sum config del myai'); assert.deepEqual((await data()).aiConfig.providers, {}); assert.equal((await data()).aiConfig.default_provider, undefined);
@@ -164,7 +169,7 @@ test('B8 trace preserves keyword operands, reset semantics and incoming reaction
   await f.send('!trace reset'); assert.equal((await data()).config.big, true);
 });
 
-test('B8 Azure, Fish and XMSL leaves preserve credential boundaries and complete operands', async t => {
+test('B8 Azure and Fish retain credentials while XMSL delegates provider configuration', async t => {
   const azure = await fixture(t, 'tts');
   await azure.send('!tts CONFIG secret eastus'); assert.ok(azure.visible().includes('收藏夹'));
   await azure.send('!tts CONFIG secret EASTASIA', {saved: true});
@@ -176,23 +181,27 @@ test('B8 Azure, Fish and XMSL leaves preserve credential boundaries and complete
   await fish.send('!tk secret', {saved: true}); await fish.send('!ts Fixture role-id'); await fish.send('!t FM https://example.test/cover.jpg');
   data = await state(fish, 't/tts_data.json'); assert.equal(data.users['1'].apiKey, 'secret'); assert.equal(data.users['1'].defaultRole, 'Fixture'); assert.equal(data.covers.Fixture, 'https://example.test/cover.jpg');
   const xm = await fixture(t, 'xmsl');
-  await xm.send('!xm SET KEY hidden'); assert.equal((await state(xm, 'xmsl/config.json')).apiKey, '');
-  await xm.send('!xm SET KEY secret words', {saved: true}); await xm.send('!xm set model model with spaces'); await xm.send('!xm set mode GEMINI');
-  data = await state(xm, 'xmsl/config.json'); assert.equal(data.apiKey, 'secret words'); assert.equal(data.model, 'model with spaces'); assert.equal(data.apiMode, 'gemini');
+  for (const command of ['!xm SET KEY hidden', '!xm set model model with spaces', '!xm set mode GEMINI']) {
+    xm.edits.length = 0; await xm.send(command, {saved: true}); assert.match(xm.visible(), /ai 插件统一管理/);
+  }
+  await assert.rejects(state(xm, 'xmsl/config.json'), error => error?.code === 'ENOENT');
   assert.deepEqual([...azure.calls, ...fish.calls, ...xm.calls], []);
 });
 
 test('B8 UAI nested configuration and analysis retain prompts, limits and source data', async t => {
   const requests = [];
-  const f = await fixture(t, 'uai', {reply: {id: 2, text: 'hello', raw: {senderId: 42n, sender: {firstName: 'Fixture'}}},
+  const f = await fixture(t, 'uai', {ai: {configs: {main: {tag: 'main', url: 'https://api.example.test/v1', key: 'central-secret',
+      type: 'openai-compatible', stream: false, responses: false, models: {chat: 'central-model'}}},
+      currentChatTag: 'main', currentChatModel: 'central-model', currentChatReasoningEffort: 'auto', currentChatServiceTier: 'auto', timeout: 30},
+    reply: {id: 2, text: 'hello', raw: {senderId: 42n, sender: {firstName: 'Fixture'}}},
     client: {async *iterMessages() {yield {date: Math.floor(Date.now()/1000), message: 'fixture message', senderId: 42n};}},
     fetch: async (url, init) => {requests.push(JSON.parse(init.body)); return Response.json({choices: [{message: {content: 'done'}}]});}});
   const data = () => state(f, 'uai/v2-config.json');
-  await f.send('!uai add ai https://api.example.test secret openai', {saved: true});
+  await f.send('!uai add ai https://api.example.test secret openai', {saved: true}); assert.match(f.visible(), /ai 插件统一管理/);
   await f.send('!uai prompt add brief Use three words'); assert.equal((await data()).prompts.brief, 'Use three words');
   await f.send('!uai collapse off'); assert.equal((await data()).collapse, false);
   await f.send('!uai fx 1', {replyToId: 2, raw: {peerId: 'fixture-peer'}});
-  assert.match(requests[0].messages[0].content, /观点、态度/); assert.match(requests[0].messages[0].content, /fixture message/);
+  assert.match(requests[0].messages[0].content, /观点、态度/); assert.match(requests[0].messages[1].content, /fixture message/);
   await f.send('!uai brief 1', {replyToId: 2, raw: {peerId: 'fixture-peer'}}); assert.match(requests[1].messages[0].content, /Use three words/);
   await f.send('!uai prompt del brief'); assert.deepEqual((await data()).prompts, {});
 });
