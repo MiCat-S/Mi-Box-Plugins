@@ -10,6 +10,8 @@ const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 const {createHelp} = require(path.join(core, 'dist/v2/builtins/help.js'));
 const {renderCommandHelp} = require(path.join(core, 'dist/v2/commands.js'));
 const {HTMLParser} = require(path.join(core, 'node_modules/teleproto/extensions/html.js'));
+const {Api} = require(path.join(core, 'node_modules/teleproto'));
+const {ChatForwardsRestrictedError} = require(path.join(core, 'node_modules/teleproto/errors'));
 const Database = require(path.join(core, 'node_modules/better-sqlite3'));
 const factories = new Map();
 function create(id) {
@@ -112,35 +114,77 @@ test('leech serves help, session checks and existing archive statistics', async 
   assert.deepEqual(f.errors, []);
 });
 
-test('re forwards the selected message range and repeat count then deletes the command', async t => {
-  const forwarded = [];
+test('re forwards the selected message range into the current topic then deletes the command', async t => {
+  const fetched = [], forwarded = [];
   let deleted = 0;
+  const messages = [8, 9, 10].map(id => new Api.Message({id, peerId: new Api.PeerChat({chatId: 7n}), message: `message ${id}`}));
   const f = await fixture(t, 're', {
     reply: {id: 10, chatId: 'source', outgoing: false, text: 'reply', raw: {async getInputChat() {return 'source';}}},
-    client: {async forwardMessages(peer, options) {forwarded.push({peer, ...options});}},
+    client: {
+      async getMessages(peer, options) {fetched.push({peer, options}); return messages;},
+      async invoke(request) {forwarded.push(request);},
+    },
   });
   const raw = {async getInputChat() {return 'target';}, async delete() {deleted++;}};
-  await f.send('!re 3 2', {replyToId: 10, raw});
-  assert.deepEqual(forwarded, Array.from({length: 2}, () => ({peer: 'target', fromPeer: 'source', messages: [8, 9, 10]})));
+  await f.send('!re 3 2', {replyToId: 10, topicId: 77, raw});
+  assert.deepEqual(fetched, [{peer: 'source', options: {offsetId: 9, limit: 3, reverse: true}}]);
+  assert.equal(forwarded.length, 2);
+  for (const request of forwarded) {
+    assert.ok(request instanceof Api.messages.ForwardMessages);
+    assert.equal(request.fromPeer, 'source');
+    assert.equal(request.toPeer, 'target');
+    assert.deepEqual(request.id, [8, 9, 10]);
+    assert.equal(request.topMsgId, 77);
+  }
   assert.equal(deleted, 1);
   forwarded.length = 0;
-  await f.send('!re 100 100', {replyToId: 10, raw});
+  await f.send('!re 100 100', {replyToId: 10, topicId: 77, raw});
   assert.equal(forwarded.length, 10);
-  assert.deepEqual(forwarded[0].messages, Array.from({length: 10}, (_, i) => i + 1));
+  assert.equal(fetched.at(-1).options.limit, 20);
   assert.equal(deleted, 2);
   assert.deepEqual(f.errors, []);
 });
 
-test('re keeps reply and forwarding failure guidance', async t => {
+test('re copies formatted text and media when the source forbids forwarding', async t => {
+  const entities = [new Api.MessageEntityBold({offset: 0, length: 4})];
+  const media = new Api.MessageMediaPhoto({photo: new Api.PhotoEmpty({id: 1n})});
+  const messages = [new Api.Message({id: 9, peerId: new Api.PeerChat({chatId: 7n}), message: 'text', entities}),
+    new Api.Message({id: 10, peerId: new Api.PeerChat({chatId: 7n}), message: 'caption', media, entities})];
+  const sent = [];
+  let deleted = 0;
+  const f = await fixture(t, 're', {
+    reply: {id: 10, chatId: 'source', outgoing: false, text: 'reply', raw: {replyTo: {replyToTopId: 77}, async getInputChat() {return 'source';}}},
+    client: {
+      async getMessages() {return messages;},
+      async invoke(request) {throw new ChatForwardsRestrictedError({request});},
+      async sendMessage(peer, options) {sent.push({kind: 'text', peer, options});},
+      async sendFile(peer, options) {sent.push({kind: 'media', peer, options});},
+    },
+  });
+  await f.send('!re 2 2', {replyToId: 10, raw: {async getInputChat() {return 'target';}, async delete() {deleted++;}}});
+  assert.deepEqual(sent.map(item => item.kind), ['text', 'media', 'text', 'media']);
+  assert.deepEqual(sent[0], {kind: 'text', peer: 'target', options: {message: 'text', formattingEntities: entities, replyTo: 77}});
+  assert.equal(sent[1].peer, 'target');
+  assert.equal(sent[1].options.file, media);
+  assert.equal(sent[1].options.caption, 'caption');
+  assert.equal(sent[1].options.formattingEntities, entities);
+  assert.equal(sent[1].options.replyTo, 77);
+  assert.equal(deleted, 1);
+  assert.deepEqual(f.edits, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test('re keeps reply guidance and reports unrelated delivery failures', async t => {
   const empty = await fixture(t, 're');
   await empty.send('!re');
   assert.match(empty.edits.at(-1), /请回复一条消息/);
   let deleted = false;
-  const denied = await fixture(t, 're', {
+  const failed = await fixture(t, 're', {
     reply: {id: 10, chatId: 'source', outgoing: false, text: 'reply', raw: {async getInputChat() {return 'source';}}},
-    client: {async forwardMessages() {throw new Error('restricted');}},
+    client: {async getMessages() {return [new Api.Message({id: 10, peerId: new Api.PeerChat({chatId: 7n}), message: 'reply'})];},
+      async invoke() {throw new Error('network unavailable');}},
   });
-  await denied.send('!re', {replyToId: 10, raw: {async getInputChat() {return 'target';}, async delete() {deleted = true;}}});
-  assert.match(denied.edits.at(-1), /复读失败：目标消息可能禁止转发/);
+  await failed.send('!re', {replyToId: 10, raw: {async getInputChat() {return 'target';}, async delete() {deleted = true;}}});
+  assert.match(failed.edits.at(-1), /复读失败，请稍后重试/);
   assert.equal(deleted, false);
 });
