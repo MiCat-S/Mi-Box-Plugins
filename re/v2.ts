@@ -27,7 +27,7 @@ export default function createRe() {
     ],
     examples: [{args: "", description: "回复消息复读一条、一次"}, {args: "3"}, {args: "3 2"}],
     help: [{heading: "复读范围与条件：", body: "先回复目标消息，再发送命令；读取截至被回复消息的最近若干条消息，并发送到当前对话。成功后删除命令消息。"},
-      {heading: "受限消息：", body: "来源禁止转发时会自动复制文字、媒体及原有文字格式；论坛话题内仍发送到当前话题。"}],
+      {heading: "受限消息：", body: "来源不允许转发时会自动复制文字、媒体及原有文字格式；论坛话题内仍发送到当前话题。"}],
     async handle(invocation, ctx) {
       const reply = await ctx.telegram.getReply(invocation.message);
       const raw = reply?.raw as Api.Message | undefined;
