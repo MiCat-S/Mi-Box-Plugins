@@ -7,12 +7,13 @@ import {weatherCity, weatherEmoji} from "./v2/weather";
 const appearance = new NameAppearance();
 
 type Mode = "time" | "text" | "both";
-interface UserSettings { user_id: string; timezone: string; original_first_name: string | null; original_last_name: string | null; is_enabled: boolean; mode: Mode; last_update: string | null; text_index: number; show_clock_emoji?: boolean; show_time?: boolean; show_timezone?: boolean; timezone_format?: string; display_order?: string; displayComponents?: string[]; text_style?: string; weather_enabled?: boolean; weather_location?: string; weather_compact?: string; weather_cache_ts?: number; }
+interface UserSettings { user_id: string; timezone: string; original_first_name: string | null; original_last_name: string | null; is_enabled: boolean; mode: Mode; last_update: string | null; text_index: number; show_clock_emoji?: boolean; show_time?: boolean; hour_format?: "12" | "24"; show_timezone?: boolean; timezone_format?: string; display_order?: string; displayComponents?: string[]; text_style?: string; weather_enabled?: boolean; weather_location?: string; weather_compact?: string; weather_cache_ts?: number; }
 interface State extends Record<string, unknown> { schemaVersion: number; users: Record<string, UserSettings>; random_texts: string[]; }
 const defaults: State = {schemaVersion: 1, users: {}, random_texts: []};
 const escape = (value: string) => value.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]!);
 const validZone = (zone: string) => { try { new Intl.DateTimeFormat("en", {timeZone: zone}).format(); return true; } catch { return false; } };
-const time = (zone: string) => new Intl.DateTimeFormat("zh-CN", {timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23"}).format(new Date());
+const time = (zone: string, format: "12" | "24" = "24") => new Intl.DateTimeFormat(format === "12" ? "en-US" : "zh-CN",
+  {timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: format === "12" ? "h12" : "h23"}).format(new Date());
 const cleanName = (name: string) => name.slice(0, 128).replace(/\b\d{1,2}:\d{2}(\s?(AM|PM))?\b/gi, "").replace(/[\u{1F550}-\u{1F567}]/gu, "").replace(/\s+/g, " ").trim();
 const clock = (zone: string) => {const hour = Number(new Intl.DateTimeFormat("en", {timeZone: zone, hour: "numeric", hourCycle: "h23"}).format(new Date())) % 12; return String.fromCodePoint(0x1f550 + (hour + 11) % 12);};
 const zoneLabel = (zone: string, format = "GMT") => appearance.timezoneLabel(zone, format);
@@ -36,7 +37,7 @@ async function updateUser(context: PluginContext, userId: string, force = false)
   const texts = state.random_texts;
   const components: Record<string, string> = {name: user.original_first_name, text: "", time: "", emoji: "", timezone: "", weather: ""};
   if ((user.mode === "text" || user.mode === "both") && texts.length) components.text = texts[user.text_index % texts.length];
-  if (user.show_time !== false && (user.mode === "time" || user.mode === "both")) components.time = time(user.timezone);
+  if (user.show_time !== false && (user.mode === "time" || user.mode === "both")) components.time = time(user.timezone, user.hour_format);
   if (user.show_clock_emoji) components.emoji = clock(user.timezone);
   if (user.show_timezone) components.timezone = zoneLabel(user.timezone, user.timezone_format);
   const currentWeather = await weather(context, user);
@@ -64,11 +65,11 @@ export default function createAutoChangeName(): PluginDefinition {
       acn: {helpArgs: ["help","h"], helpOnEmpty: true, description: "管理动态昵称", async handle(invocation, context) {
         const store = context.storage.json<State>("autochangename.json", defaults); const sub = invocation.args[0]?.toLowerCase(); const userId = invocation.message.senderId;
         if (!userId) return context.telegram.edit(invocation.message, "❌ 无法识别您的身份", {});
-        if (!sub || sub === "help" || sub === "h") return context.telegram.edit(invocation.message, `<b>自动昵称</b>\n<code>${invocation.prefix}acn save/on/off/mode/tz/update/reset/status</code>`, {parseMode: "html"});
+        if (!sub || sub === "help" || sub === "h") return context.telegram.edit(invocation.message, `<b>自动昵称</b>\n<code>${invocation.prefix}acn save/on/off/mode/time/tz/update/reset/status</code>`, {parseMode: "html"});
         if (sub === "status") { const state = await store.read(); return context.telegram.edit(invocation.message, `📊 自动更新: <code>运行中</code>\n启用用户: <code>${Object.values(state.users).filter(v => v.is_enabled).length}</code>`, {parseMode: "html"}); }
         if (sub === "save") {
           const profile = await context.telegram.withClient(async client => client.getMe());
-          await store.update(state => { const old = state.users[userId]; state.users[userId] = {...old, user_id: userId, timezone: old?.timezone || "Asia/Shanghai", original_first_name: cleanName(profile.firstName || ""), original_last_name: cleanName(profile.lastName || "") || null, is_enabled: old?.is_enabled || false, mode: old?.mode || "time", last_update: old?.last_update || null, text_index: old?.text_index || 0}; return {...state, schemaVersion: 1}; });
+          await store.update(state => { const old = state.users[userId]; state.users[userId] = {...old, user_id: userId, timezone: old?.timezone || "Asia/Shanghai", original_first_name: cleanName(profile.firstName || ""), original_last_name: cleanName(profile.lastName || "") || null, is_enabled: old?.is_enabled || false, mode: old?.mode || "time", last_update: old?.last_update || null, text_index: old?.text_index || 0, hour_format: old?.hour_format === "12" ? "12" : "24"}; return {...state, schemaVersion: 1}; });
           return context.telegram.edit(invocation.message, "✅ 原始昵称已保存", {});
         }
         const state = await store.read(); const user = state.users[userId];
@@ -91,7 +92,11 @@ export default function createAutoChangeName(): PluginDefinition {
           if (action === "del") {const index = Number(invocation.args[2]) - 1; if (!Number.isInteger(index) || index < 0 || index >= state.random_texts.length) return context.telegram.edit(invocation.message, "❌ 无效的索引号", {}); await store.update(current => ({...current, random_texts: current.random_texts.filter((_value, currentIndex) => currentIndex !== index)})); return context.telegram.edit(invocation.message, "✅ 文本已删除", {});}
           if (action === "on" || action === "off") {await store.update(current => {current.users[userId].mode = action === "on" ? (current.users[userId].show_time === false ? "text" : "both") : "time"; return current;}); return context.telegram.edit(invocation.message, `✅ 随机文案已${action === "on" ? "开启" : "关闭"}`, {});}
         }
-        if (["emoji", "time"].includes(sub)) {const enabled = invocation.args[1]?.toLowerCase(); if (enabled !== "on" && enabled !== "off") return context.telegram.edit(invocation.message, `请使用 ${invocation.prefix}acn ${sub} on/off`, {}); await store.update(current => {if (sub === "emoji") current.users[userId].show_clock_emoji = enabled === "on"; else current.users[userId].show_time = enabled === "on"; return current;}); return context.telegram.edit(invocation.message, `✅ ${sub === "emoji" ? "时钟Emoji" : "时间显示"}已${enabled === "on" ? "开启" : "关闭"}`, {});}
+        if (sub === "time") {const action = invocation.args[1]?.toLowerCase(); const rawFormat = action === "format" ? invocation.args[2]?.toLowerCase() : action; const format = rawFormat?.replace(/h$/, "");
+          if (format === "12" || format === "24") {await store.update(current => {current.users[userId].hour_format = format; return current;}); return context.telegram.edit(invocation.message, `✅ 已切换为 ${format} 小时制${format === "12" ? "（如 02:32 AM）" : "（如 14:32）"}`, {});}
+          if (action !== "on" && action !== "off") return context.telegram.edit(invocation.message, `请使用 ${invocation.prefix}acn time on/off 或 ${invocation.prefix}acn time 12/24`, {});
+          await store.update(current => {current.users[userId].show_time = action === "on"; return current;}); return context.telegram.edit(invocation.message, `✅ 时间显示已${action === "on" ? "开启" : "关闭"}`, {});}
+        if (sub === "emoji") {const enabled = invocation.args[1]?.toLowerCase(); if (enabled !== "on" && enabled !== "off") return context.telegram.edit(invocation.message, `请使用 ${invocation.prefix}acn emoji on/off`, {}); await store.update(current => {current.users[userId].show_clock_emoji = enabled === "on"; return current;}); return context.telegram.edit(invocation.message, `✅ 时钟Emoji已${enabled === "on" ? "开启" : "关闭"}`, {});}
         if (sub === "order") {const values = invocation.args.slice(1).join(" ").split(/[,\s]+/).filter(Boolean); const allowed = ["name", "text", "time", "weather", "emoji", "timezone"]; if (!values.length) return context.telegram.edit(invocation.message, `当前顺序: <code>${escape(user.display_order || "name,time")}</code>`, {parseMode: "html"}); if (values.some(value => !allowed.includes(value))) return context.telegram.edit(invocation.message, "❌ 无效组件", {}); const order = [...new Set(values)].join(","); await store.update(current => {current.users[userId].display_order = order; return current;}); return context.telegram.edit(invocation.message, `✅ 显示顺序: <code>${order}</code>`, {parseMode: "html"});}
         if (sub === "style") {const style = invocation.args[1]?.toLowerCase(); if (!["normal", "italic", "double", "sans", "mono", "outline"].includes(style || "")) return context.telegram.edit(invocation.message, "可用样式: normal, italic, double, sans, mono, outline", {}); await store.update(current => {current.users[userId].text_style = style; return current;}); return context.telegram.edit(invocation.message, `✅ 文字样式: ${style}`, {});}
         if (sub === "weather") {const action = invocation.args[1]?.toLowerCase(); if (!action) return context.telegram.edit(invocation.message, `天气: ${user.weather_enabled ? "开" : "关"}\n地点: ${escape(user.weather_location || "未设置")}\n预览: ${escape(user.weather_compact || "暂无缓存")}`, {parseMode: "html"}); if (action === "on" && !user.weather_location) return context.telegram.edit(invocation.message, "❌ 请先设置地点", {}); await store.update(current => {const target = current.users[userId]; if (action === "on" || action === "off") target.weather_enabled = action === "on"; else {target.weather_location = invocation.args.slice(action === "set" ? 2 : 1).join(" "); target.weather_enabled = true; target.weather_compact = ""; target.weather_cache_ts = 0;} return current;}); return context.telegram.edit(invocation.message, "✅ 天气配置已更新", {});}
@@ -99,7 +104,7 @@ export default function createAutoChangeName(): PluginDefinition {
           const fields = {
             "用户": user.user_id, "自动更新": user.is_enabled ? "开" : "关", "原始姓名": user.original_first_name,
             "原始姓氏": user.original_last_name || "(空)", "模式": user.mode, "时区": user.timezone,
-            "时间显示": user.show_time !== false ? "开" : "关", "时钟表情": user.show_clock_emoji ? "开" : "关",
+            "时间显示": user.show_time !== false ? "开" : "关", "时间制式": `${user.hour_format === "12" ? "12" : "24"} 小时制`, "时钟表情": user.show_clock_emoji ? "开" : "关",
             "时区显示": user.show_timezone ? "开" : "关", "时区格式": user.timezone_format || "GMT",
             "文字样式": user.text_style || "normal", "组件顺序": user.display_order || "name,text,time,weather,emoji,timezone",
             "文案数": state.random_texts.length, "下条文案序号": state.random_texts.length ? user.text_index % state.random_texts.length + 1 : "(空)",
@@ -117,7 +122,7 @@ export default function createAutoChangeName(): PluginDefinition {
     },
     jobs: {update_names: {cron: "0 * * * * *", timeZone: "Asia/Shanghai", description: "每分钟更新已启用昵称", async handle(context) { const state = await context.storage.json<State>("autochangename.json", defaults).read(); for (const id of Object.keys(state.users).filter(id => state.users[id].is_enabled)) { context.signal.throwIfAborted(); await updateUser(context, id); } }}},
     async setup(context) { await context.storage.json<State>("autochangename.json", defaults).update(state => ({...state, schemaVersion: 1,
-      users: Object.fromEntries(Object.entries(state.users || {}).map(([id, user]) => [id, {...user, user_id: String(user.user_id ?? id), timezone: validZone(user.timezone) ? user.timezone : "Asia/Shanghai"}])),
+      users: Object.fromEntries(Object.entries(state.users || {}).map(([id, user]) => [id, {...user, user_id: String(user.user_id ?? id), timezone: validZone(user.timezone) ? user.timezone : "Asia/Shanghai", hour_format: user.hour_format === "12" ? "12" : "24"}])),
       random_texts: Array.isArray(state.random_texts) ? state.random_texts.filter((text): text is string => typeof text === "string").slice(0, 100) : []})); },
   });
 }

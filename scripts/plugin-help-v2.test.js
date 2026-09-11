@@ -74,6 +74,6 @@ for (const id of ids) test(`${id}: complete artifact help survives both command 
   assert.ok(visible(details.join('\n')).includes(expected), 'catalog help includes the full authored guide');
   if (id === 'autochangename') {
     for (const section of ['基础操作', '时区管理', '外观设置', '文案管理', '天气显示', '查看配置']) assert.ok(expected.includes(section));
-    for (const example of ['acn text add', 'acn tz format GMT', 'acn style italic', 'acn weather set 北京']) assert.ok(expected.includes(`${prefix}${example}`));
+    for (const example of ['acn text add', 'acn time 12', 'acn tz format GMT', 'acn style italic', 'acn weather set 北京']) assert.ok(expected.includes(`${prefix}${example}`));
   }
 });

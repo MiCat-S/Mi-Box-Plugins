@@ -80,6 +80,28 @@ test('acn formats offsets, abbreviations, seasonal timezones and custom labels',
   assert.ok(f.updates.at(-1).firstName.endsWith('EDT'));
 });
 
+test('acn switches between 12-hour and 24-hour time', async t => {
+  t.mock.timers.enable({apis: ['Date'], now: new Date('2026-01-01T18:32:00Z')});
+  const f = await fixture(t);
+  assert.equal((await f.read()).users['7'].hour_format, '24');
+
+  await f.run('.acn time 12');
+  assert.match(f.edits.at(-1), /12 小时制/);
+  assert.equal((await f.read()).users['7'].hour_format, '12');
+  await f.run('.acn update');
+  assert.equal(f.updates.at(-1).firstName, 'Alice 02:32 AM');
+
+  await f.run('.acn time 24');
+  assert.match(f.edits.at(-1), /24 小时制/);
+  assert.equal((await f.read()).users['7'].hour_format, '24');
+  await f.run('.acn update');
+  assert.equal(f.updates.at(-1).firstName, 'Alice 02:32');
+
+  await f.run('.acn time invalid');
+  assert.match(f.edits.at(-1), /time on\/off.*time 12\/24/);
+  assert.equal((await f.read()).users['7'].hour_format, '24');
+});
+
 test('acn refreshes weather after thirty minutes while nickname updates preserve cache age', async t => {
   const now = new Date('2026-01-01T00:00:00Z').getTime();
   t.mock.timers.enable({apis: ['Date'], now});
@@ -117,7 +139,7 @@ test('acn accepts multiline texts and reports the full user configuration', asyn
   await f.run('.acn style mono');
   await f.run('.acn tz format custom:北京时间');
   await f.run('.acn config');
-  for (const value of ['Alice', 'User', 'mono', '北京时间', '文案数', '组件顺序', '时钟表情', '天气显示', '天气地点', '天气预览', '昵称更新时间']) assert.ok(f.edits.at(-1).includes(value));
+  for (const value of ['Alice', 'User', 'mono', '北京时间', '时间制式', '24 小时制', '文案数', '组件顺序', '时钟表情', '天气显示', '天气地点', '天气预览', '昵称更新时间']) assert.ok(f.edits.at(-1).includes(value));
   await f.run('.acn off');
   assert.equal(f.updates.at(-1).firstName, 'Alice');
   assert.equal((await f.read()).users['7'].text_style, 'mono');

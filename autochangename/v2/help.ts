@@ -57,6 +57,8 @@ export function renderHelp(prefix: string): string {
   时钟 emoji 会根据当前小时自动匹配对应的钟面
 • <code>${p}acn time on</code> / <code>off</code>
   开启或关闭时间显示
+• <code>${p}acn time 12</code> / <code>24</code>
+  切换时间制式。12 小时制示例：02:32 AM；24 小时制示例：14:32（默认）
 • <code>${p}acn text on</code> / <code>off</code>
   开启或关闭循环文案显示
 • <code>${p}acn weather on</code> / <code>off</code>

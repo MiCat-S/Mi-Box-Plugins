@@ -68,6 +68,7 @@ test('autochangename migrates settings, validates timezone, and updates profile'
   const state = await f.read('autochangename.json');
   assert.equal(state.users['7'].user_id, '7');
   assert.equal(state.users['7'].marker, 'keep');
+  assert.equal(state.users['7'].hour_format, '24');
   assert.equal(state.users['7'].mode, 'both');
   assert.equal(state.users['7'].display_order, 'name,text,emoji,time');
   assert.deepEqual(state.random_texts, ['busy', 'focused']);
