@@ -7,10 +7,10 @@ export function renderHelp(prefix: string): string {
 <b>⚙️ API 配置:</b>
 • <code>${p}ai config add tag url key [type]</code> - 添加 API 配置
 • <code>${p}ai config del tag</code> - 删除 API 配置
-• <code>${p}ai config type tag openai-compatible|openai|gemini|doubao|moonshot|local-cliproxy</code> - 设置 API 类型. 若不设置, 自动按 URL 特征自动识别
+• <code>${p}ai config type tag openai-compatible|openai|gemini|anthropic|codex|doubao|moonshot|local-cliproxy</code> - 设置 API 类型. 若不设置, 自动按 URL 特征自动识别
 • <code>${p}ai config stream tag on|off</code> - 设置 API 流式传输
 • <code>${p}ai config responses tag on|off</code> - 设置 chat/search 的 Responses 模式
-• <code>type</code> 可选值: <code>openai-compatible/openai/gemini/doubao/moonshot/local-cliproxy</code>
+• <code>type</code> 可选值: <code>openai-compatible/openai/gemini/anthropic/codex/doubao/moonshot/local-cliproxy</code>
 
 <b>🧠 模型设置:</b>
 • <code>${p}ai model chat tag model-path</code> - 设置聊天模型

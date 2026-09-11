@@ -1,13 +1,5 @@
 export const htmlEscape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]!);
 
-export function codeTag(value: any): string {
-  return `<code>${htmlEscape(value)}</code>`;
-}
-
-export function attrEscape(value: any): string {
-  return htmlEscape(value).replace(/'/g, "&#39;");
-}
-
 export function formatDate(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -18,46 +10,6 @@ export function formatDate(date: Date): string {
 }
 
 export type ProviderProtocol = "auto" | "chat" | "responses" | "gemini" | "anthropic";
-
-export const REASONING_EFFORT_VALUES = [
-  "auto",
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-] as const;
-
-export type ReasoningEffort = (typeof REASONING_EFFORT_VALUES)[number];
-
-export const REASONING_EFFORT_OPTIONS = REASONING_EFFORT_VALUES.join("|");
-
-export function normalizeReasoningEffort(value: unknown): ReasoningEffort {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  return REASONING_EFFORT_VALUES.includes(normalized as ReasoningEffort)
-    ? (normalized as ReasoningEffort)
-    : "auto";
-}
-
-export const SERVICE_TIER_VALUES = [
-  "auto",
-  "default",
-  "priority",
-  "fast",
-  "flex",
-] as const;
-
-export type ServiceTier = (typeof SERVICE_TIER_VALUES)[number];
-
-export const SERVICE_TIER_OPTIONS = SERVICE_TIER_VALUES.join("|");
-
-export function normalizeServiceTier(value: unknown): ServiceTier {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  return SERVICE_TIER_VALUES.includes(normalized as ServiceTier)
-    ? (normalized as ServiceTier)
-    : "auto";
-}
 
 export type CustomProvider = {
   name: string;
@@ -71,14 +23,12 @@ export type CustomProvider = {
 type AIConfig = {
   providers: Record<string, CustomProvider>;
   default_provider?: string;
+  aiMigrated?: boolean;
   default_prompt?: string;
   default_spoiler?: boolean;
-  default_timeout?: number;
-  default_reasoning_effort?: ReasoningEffort;
-  default_service_tier?: ServiceTier;
-  reply_mode?: boolean;
   max_output_length?: number;
   link_preview?: boolean;
+  [key: string]: unknown;
 };
 
 export const DEFAULT_PROMPT =
@@ -88,30 +38,6 @@ export function promptStatus(prompt: string | undefined): string {
   if (!prompt || prompt === DEFAULT_PROMPT) return "内置详细版（来源跳转）";
   return "自定义提示词";
 }
-
-export const OFFICIAL_PROVIDER_PRESETS: Record<
-  "openai" | "gemini" | "anthropic",
-  Omit<CustomProvider, "api_key">
-> = {
-  openai: {
-    name: "OpenAI",
-    base_url: "https://api.openai.com",
-    model: "gpt-6-astra",
-    type: "auto",
-  },
-  gemini: {
-    name: "Gemini",
-    base_url: "https://generativelanguage.googleapis.com",
-    model: "gemini-2.5-flash",
-    type: "auto",
-  },
-  anthropic: {
-    name: "Anthropic",
-    base_url: "https://api.anthropic.com",
-    model: "claude-sonnet-4-5",
-    type: "auto",
-  },
-};
 
 export type SummaryTask = {
   id: string;
@@ -351,5 +277,3 @@ export function wrapWithSpoiler(content: string, useSpoiler: boolean): string {
   // 用折叠标签包裹整个内容
   return `<blockquote expandable>${content}</blockquote>`;
 }
-
-

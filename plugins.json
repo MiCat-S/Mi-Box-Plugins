@@ -17,7 +17,7 @@
   },
   "ai": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/ai/ai.ts",
-    "desc": "ai聚合"
+    "desc": "统一管理 AI 供应商、模型与生成能力"
   },
   "aitc": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/aitc/aitc.ts",
@@ -93,7 +93,7 @@
   },
   "checkapi": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/checkapi/checkapi.ts",
-    "desc": "API Key 全功能检测"
+    "desc": "检测 ai 插件中的 API、模型与对话"
   },
   "checkin": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/checkin/checkin.ts",
@@ -113,7 +113,7 @@
   },
   "codex_image": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/codex_image/codex_image.ts",
-    "desc": "通过codex调用gpt-image-2"
+    "desc": "使用统一 AI 图片服务生成或编辑图片"
   },
   "convert": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/convert/convert.ts",

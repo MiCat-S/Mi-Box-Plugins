@@ -18,7 +18,7 @@ function compile(source, mocks = {}) {
   vm.runInNewContext(esbuild.transformSync(source, {
     loader: 'ts', format: 'cjs', target: 'node24',
   }).code, {
-    module, exports: module.exports, Buffer, URL, AbortController, TextDecoder,
+    module, exports: module.exports, Buffer, Uint8Array, URL, AbortController, TextDecoder,
     setTimeout, clearTimeout,
     require(name) {
       assert.ok(Object.hasOwn(mocks, name), `unexpected dependency: ${name}`);
@@ -546,4 +546,21 @@ test('restricted models are rejected before credentials or source text reach HTT
     await assert.rejects(provider.chatText(snapshot, f.http, 'private-source'), error => noSecrets(error, 'CONFIG'));
     assert.equal(f.requests.length, 0);
   }
+});
+
+test('Anthropic chat uses Messages auth, multimodal content and text parsing', async () => {
+  const snapshot = config({currentChatModel: 'claude-sonnet'}, {type: 'anthropic', url: 'https://api.anthropic.com', key: 'anthropic-key'});
+  const request = provider.buildChatRequest(snapshot, 'describe', 'system', {temperature: 0.3, maxOutputTokens: 777,
+    images: [{mimeType: 'image/png', data: Buffer.from('image')}]});
+  assert.equal(request.url, 'https://api.anthropic.com/v1/messages');
+  assert.equal(request.init.headers['x-api-key'], 'anthropic-key');
+  assert.equal(request.init.headers['anthropic-version'], '2023-06-01');
+  assert.equal(request.init.headers.Authorization, undefined);
+  const body = JSON.parse(request.init.body);
+  assert.equal(body.model, 'claude-sonnet');
+  assert.equal(body.max_tokens, 777);
+  assert.equal(body.temperature, 0.3);
+  assert.equal(body.system, 'system');
+  assert.equal(body.messages[0].content[1].source.media_type, 'image/png');
+  assert.equal(provider.parseChatText(JSON.stringify({content: [{type: 'text', text: 'answer'}]}), 'anthropic'), 'answer');
 });

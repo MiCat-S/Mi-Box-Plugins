@@ -71,13 +71,12 @@ test('acron resolves legacy unmarked channel IDs from the original target before
  }finally{await plugin.cleanup();}
 });
 
-test('uai concurrent provider edits and unrelated configuration preserve each other',async()=>{
+test('uai concurrent prompt and display edits preserve each other',async()=>{
  const f=await fixture('uai',{});try{
-  const run=(chatId,text)=>f.host.dispatchPrimary({id:1,chatId,senderId:'1',saved:true,outgoing:true,text});
-  for(const name of ['first','second'])await run('1',`.uai add ${name} https://example.com fixture-key openai`);
-  await Promise.all([run('100','.uai model first model-one'),run('200','.uai set second'),run('300','.uai prompt add note prompt')]);
-  let state=JSON.parse(await fs.readFile(path.join(f.data,'assets/uai/v2-config.json')));assert.equal(state.providers.first.model,'model-one');assert.equal(state.defaultProvider,'second');assert.equal(state.prompts.note,'prompt');
-  await Promise.all([run('100','.uai del first'),run('200','.uai model second model-two'),run('300','.uai collapse off')]);
-  state=JSON.parse(await fs.readFile(path.join(f.data,'assets/uai/v2-config.json')));assert.deepEqual(Object.keys(state.providers),['second']);assert.equal(state.providers.second.model,'model-two');assert.equal(state.collapse,false);
+  const run=(chatId,text)=>f.host.dispatchPrimary({id:1,chatId,senderId:'1',outgoing:true,text});
+  await Promise.all([run('100','.uai prompt add note prompt'),run('200','.uai collapse off')]);
+  let state=JSON.parse(await fs.readFile(path.join(f.data,'assets/uai/v2-config.json')));assert.equal(state.prompts.note,'prompt');assert.equal(state.collapse,false);
+  await Promise.all([run('100','.uai prompt add second instruction'),run('200','.uai collapse on')]);
+  state=JSON.parse(await fs.readFile(path.join(f.data,'assets/uai/v2-config.json')));assert.deepEqual(Object.keys(state.prompts).sort(),['note','second']);assert.equal(state.collapse,true);
  }finally{await f.close();}
 });

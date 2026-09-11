@@ -1,6 +1,7 @@
 import type { PluginContext } from "telebox/sdk";
 
-export type ProviderType = "openai" | "openai-compatible" | "gemini" | "doubao" | "moonshot" | "local-cliproxy";
+export type ProviderType = "openai" | "openai-compatible" | "gemini" | "anthropic" | "codex" | "doubao" | "moonshot" | "local-cliproxy";
+export type ProviderMode = "chat" | "search" | "image" | "video";
 export type ReasoningEffort = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type ServiceTier = "auto" | "default" | "priority" | "fast" | "flex";
 
@@ -11,6 +12,7 @@ export interface ProviderConfig {
   readonly type?: ProviderType;
   readonly stream: boolean;
   readonly responses: boolean;
+  readonly models?: Readonly<Partial<Record<ProviderMode, string>>>;
 }
 
 /** Caller supplies a settings snapshot; this module never reads or updates storage. */
@@ -31,6 +33,17 @@ export interface ProviderLimits {
   readonly maxResponseBytes?: number;
   /** UTF-16 code units, checked before trimming; oversized output is rejected, not truncated. */
   readonly maxOutputChars?: number;
+}
+
+export interface ChatImage {
+  readonly data: Uint8Array;
+  readonly mimeType: string;
+}
+
+export interface ChatRequestOptions {
+  readonly images?: readonly ChatImage[];
+  readonly temperature?: number;
+  readonly maxOutputTokens?: number;
 }
 
 export const DEFAULT_PROVIDER_LIMITS = Object.freeze({
@@ -96,9 +109,11 @@ function checkSignal(signal?: AbortSignal): void {
   if (signal?.aborted) throw new ProviderError("ABORTED");
 }
 
-const providerTypes: readonly string[] = ["openai", "openai-compatible", "gemini", "doubao", "moonshot", "local-cliproxy"];
+const providerTypes: readonly string[] = ["openai", "openai-compatible", "gemini", "anthropic", "codex", "doubao", "moonshot", "local-cliproxy"];
 const hostTypes: Readonly<Record<string, ProviderType>> = {
   "generativelanguage.googleapis.com": "gemini",
+  "api.anthropic.com": "anthropic",
+  "chatgpt.com": "codex",
   "ark.cn-beijing.volces.com": "doubao",
   "api.openai.com": "openai",
   "api.moonshot.cn": "moonshot",
@@ -157,14 +172,23 @@ export interface ChatRequest {
   readonly url: string;
   readonly init: RequestInit;
   readonly timeoutMs: number;
-  readonly format: "openai" | "gemini";
+  readonly format: "openai" | "gemini" | "anthropic";
 }
 
-/** Text-only callAI request path. Search, media and command handling belong to other components.
+/** Chat request path. Search, generated media and command handling belong to other components.
  * The returned request contains credentials and source text and must not be logged. */
-export function buildChatRequest(config: ChatConfigSnapshot, text: string, systemPrompt = config.prompt): ChatRequest {
+export function buildChatRequest(
+  config: ChatConfigSnapshot, text: string, systemPrompt = config.prompt, options: ChatRequestOptions = {},
+): ChatRequest {
   try {
     if (typeof text !== "string" || typeof systemPrompt !== "string") throw new ProviderError("INPUT");
+    const images = options.images ?? [];
+    if (!Array.isArray(images) || images.length > 4 || images.some(image =>
+      !image || !(image.data instanceof Uint8Array) || !/^image\/(?:jpeg|png|gif|webp)$/i.test(image.mimeType))) throw new ProviderError("INPUT");
+    const imageBytes = images.reduce((total, image) => total + image.data.byteLength, 0);
+    if (imageBytes > 20 * 1024 * 1024) throw new ProviderError("INPUT");
+    if (options.temperature !== undefined && (!Number.isFinite(options.temperature) || options.temperature < 0 || options.temperature > 2)) throw new ProviderError("INPUT");
+    if (options.maxOutputTokens !== undefined && (!Number.isSafeInteger(options.maxOutputTokens) || options.maxOutputTokens < 1 || options.maxOutputTokens > 32768)) throw new ProviderError("INPUT");
     const {providerConfig: provider, model} = selectChatProvider(config);
     assertAllowedModel(model);
     const timeoutMs = config.timeout * 1000;
@@ -173,43 +197,70 @@ export function buildChatRequest(config: ChatConfigSnapshot, text: string, syste
     if (!["https:", "http:"].includes(parsedUrl.protocol) || typeof provider.key !== "string") throw new ProviderError("CONFIG");
     const type = resolveProviderType(provider);
     const gemini = type === "gemini";
+    const anthropic = type === "anthropic";
+    if (type === "codex") throw new ProviderError("CONFIG");
     const base = type === "doubao" ? parsedUrl.origin
       : type === "local-cliproxy" ? normalizeOpenAIBaseUrl(provider.url) : provider.url;
     const chatEndpoint = type === "doubao" ? "api/v3/chat/completions" : "chat/completions";
     let url = gemini ? endpoint(base, `models/${model}:generateContent`)
+      : anthropic ? endpoint(normalizeOpenAIBaseUrl(base), "messages")
       : provider.responses
         ? endpoint(normalizeOpenAIBaseUrl(type === "doubao" ? endpoint(base, chatEndpoint) : base), "responses")
         : endpoint(base, chatEndpoint);
     const headers: Record<string, string> = {"Content-Type": "application/json"};
-    if (!gemini) headers["User-Agent"] = CODEX_USER_AGENT;
+    if (!gemini && !anthropic) headers["User-Agent"] = CODEX_USER_AGENT;
     if (gemini || type === "local-cliproxy") {
       const authenticated = new URL(url);
       if (!authenticated.searchParams.has("key")) authenticated.searchParams.set("key", provider.key);
       url = authenticated.toString();
+    } else if (anthropic) {
+      headers["x-api-key"] = provider.key;
+      headers["anthropic-version"] = "2023-06-01";
     } else headers.Authorization = `Bearer ${provider.key}`;
 
     const sys = systemPrompt.trim();
     let data: JsonObject;
+    const encodedImages = images.map(image => ({data: Buffer.from(image.data).toString("base64"), mimeType: image.mimeType.toLowerCase()}));
     if (gemini) {
-      data = {contents: [{role: "user", parts: text.trim() ? [{text}] : []}]};
+      data = {contents: [{role: "user", parts: [...(text.trim() ? [{text}] : []),
+        ...encodedImages.map(image => ({inlineData: {data: image.data, mimeType: image.mimeType}}))]}]};
       if (sys) data.systemInstruction = {role: "system", parts: [{text: sys}]};
+      if (options.temperature !== undefined) data.generationConfig = {temperature: options.temperature};
+      if (options.maxOutputTokens !== undefined) data.generationConfig = {...object(data.generationConfig), maxOutputTokens: options.maxOutputTokens};
+    } else if (anthropic) {
+      const content: JsonObject[] = [];
+      if (text.trim()) content.push({type: "text", text});
+      content.push(...encodedImages.map(image => ({type: "image", source: {type: "base64", media_type: image.mimeType, data: image.data}})));
+      data = {model, max_tokens: options.maxOutputTokens ?? 4096, messages: [{role: "user", content}]};
+      if (sys) data.system = sys;
+      if (options.temperature !== undefined) data.temperature = options.temperature;
     } else {
       const reasoning = config.currentChatReasoningEffort;
       const tier = config.currentChatServiceTier;
       if (provider.responses) {
-        data = {model, input: text.trim() ? [{role: "user", content: [{type: "input_text", text: text.trim()}]}] : text, stream: provider.stream};
+        const content: JsonObject[] = [];
+        if (text.trim()) content.push({type: "input_text", text: text.trim()});
+        content.push(...encodedImages.map(image => ({type: "input_image", image_url: `data:${image.mimeType};base64,${image.data}`})));
+        data = {model, input: encodedImages.length ? [{role: "user", content}] : text.trim()
+          ? [{role: "user", content: [{type: "input_text", text: text.trim()}]}] : text, stream: provider.stream};
         if (sys) data.instructions = sys;
         if (reasoning && reasoning !== "auto") data.reasoning = {effort: reasoning};
+        if (options.maxOutputTokens !== undefined) data.max_output_tokens = options.maxOutputTokens;
       } else {
         const messages: JsonObject[] = [];
         if (sys) messages.push({role: "system", content: sys});
-        messages.push({role: "user", content: text.trim() || text});
+        const content = encodedImages.length ? [...(text.trim() ? [{type: "text", text}] : []),
+          ...encodedImages.map(image => ({type: "image_url", image_url: {url: `data:${image.mimeType};base64,${image.data}`}}))] : text.trim() || text;
+        messages.push({role: "user", content});
         data = {model, messages, stream: provider.stream};
         if (reasoning && reasoning !== "auto") data.reasoning_effort = reasoning;
+        if (options.maxOutputTokens !== undefined) data.max_tokens = options.maxOutputTokens;
       }
+      if (options.temperature !== undefined) data.temperature = options.temperature;
       if (tier && tier !== "auto") data.service_tier = tier;
     }
-    return {url, init: {method: "POST", headers, body: JSON.stringify(data)}, timeoutMs, format: gemini ? "gemini" : "openai"};
+    return {url, init: {method: "POST", headers, body: JSON.stringify(data)}, timeoutMs,
+      format: gemini ? "gemini" : anthropic ? "anthropic" : "openai"};
   } catch (error) {
     if (error instanceof ProviderError) throw safeError(error);
     throw new ProviderError("CONFIG");
@@ -271,6 +322,13 @@ export function parseChatText(raw: string, format: ChatRequest["format"], limits
     checkProviderFailure(root);
     const candidate = object(list(root.candidates)[0]);
     text = list(object(candidate.content).parts).map(value => string(object(value).text)).join("");
+  } else if (format === "anthropic") {
+    const payload = object(parseJson(raw));
+    checkProviderFailure(payload);
+    text = list(payload.content).map(value => {
+      const part = object(value);
+      return part.type === "text" ? string(part.text) : "";
+    }).join("\n");
   } else {
     // Legacy uses one JSON payload per data line, not incremental Telegram edits.
     const dataLines = raw.split(/\r?\n/).map(line => line.trim()).filter(line => line.startsWith("data:"));
@@ -353,11 +411,12 @@ export async function readBody(response: Response, signal: AbortSignal, maxBytes
 export async function chatText(
   config: ChatConfigSnapshot, http: ProviderHttp, text: string,
   signal?: AbortSignal, systemPrompt = config.prompt, limits: ProviderLimits = {},
+  requestOptions: ChatRequestOptions = {},
 ): Promise<string> {
   try {
     checkSignal(signal);
     const bounded = limitsFor(limits);
-    const request = buildChatRequest(config, text, systemPrompt);
+    const request = buildChatRequest(config, text, systemPrompt, requestOptions);
     const result = await http.withResponse(request.url, request.init, async (response, activeSignal) => {
       // Return domain errors as data: ScopedHttp intentionally erases unknown thrown errors.
       try {
@@ -379,4 +438,42 @@ export function translateText(
   signal?: AbortSignal, limits: ProviderLimits = {},
 ): Promise<string> {
   return chatText(config, http, text, signal, translationPrompt(target), limits);
+}
+
+export async function listProviderModels(
+  config: ChatConfigSnapshot, http: ProviderHttp, tag: string, signal?: AbortSignal,
+): Promise<string[]> {
+  try {
+    checkSignal(signal);
+    const provider = config.configs[tag];
+    if (!tag || !provider) throw new ProviderError("CONFIG");
+    const type = resolveProviderType(provider); if (type === "codex") throw new ProviderError("CONFIG");
+    const parsed = new URL(provider.url);
+    if (!["https:", "http:"].includes(parsed.protocol)) throw new ProviderError("CONFIG");
+    const base = type === "doubao" ? parsed.origin : type === "gemini" ? (() => {
+      const current = new URL(provider.url); current.pathname = "/v1beta"; current.search = ""; current.hash = ""; return current.toString();
+    })() : normalizeOpenAIBaseUrl(provider.url);
+    let url = endpoint(base, type === "doubao" ? "api/v3/models" : "models");
+    const headers: Record<string,string> = {"User-Agent":CODEX_USER_AGENT};
+    if (type === "gemini" || type === "local-cliproxy") {
+      const authenticated = new URL(url); if (!authenticated.searchParams.has("key")) authenticated.searchParams.set("key", provider.key);
+      url = authenticated.toString();
+    } else if (type === "anthropic") {
+      headers["x-api-key"] = provider.key; headers["anthropic-version"] = "2023-06-01";
+    } else headers.Authorization = `Bearer ${provider.key}`;
+    const result = await http.withResponse(url, {method:"GET", headers}, async (response, active) => {
+      try {
+        if (!response.ok) throw new ProviderError("HTTP_STATUS", response.status);
+        return {text:await readBody(response, active, 2 * 1024 * 1024)};
+      } catch (error) {return {error:safeError(error)};}
+    }, {signal, timeoutMs:config.timeout * 1000});
+    if (result.error) throw result.error;
+    const payload = object(parseJson(result.text!)); checkProviderFailure(payload);
+    const rows = Array.isArray(payload.data) ? payload.data : Array.isArray(payload.models) ? payload.models : [];
+    const models = rows.map(item => {
+      const model = object(item); return string(model.id || model.name);
+    }).filter(Boolean);
+    if (!models.length) throw new ProviderError("EMPTY_OUTPUT");
+    return [...new Set(models)].sort();
+  } catch (error) {throw safeError(error);}
 }

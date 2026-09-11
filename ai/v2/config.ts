@@ -3,7 +3,7 @@ import {assertAllowedModel, type ChatConfigSnapshot, type ProviderConfig, type R
 
 export const reasoningValues = ["auto", "none", "minimal", "low", "medium", "high", "xhigh"] as const;
 export const tierValues = ["auto", "default", "priority", "fast", "flex"] as const;
-export const providerTypes = ["openai-compatible", "openai", "gemini", "doubao", "moonshot", "local-cliproxy"] as const;
+export const providerTypes = ["openai-compatible", "openai", "gemini", "anthropic", "codex", "doubao", "moonshot", "local-cliproxy"] as const;
 export const modes = ["Chat", "Search", "Image", "Video"] as const;
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 export interface Config extends Mutable<ChatConfigSnapshot>, Record<string, unknown> {
@@ -38,8 +38,11 @@ export function snapshot(raw: Record<string, unknown>): Config {
   const cfg = {...base, ...raw, configs: {...record(raw.configs)}, telegraph: {...base.telegraph, ...record(raw.telegraph)}} as Config;
   for (const [tag, value] of Object.entries(cfg.configs)) {
     const p = record(value);
+    const modelSource = record(p.models);
+    const models = Object.fromEntries(["chat", "search", "image", "video"].flatMap(mode =>
+      typeof modelSource[mode] === "string" && String(modelSource[mode]).trim() ? [[mode, String(modelSource[mode]).trim()]] : []));
     cfg.configs[tag] = {...p, tag, url: typeof p.url === "string" ? p.url : "", key: typeof p.key === "string" ? p.key : "",
-      stream: p.stream === true, responses: p.responses === true} as Config["configs"][string];
+      stream: p.stream === true, responses: p.responses === true, models} as Config["configs"][string];
   }
   for (const mode of modes) for (const suffix of ["Tag", "Model"] as const) {
     const key = `current${mode}${suffix}` as const;
