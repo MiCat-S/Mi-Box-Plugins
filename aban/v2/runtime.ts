@@ -530,7 +530,7 @@ class PermissionManager {
       const participant = await client.invoke(
         new Api.channels.GetParticipant({
           channel: chatId,
-          participant: me.id
+          participant: new Api.InputPeerSelf()
         })
       );
 
@@ -598,7 +598,7 @@ class PermissionManager {
     const participant = await client.invoke(
       new Api.channels.GetParticipant({
         channel: chatId,
-        participant: me.id
+        participant: new Api.InputPeerSelf()
       })
     );
 

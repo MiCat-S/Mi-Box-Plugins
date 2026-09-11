@@ -5,7 +5,7 @@ const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildSync} = require(path.join(core, 'node_modules/esbuild'));
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
-const {Api} = require(path.join(core, 'node_modules/teleproto'));
+const {Api, utils} = require(path.join(core, 'node_modules/teleproto'));
 const {returnBigInt: integer} = require(path.join(core, 'node_modules/teleproto/Helpers.js'));
 let root, factory, createRuntime, oracle;
 const user = (id = 2) => new Api.User({id: integer(id), accessHash: integer(30), firstName: '<Target&>'});
@@ -58,10 +58,20 @@ function environment(options = {}) {
     getDialogs: async () => (options.groups ?? [channel()]).map(entity => ({id: (entity instanceof Api.Channel ? '-100' : '-') + entity.id, entity, title: entity.title,
       isGroup: true, isChannel: entity instanceof Api.Channel})),
     invoke: async request => {
+      if (options.wire) {
+        await request.resolve({getInputEntity: async value => {
+          if (value instanceof Api.InputPeerSelf || value instanceof Api.InputPeerUser) return value;
+          if (value instanceof Api.InputChannel || value instanceof Api.PeerChannel) {
+            return new Api.InputPeerChannel({channelId: value.channelId, accessHash: integer(20)});
+          }
+          return input(Number(value));
+        }}, utils);
+        request.getBytes();
+      }
       if (options.invoke) {const value = await options.invoke(request); if (value !== undefined) return value;}
       if (request instanceof Api.channels.GetParticipant) {
         if (options.lookupFails) throw new Error('PARTICIPANT_ID_INVALID');
-        const self = request.participant?.toString() === '1';
+        const self = request.participant instanceof Api.InputPeerSelf || request.participant?.toString() === '1';
         return {participant: self || options.admin ? new Api.ChannelParticipantCreator({userId: integer(self ? 1 : 2)})
           : new Api.ChannelParticipant({userId: integer(2)}), users: [user()]};
       }
@@ -72,7 +82,12 @@ function environment(options = {}) {
     },
   };
   const client = new Proxy(base, {get(target, key) {return async (...args) => {
-    controller.signal.throwIfAborted(); calls.push({method: key, args: normalize(args)});
+    controller.signal.throwIfAborted();
+    const recorded = normalize(args);
+    // Compare self-permission queries by identity across legacy and typed peers.
+    if (key === 'invoke' && args[0] instanceof Api.channels.GetParticipant &&
+        (args[0].participant instanceof Api.InputPeerSelf || args[0].participant?.toString() === '1')) recorded[0].participant = 'self';
+    calls.push({method: key, args: recorded});
     const result = await target[key](...args); controller.signal.throwIfAborted(); return result;
   };}});
   const ctx = {signal: controller.signal, log: {info(){},error(){}}, tasks: {run: async () => {}},
@@ -228,6 +243,24 @@ test('history cleanup repeats until Telegram returns zero offset', async () => {
   const r = await createRuntime(e.ctx, {});
   await r.BanManager.deleteHistoryInCurrentChat(e.client, message().peerId, 2, input());
   assert.equal(pages, 3);
+});
+test('sb resolves and serializes real TL requests before deleting all history pages', async () => {
+  let pages = 0;
+  const e = environment({wire: true, invoke: async request => {
+    if (request instanceof Api.channels.DeleteParticipantHistory) {
+      assert.ok(request.participant instanceof Api.InputPeerUser);
+      return {offset: ++pages < 3 ? 10 : 0};
+    }
+  }}), r = await createRuntime(e.ctx, {});
+  await r.CommandHandlers.handleSuperBan(e.client, message());
+  assert.equal(pages, 3, e.edits.at(-1));
+  assert.match(e.edits.at(-1), /当前群组消息: ✓已清理/);
+  assert.doesNotMatch(e.edits.at(-1), /Ambiguous type|消息: ✗/);
+});
+test('administrator permission queries serialize self peers through Teleproto', async () => {
+  const e = environment({wire: true}), r = await createRuntime(e.ctx, {});
+  assert.equal(await r.PermissionManager.checkAdminPermission(e.client, message().peerId), true);
+  assert.equal(await r.PermissionManager.canDeleteMessages(e.client, message().peerId), true);
 });
 
 test('ordinary group ban reports unsupported history cleanup and uses DeleteChatUser', async () => {
