@@ -59,6 +59,10 @@ test('sum migrates legacy providers into ai, remaps task tags, and calls the uni
   const client = {
     async getEntity() {return {title: '测试群', username: 'testgroup'};},
     async *iterMessages() {
+      yield {id: 11, message: '', media: {className: 'MessageMediaDocument', document: {attributes: [
+        {className: 'DocumentAttributeFilename', fileName: 'sticker.webp'},
+      ]}}, sender: {firstName: '丙'}, senderId: 3};
+      yield {id: 10, message: '带图说明', media: {className: 'MessageMediaPhoto'}, sender: {firstName: '丙'}, senderId: 3};
       yield {id: 9, message: '第二条消息', sender: {firstName: '乙'}, senderId: 2};
       yield {id: 8, message: '第一条消息', sender: {firstName: '甲'}, senderId: 1};
     },
@@ -96,6 +100,8 @@ test('sum migrates legacy providers into ai, remaps task tags, and calls the uni
   assert.equal(body.max_tokens, 2000);
   assert.equal(body.messages[0].content, 'summary prompt');
   assert.match(body.messages[1].content, /第一条消息/);
+  assert.match(body.messages[1].content, /带图说明/);
+  assert.doesNotMatch(body.messages[1].content, /sticker\.webp|\[文件:/);
   assert.equal(sent[0].peer, 'me');
   assert.match(sent[0].value.message, /统一摘要/);
   assert.doesNotMatch(edits.map(item => item.text).join('\n'), /legacy-secret|occupied-secret|central-secret/);

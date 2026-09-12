@@ -1,6 +1,6 @@
 import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type SubcommandDefinition, definePlugin, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {
-  buildMessageLink, DEFAULT_PROMPT, extractFileName, extractUrlsFromEntities, formatDate,
+  buildMessageLink, DEFAULT_PROMPT, extractUrlsFromEntities, formatDate,
   formatMessagesForAI, htmlEscape,
   type CustomProvider, type MessageData, type SummaryDB, type SummaryTask,
 } from "./v2/model";
@@ -98,13 +98,12 @@ async function readMessages(ctx: PluginContext, chatId: string, beforeId: number
       active.throwIfAborted();
       if (beforeId && item.id >= beforeId) continue;
       const content = typeof item.message === "string" ? item.message.trim() : "";
-      const fileName = extractFileName(item);
-      if (!content && !fileName) continue;
+      if (!content) continue;
       const senderEntity: any = item.sender;
       const sender = senderEntity?.title || [senderEntity?.firstName, senderEntity?.lastName].filter(Boolean).join(" ") ||
         item.senderId?.toString() || "未知发送者";
-      rows.push({text: `[${sender}] ${content || fileName}`, content, telegramLink: buildMessageLink(chatId, item.id, username),
-        urls: extractUrlsFromEntities(item), ...(fileName ? {fileName} : {})});
+      rows.push({text: `[${sender}] ${content}`, content, telegramLink: buildMessageLink(chatId, item.id, username),
+        urls: extractUrlsFromEntities(item)});
       if (rows.length >= count) break;
     }
     rows.reverse();
@@ -223,7 +222,7 @@ export default function createSum() {
   });
   const command: CommandDefinition = {
     description: "群消息即时与定时摘要", helpArgs: ["help", "h", "?"], args: "[消息数] [--provider ai标签]", subcommandsCaseSensitive: false,
-    examples: [{args: "", description: "总结当前群最近 100 条消息"}, {args: "200"}, {args: "100 --provider main"}],
+    examples: [{args: "", description: "总结当前群最近 100 条文字消息"}, {args: "200"}, {args: "100 --provider main"}],
     subcommands: {
       list: {description: "查看定时摘要任务", args: "", handle: guarded(async (invocation, ctx) => {
         const db = await store(ctx).read(ctx.signal);
@@ -266,7 +265,7 @@ export default function createSum() {
         }, handle: centralConfig},
       }, handle: configured(async () => { throw new UserError("未知 config 子命令"); })},
     },
-    help: [{heading: "即时与定时：", body: "即时总结默认取当前群命令之前的最近 100 条，范围 10–500；可用 --provider 临时指定 ai 插件中的标签。定时任务默认发往收藏夹。长结果自动分段；即时结果关闭链接预览，定时结果按 preview 配置。"},
+    help: [{heading: "即时与定时：", body: "即时总结默认取当前群命令之前的最近 100 条文字消息，范围 10–500；带媒体的文字说明会作为文字处理。可用 --provider 临时指定 ai 插件中的标签。定时任务默认发往收藏夹。长结果自动分段；即时结果关闭链接预览，定时结果按 preview 配置。"},
       {heading: "AI 配置：", body: "供应商、密钥、聊天模型、思考强度、服务等级和超时由 ai 插件统一管理；sum 仅保留摘要提示词与显示设置。"}],
     handle: guarded(async (invocation, ctx) => {
       const sub = invocation.args[0]?.toLowerCase() ?? "";

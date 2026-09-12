@@ -112,7 +112,6 @@ export type MessageData = {
   content: string; // 原始消息内容
   telegramLink: string; // Telegram 消息链接
   urls: string[]; // 消息中的所有 URL（包括 entities 中的）
-  fileName?: string; // 附件文件名（如果有）
 };
 
 // 从消息 entities 中提取 URL
@@ -146,75 +145,6 @@ export function extractUrlsFromText(text: string): string[] {
   return text.match(urlRegex) || [];
 }
 
-// 检查是否为贴纸/表情包
-export function isStickerOrEmoji(message: any): boolean {
-  if (!message.media?.document) return false;
-
-  const doc = message.media.document;
-
-  // 检查 MIME 类型
-  const stickerMimeTypes = [
-    "application/x-tgsticker", // TGS 动画贴纸
-    "video/webm", // 视频贴纸
-  ];
-  if (doc.mimeType && stickerMimeTypes.includes(doc.mimeType)) {
-    return true;
-  }
-
-  // 检查 attributes 中是否有贴纸/表情包标识
-  if (doc.attributes && Array.isArray(doc.attributes)) {
-    for (const attr of doc.attributes) {
-      if (
-        attr.className === "DocumentAttributeSticker" ||
-        attr.className === "DocumentAttributeCustomEmoji"
-      ) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-// 从消息中提取文件名
-export function extractFileName(message: any): string | null {
-  if (!message.media) return null;
-
-  // 忽略贴纸/表情包
-  if (isStickerOrEmoji(message)) {
-    return null;
-  }
-
-  // MessageMediaDocument（文件、图片等）
-  if (message.media.document) {
-    const doc = message.media.document;
-    // 从 attributes 中查找文件名
-    if (doc.attributes && Array.isArray(doc.attributes)) {
-      for (const attr of doc.attributes) {
-        if (attr.className === "DocumentAttributeFilename" && attr.fileName) {
-          return attr.fileName;
-        }
-      }
-    }
-    // 如果没有文件名，返回 MIME 类型
-    if (doc.mimeType) {
-      return `[${doc.mimeType}]`;
-    }
-  }
-
-  // MessageMediaPhoto（图片）
-  if (message.media.className === "MessageMediaPhoto") {
-    return "[图片]";
-  }
-
-  // MessageMediaWebPage（网页预览）
-  if (message.media.className === "MessageMediaWebPage") {
-    return null; // 网页预览不作为文件处理
-  }
-
-  return null;
-}
-
 // 格式化消息数据为文本
 export function formatMessagesForAI(messageData: MessageData[]): string {
   // 消息正文，每条消息附带 Telegram 链接
@@ -236,27 +166,12 @@ export function formatMessagesForAI(messageData: MessageData[]): string {
     }
   }
 
-  // 提取所有附件文件
-  const fileMappings: { fileName: string; telegramLink: string }[] = [];
-  for (const m of messageData) {
-    if (m.fileName) {
-      fileMappings.push({ fileName: m.fileName, telegramLink: m.telegramLink });
-    }
-  }
-
   let result = messageTexts.join("\n");
 
   if (urlMappings.length > 0) {
     result += "\n\n--- 消息中包含的外部链接（资源URL - 来源消息链接）---\n";
     for (const mapping of urlMappings) {
       result += `${mapping.url} - [查看原消息](${mapping.telegramLink})\n`;
-    }
-  }
-
-  if (fileMappings.length > 0) {
-    result += "\n\n--- 消息中包含的附件（文件名 - 来源消息链接）---\n";
-    for (const mapping of fileMappings) {
-      result += `${mapping.fileName} - [查看原消息](${mapping.telegramLink})\n`;
     }
   }
 
