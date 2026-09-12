@@ -61,6 +61,13 @@ test('ai chat service keeps configured defaults without overrides', async () => 
   assert.equal(body.reasoning_effort, 'high');
 });
 
+test('ai chat service adds the standard v1 prefix to a root OpenAI provider URL', async () => {
+  const cfg = config();
+  cfg.configs.main.url = 'https://main.invalid';
+  const {requests} = await callChat(cfg, {text: 'hi'});
+  assert.equal(new URL(requests[0].url).pathname, '/v1/chat/completions');
+});
+
 test('ai chat service uses the requested provider model and accepts bounded multimodal options', async () => {
   const cfg = config();
   cfg.configs.alt.models = {chat: 'alt-chat-model'};

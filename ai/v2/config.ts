@@ -1,5 +1,8 @@
 import type { PluginContext, PluginDefinition } from "telebox/sdk";
-import {assertAllowedModel, type ChatConfigSnapshot, type ProviderConfig, type ReasoningEffort, type ServiceTier} from "./provider";
+import {
+  assertAllowedModel, normalizeOpenAIBaseUrl, resolveProviderType,
+  type ChatConfigSnapshot, type ProviderConfig, type ReasoningEffort, type ServiceTier,
+} from "./provider";
 
 export const reasoningValues = ["auto", "none", "minimal", "low", "medium", "high", "xhigh"] as const;
 export const tierValues = ["auto", "default", "priority", "fast", "flex"] as const;
@@ -22,6 +25,16 @@ export function requireInput(condition: unknown, message: string): asserts condi
 }
 export const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+function providerUrl(provider: Record<string, unknown>): string {
+  const url = typeof provider.url === "string" ? provider.url : "";
+  if (!URL.canParse(url)) return url;
+  const pathname = new URL(url).pathname;
+  const type = resolveProviderType({url, ...(typeof provider.type === "string" ? {type: provider.type as ProviderConfig["type"]} : {})});
+  if ((pathname === "" || pathname === "/") && ["openai", "openai-compatible", "moonshot"].includes(type)) {
+    return normalizeOpenAIBaseUrl(url);
+  }
+  return url;
+}
 export function defaults(): Config {
   return {
     configs: {}, currentChatTag: "", currentChatModel: "", currentChatReasoningEffort: "auto", currentChatServiceTier: "auto",
@@ -41,7 +54,7 @@ export function snapshot(raw: Record<string, unknown>): Config {
     const modelSource = record(p.models);
     const models = Object.fromEntries(["chat", "search", "image", "video"].flatMap(mode =>
       typeof modelSource[mode] === "string" && String(modelSource[mode]).trim() ? [[mode, String(modelSource[mode]).trim()]] : []));
-    cfg.configs[tag] = {...p, tag, url: typeof p.url === "string" ? p.url : "", key: typeof p.key === "string" ? p.key : "",
+    cfg.configs[tag] = {...p, tag, url: providerUrl(p), key: typeof p.key === "string" ? p.key : "",
       stream: p.stream === true, responses: p.responses === true, models} as Config["configs"][string];
   }
   for (const mode of modes) for (const suffix of ["Tag", "Model"] as const) {
