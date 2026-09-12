@@ -117,7 +117,7 @@ function safeMessage(error: unknown): string {
 }
 interface ServiceTextInput {
   text: string; systemPrompt?: string; model?: string; tag?: string; reasoningEffort?: ReasoningEffort;
-  temperature?: number; maxOutputTokens?: number; images?: ChatImage[];
+  temperature?: number; maxOutputTokens?: number; images?: ChatImage[]; fallbackToChatCompletions?: boolean;
 }
 function serviceImages(input: unknown): ChatImage[] | undefined {
   if (input === undefined) return undefined;
@@ -144,6 +144,7 @@ function serviceText(input: unknown): ServiceTextInput {
   requireInput(value.reasoningEffort === undefined || reasoningValues.includes(value.reasoningEffort as ReasoningEffort), "思考强度无效");
   requireInput(value.temperature === undefined || typeof value.temperature === "number" && Number.isFinite(value.temperature) && value.temperature >= 0 && value.temperature <= 2, "温度无效");
   requireInput(value.maxOutputTokens === undefined || Number.isSafeInteger(value.maxOutputTokens) && Number(value.maxOutputTokens) >= 1 && Number(value.maxOutputTokens) <= 32768, "输出上限无效");
+  requireInput(value.fallbackToChatCompletions === undefined || typeof value.fallbackToChatCompletions === "boolean", "兼容回退选项无效");
   const images = serviceImages(value.images);
   return {text: value.text,
     ...(typeof value.systemPrompt === "string" ? {systemPrompt: value.systemPrompt} : {}),
@@ -152,6 +153,7 @@ function serviceText(input: unknown): ServiceTextInput {
     ...(typeof value.reasoningEffort === "string" ? {reasoningEffort: value.reasoningEffort as ReasoningEffort} : {}),
     ...(typeof value.temperature === "number" ? {temperature: value.temperature} : {}),
     ...(typeof value.maxOutputTokens === "number" ? {maxOutputTokens: value.maxOutputTokens} : {}),
+    ...(typeof value.fallbackToChatCompletions === "boolean" ? {fallbackToChatCompletions: value.fallbackToChatCompletions} : {}),
     ...(images ? {images} : {})};
 }
 
@@ -403,12 +405,21 @@ export default function createAi() {
       chat: {description: "使用当前聊天模型生成文字，可指定 model/tag/reasoningEffort", async handle(input, ctx, signal) {
         const value = serviceText(input); const cfg = await readConfig(ctx, signal);
         const tag = value.tag ?? cfg.currentChatTag;
-        requireInput(Boolean(cfg.configs[tag]), "未找到指定的 AI 提供商");
+        const provider = cfg.configs[tag];
+        requireInput(provider, "未找到指定的 AI 提供商");
         const model = value.model ?? selectedModel(cfg, tag, "chat", cfg.currentChatModel);
-        return chatText({...cfg, currentChatTag: tag, currentChatModel: model,
-          currentChatReasoningEffort: value.reasoningEffort ?? cfg.currentChatReasoningEffort},
-        ctx.http, value.text, signal, value.systemPrompt ?? cfg.prompt, {},
-        {images: value.images, temperature: value.temperature, maxOutputTokens: value.maxOutputTokens});
+        const selected = {...cfg, currentChatTag: tag, currentChatModel: model,
+          currentChatReasoningEffort: value.reasoningEffort ?? cfg.currentChatReasoningEffort};
+        const options = {images: value.images, temperature: value.temperature, maxOutputTokens: value.maxOutputTokens};
+        try {
+          return await chatText(selected, ctx.http, value.text, signal, value.systemPrompt ?? cfg.prompt, {}, options);
+        } catch (error) {
+          if (!value.fallbackToChatCompletions || !provider.responses || !(error instanceof ProviderError) ||
+              error.code !== "HTTP_STATUS" || (error.status !== 400 && error.status !== 404)) throw error;
+          const fallback = {...provider, responses: false};
+          return chatText({...selected, configs: {...selected.configs, [tag]: fallback}},
+            ctx.http, value.text, signal, value.systemPrompt ?? cfg.prompt, {}, options);
+        }
       }},
       search: {description: "使用当前搜索模型联网检索并返回文字与来源", async handle(input, ctx, signal) {
         const value = serviceText(input); requireInput(!value.images, "搜索服务不接受图片");

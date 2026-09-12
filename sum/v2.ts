@@ -122,6 +122,7 @@ async function summarize(ctx: PluginContext, task: Pick<SummaryTask, "chatId" | 
   ctx.log.info("sum:request", {messages: messages.data.length, inputChars: messages.data.reduce((n, item) => n + item.content.length, 0)});
   let output = await ctx.services.call<string>("ai", "chat", {text:formatMessagesForAI(messages.data),
     systemPrompt:task.aiPrompt || db.aiConfig.default_prompt || DEFAULT_PROMPT, maxOutputTokens:2000,
+    fallbackToChatCompletions:true,
     ...(task.aiProvider ? {tag:task.aiProvider} : {})}, signal);
   output = output.replace(/<thinking>[\s\S]*?<\/thinking>|<think>[\s\S]*?<\/think>/gi, "").trim();
   const limit = db.aiConfig.max_output_length ?? 0;

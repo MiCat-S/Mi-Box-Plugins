@@ -101,6 +101,53 @@ test('sum migrates legacy providers into ai, remaps task tags, and calls the uni
   assert.doesNotMatch(edits.map(item => item.text).join('\n'), /legacy-secret|occupied-secret|central-secret/);
 });
 
+test('sum preserves the legacy Responses-to-Chat fallback after provider migration', async t => {
+  const root = await temporaryRoot(t, 'mibot-sum-fallback-');
+  await fs.mkdir(path.join(root, 'ai'), {recursive: true});
+  await fs.writeFile(path.join(root, 'ai', 'config.json'), JSON.stringify(centralConfig()));
+  await fs.mkdir(path.join(root, 'sum'), {recursive: true});
+  await fs.writeFile(path.join(root, 'sum', 'database.json'), JSON.stringify({
+    seq: '1',
+    tasks: [{id: '1', cron: '0 */2 * * *', chatId: '-10010', interval: '2h', messageCount: 10,
+      pushTarget: 'me', aiProvider: 'proxy', createdAt: '2026-01-01T00:00:00.000Z'}],
+    aiConfig: {
+      providers: {proxy: {name: 'Proxy', base_url: 'https://proxy.example.test', api_key: 'legacy-secret', model: 'gpt-5.4', type: 'auto'}},
+      default_provider: 'proxy', default_prompt: 'summary prompt', default_spoiler: false,
+      max_output_length: 0, link_preview: false,
+    },
+  }));
+
+  const requests = [], sent = [], edits = [];
+  let responsesStatus = 404;
+  const client = {
+    async getEntity() {return {title: '测试群', username: 'testgroup'};},
+    async *iterMessages() {yield {id: 9, message: '待总结消息', sender: {firstName: '甲'}, senderId: 1};},
+    async sendMessage(peer, value) {sent.push({peer, value});},
+  };
+  const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}},
+    http: {fetch: async url => {
+      const target = new URL(url); requests.push(target.pathname);
+      if (target.pathname === '/v1/responses') return Response.json({error: {message: 'unsupported endpoint'}}, {status: responsesStatus});
+      assert.equal(target.pathname, '/v1/chat/completions');
+      return Response.json({choices: [{message: {content: '<b>兼容摘要</b>'}}]});
+    }},
+    telegram: {async edit(_message, text, options) {edits.push({text, options});}, async reply() {}, async invoke() {},
+      async getReply() {}, async withClient(operation, signal) {return operation(client, signal);}},
+  });
+  t.after(async () => assert.equal((await host.shutdown(2000)).completed, true));
+  await host.load(plugin('ai'));
+  await host.load(plugin('sum'));
+
+  for (const [index, status] of [404, 400].entries()) {
+    responsesStatus = status; requests.length = 0; sent.length = 0;
+    await host.dispatchPrimary({id: 20 + index, chatId: '-10010', senderId: '1', outgoing: true, text: '.sum run 1', raw: {peerId: {}}});
+    assert.deepEqual(requests, ['/v1/responses', '/v1/chat/completions']);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].value.message, /兼容摘要/);
+  }
+  assert.doesNotMatch(edits.map(item => item.text).join('\n'), /摘要操作失败/);
+});
+
 test('convert imports and scrubs its legacy SQLite key exactly once', async t => {
   const root = await temporaryRoot(t, 'mibot-convert-unified-');
   const directory = path.join(root, 'convert');
