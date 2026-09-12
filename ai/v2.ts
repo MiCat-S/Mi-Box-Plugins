@@ -233,7 +233,7 @@ export default function createAi() {
     providerType(type);
     await updateConfig(ctx, (raw, cfg) => {
       const configs = raw.configs && typeof raw.configs === "object" && !Array.isArray(raw.configs) ? raw.configs as Record<string, unknown> : {};
-      configs[tag] = {tag, url, key, ...(type ? {type} : {}), stream: false, responses: false,
+      configs[tag] = {tag, url, key, ...(type ? {type} : {}), stream: false,
         ...(cfg.configs[tag]?.models ? {models: {...cfg.configs[tag].models}} : {})};
       raw.configs = configs;
     });

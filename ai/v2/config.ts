@@ -35,6 +35,12 @@ function providerUrl(provider: Record<string, unknown>): string {
   }
   return url;
 }
+function providerResponses(provider: Record<string, unknown>): boolean {
+  if (typeof provider.responses === "boolean") return provider.responses;
+  const url = typeof provider.url === "string" ? provider.url : "";
+  const type = resolveProviderType({url, ...(typeof provider.type === "string" ? {type: provider.type as ProviderConfig["type"]} : {})});
+  return ["openai", "openai-compatible", "local-cliproxy"].includes(type);
+}
 export function defaults(): Config {
   return {
     configs: {}, currentChatTag: "", currentChatModel: "", currentChatReasoningEffort: "auto", currentChatServiceTier: "auto",
@@ -55,7 +61,7 @@ export function snapshot(raw: Record<string, unknown>): Config {
     const models = Object.fromEntries(["chat", "search", "image", "video"].flatMap(mode =>
       typeof modelSource[mode] === "string" && String(modelSource[mode]).trim() ? [[mode, String(modelSource[mode]).trim()]] : []));
     cfg.configs[tag] = {...p, tag, url: providerUrl(p), key: typeof p.key === "string" ? p.key : "",
-      stream: p.stream === true, responses: p.responses === true, models} as Config["configs"][string];
+      stream: p.stream === true, responses: providerResponses(p), models} as Config["configs"][string];
   }
   for (const mode of modes) for (const suffix of ["Tag", "Model"] as const) {
     const key = `current${mode}${suffix}` as const;
