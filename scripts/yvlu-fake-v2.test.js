@@ -44,7 +44,7 @@ async function fixture(text, {deleteFails = false} = {}) {
 
 test('yvlu f/fr preserve the original sender while replacing text and optionally keeping the reply', async () => {
   const fake = await fixture('.yvlu f forged text');
-  assert.equal(fake.payload.messages[0].from.id, '1');
+  assert.equal(String(fake.payload.messages[0].from.id), '1');
   assert.equal(fake.payload.messages[0].text, 'forged text');
   assert.equal('media' in fake.payload.messages[0], false);
   assert.equal('replyMessage' in fake.payload.messages[0], false);
