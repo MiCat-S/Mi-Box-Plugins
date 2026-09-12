@@ -71,7 +71,14 @@ const quote: CommandDefinition["handle"] = guarded(async (invocation, ctx, edit)
     const data = await quoteData(ctx, message, replied, options);
     const result = await generateQuote(ctx, data);
     await sendQuote(ctx, (message.raw as any)?.peerId || message.chatId, replied.id, result);
-    await native(ctx, client => client.deleteMessages((message.raw as any)?.peerId || message.chatId, [message.id], {revoke: true}));
+    try {
+      await native(ctx, client => client.deleteMessages((message.raw as any)?.peerId || message.chatId, [message.id], {revoke: true}));
+    } catch {
+      ctx.signal.throwIfAborted();
+      ctx.log.error("yvlu.receipt_cleanup_failed");
+      try { await edit(feedback("success", "语录已生成", "命令消息清理失败"), true); }
+      catch { ctx.signal.throwIfAborted(); ctx.log.error("yvlu.receipt_cleanup_notice_failed"); }
+    }
 });
 const command: CommandDefinition = {
   description: "生成语录、保存贴纸及配置贴纸包", args: "[消息数]", subcommandsCaseSensitive: true,
@@ -105,15 +112,17 @@ const command: CommandDefinition = {
       return;
         })},
     r: {description: "生成语录并包含被引用内容", args: "[消息数]", alternates: [{args: "webp|image|png|stories [消息数]", description: "指定输出格式并包含回复"}], examples: [{args: "r image 3"}], handle: quote},
-    f: {description: "使用指定文本生成语录", args: "文本", examples: [{args: "f 今天心情很好"}], handle: quote},
-    fr: {description: "使用指定文本并包含回复内容", args: "文本", handle: quote},
-    u: {description: "使用指定发送者生成语录", args: "用户ID或用户名 [消息数]", handle: quote},
-    ur: {description: "使用指定发送者并包含回复内容", args: "用户ID或用户名 [消息数]", handle: quote},
+    f: {description: "伪造回复消息的文本", args: "文本", examples: [{args: "f 今天心情很好", description: "回复一条消息，保留其发送者并替换正文"}], handle: quote},
+    fr: {description: "伪造文本并包含原消息的回复内容", args: "文本", examples: [{args: "fr 今天心情很好"}], handle: quote},
+    u: {description: "伪造回复消息的发送者", args: "用户ID或用户名 [消息数]", examples: [{args: "u @username"}], handle: quote},
+    ur: {description: "伪造发送者并包含原消息的回复内容", args: "用户ID或用户名 [消息数]", examples: [{args: "ur @username 3"}], handle: quote},
     webp: {description: "生成静态 WebP 贴纸（默认）", args: "[消息数]", handle: quote},
     image: {description: "生成背景 PNG 图片", aliases: ["png"], args: "[消息数]", handle: quote},
     stories: {description: "生成故事模式 720×1280 PNG", args: "[消息数]", handle: quote},
   },
-  help: [{heading: "引用与数量：", body: "回复消息生成语录，默认 1 条，最多 5 条；支持选取部分引用。f/fr 保留文本中的换行和格式实体。u/ur 可用用户 ID 或用户名指定显示发送者。"},
+  help: [{heading: "引用与数量：", body: "回复消息生成语录，默认 1 条，最多 5 条；支持选取部分引用。"},
+    {heading: "伪造消息：", body: "回复一条消息使用 <code>{prefix}yvlu f 文本</code> 伪造正文；使用 <code>{prefix}yvlu fr 文本</code> 时同时保留原消息引用的内容。文本中的换行和格式实体会保留。"},
+    {heading: "伪造发送者：", body: "回复一条消息使用 <code>{prefix}yvlu u 用户ID或用户名 [消息数]</code> 伪造发送者；<code>ur</code> 同时保留原消息引用的内容。"},
     {heading: "保存与配置：", body: "先用 config sticker 配置贴纸包，再回复贴纸或图片使用 s 收藏；包不存在时自动创建，需要当前账号具备贴纸包操作权限。"}],
   handle: quote,
 };
