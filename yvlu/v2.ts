@@ -108,7 +108,14 @@ async function handle(invocation: CommandInvocation, ctx: PluginContext): Promis
     const data = await quoteData(ctx, message, replied, options);
     const result = await generateQuote(ctx, data);
     await sendQuote(ctx, (message.raw as any)?.peerId || message.chatId, replied.id, result);
-    await native(ctx, client => client.deleteMessages((message.raw as any)?.peerId || message.chatId, [message.id], {revoke: true}));
+    try {
+      await native(ctx, client => client.deleteMessages((message.raw as any)?.peerId || message.chatId, [message.id], {revoke: true}));
+    } catch {
+      ctx.signal.throwIfAborted();
+      ctx.log.error("yvlu.receipt_cleanup_failed");
+      try { await edit(feedback("success", "语录已生成", "命令消息清理失败"), true); }
+      catch { ctx.signal.throwIfAborted(); ctx.log.error("yvlu.receipt_cleanup_notice_failed"); }
+    }
   } catch (error) {
     ctx.signal.throwIfAborted();
     ctx.log.error("yvlu.command.failed");
