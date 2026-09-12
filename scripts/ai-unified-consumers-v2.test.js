@@ -101,6 +101,36 @@ test('sum migrates legacy providers into ai, remaps task tags, and calls the uni
   assert.doesNotMatch(edits.map(item => item.text).join('\n'), /legacy-secret|occupied-secret|central-secret/);
 });
 
+test('sum loads when legacy default providers have empty keys and scrubs unusable entries', async t => {
+  const root = await temporaryRoot(t, 'mibot-sum-empty-legacy-');
+  await fs.mkdir(path.join(root, 'ai'), {recursive: true});
+  await fs.writeFile(path.join(root, 'ai', 'config.json'), JSON.stringify(centralConfig()));
+  await fs.mkdir(path.join(root, 'sum'), {recursive: true});
+  await fs.writeFile(path.join(root, 'sum', 'database.json'), JSON.stringify({
+    seq: '0', tasks: [], aiConfig: {
+      providers: {
+        openai: {name: 'OpenAI', base_url: 'https://api.openai.com', api_key: '', model: 'gpt-4o', type: 'openai'},
+        gemini: {name: 'Gemini', base_url: 'https://generativelanguage.googleapis.com', api_key: '', model: 'gemini-2.0-flash', type: 'gemini'},
+      },
+      default_provider: 'openai', default_prompt: 'summary prompt', aiMigrated: false,
+    },
+  }));
+  const events = [];
+  const unavailable = async () => {throw new Error('offline');};
+  const host = new PluginHost({storageRoot: root, logger: {info(event, fields) {events.push({event, fields});}, error() {}},
+    telegram: {edit: unavailable, reply: unavailable, invoke: unavailable, getReply: unavailable, withClient: unavailable}});
+  t.after(async () => assert.equal((await host.shutdown(2000)).completed, true));
+  await host.load(plugin('ai'));
+  await host.load(plugin('sum'));
+  assert.equal(host.pluginState('sum'), 'active');
+  const local = JSON.parse(await fs.readFile(path.join(root, 'sum', 'database.json'), 'utf8'));
+  assert.equal(local.aiConfig.aiMigrated, true);
+  assert.deepEqual(local.aiConfig.providers, {});
+  assert.equal(Object.hasOwn(local.aiConfig, 'default_provider'), false);
+  assert.deepEqual(events.filter(item => item.event === 'sum:legacy-provider-skipped'),
+    [{event: 'sum:legacy-provider-skipped', fields: {count: 2}}]);
+});
+
 test('convert imports and scrubs its legacy SQLite key exactly once', async t => {
   const root = await temporaryRoot(t, 'mibot-convert-unified-');
   const directory = path.join(root, 'convert');

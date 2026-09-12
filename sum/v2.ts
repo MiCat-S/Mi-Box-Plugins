@@ -61,9 +61,26 @@ function providerType(provider: CustomProvider): {type:"gemini"|"anthropic"|"ope
 async function migrateAi(ctx: PluginContext): Promise<void> {
   const db = await store(ctx).read(ctx.signal);
   if (db.aiConfig.aiMigrated) return;
-  const entries = Object.entries(db.aiConfig.providers).sort(([a], [b]) => a.localeCompare(b));
+  const candidates = Object.entries(db.aiConfig.providers).sort(([a], [b]) => a.localeCompare(b));
+  const entries: Array<[string, CustomProvider]> = [];
+  let skipped = 0;
+  for (const [name, value] of candidates) {
+    if (!value || typeof value !== "object" || typeof value.base_url !== "string" ||
+        typeof value.api_key !== "string" || !value.api_key.trim() || typeof value.model !== "string" || !value.model.trim()) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      const detected = providerType(value);
+      providerUrl(value, detected.type);
+      entries.push([name, value]);
+    } catch {
+      skipped += 1;
+    }
+  }
+  if (skipped) ctx.log.info("sum:legacy-provider-skipped", {count: skipped});
   if (!entries.length) {
-    await store(ctx).update(value => {value.aiConfig.aiMigrated = true; scrubLegacyAiSettings(value.aiConfig); return value;}, ctx.signal); return;
+    await store(ctx).update(value => {value.aiConfig.providers = {}; value.aiConfig.aiMigrated = true; scrubLegacyAiSettings(value.aiConfig); return value;}, ctx.signal); return;
   }
   if (!ctx.services.available("ai", "import_provider")) return;
   const tags: Record<string,string> = {};
