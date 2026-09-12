@@ -2,14 +2,17 @@ import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type Com
 
 type Data = {schemaVersion: 1; userDeleteMode: Record<string, boolean>};
 const store = (ctx: PluginContext) => ctx.storage.json<Data>("bulk_delete_config.json", {schemaVersion: 1, userDeleteMode: {}});
-const sleep = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
-  const timer = setTimeout(resolve, ms);
-  signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, {once: true});
+export const managedDelay = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal.aborted) { reject(signal.reason); return; }
+  const done = (): void => { signal.removeEventListener("abort", abort); resolve(); };
+  const abort = (): void => { clearTimeout(timer); signal.removeEventListener("abort", abort); reject(signal.reason); };
+  const timer = setTimeout(done, ms);
+  signal.addEventListener("abort", abort, {once: true});
 });
 
 async function removeLater(ctx: PluginContext, chat: any, ids: number[], ms: number) {
   void ctx.tasks.run(`bd:cleanup:${chat}:${ids.join(",")}`, async signal => {
-    await sleep(ms, signal);
+    await managedDelay(ms, signal);
     await ctx.telegram.withClient(client => client.deleteMessages(chat, ids, {revoke: true}));
   }).catch(() => undefined);
 }

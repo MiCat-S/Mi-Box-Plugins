@@ -1,5 +1,5 @@
 import type {MessageEnvelope, PluginContext} from "telebox/sdk";
-import {downloadMediaBuffer} from "./media";
+import {downloadMediaBuffer, MAX_INPUT_PIXELS} from "./media";
 import {native, replyMessage, UserError} from "./runtime";
 
 export async function saveSticker(ctx: PluginContext, message: MessageEnvelope, shortName: string): Promise<boolean> {
@@ -28,7 +28,7 @@ export async function saveSticker(ctx: PluginContext, message: MessageEnvelope, 
   } else if (photo) {
     const buffer = await downloadMediaBuffer(ctx, replied);
     const sharp = (await import("sharp")).default;
-    const png = await sharp(buffer).rotate().resize(512, 512, {fit: "inside"}).png().toBuffer();
+    const png = await sharp(buffer, {limitInputPixels: MAX_INPUT_PIXELS}).rotate().resize(512, 512, {fit: "inside"}).png().toBuffer();
     ctx.signal.throwIfAborted();
     const {CustomFile} = await import("teleproto/client/uploads.js");
     const uploaded = await native(ctx, client => client.uploadFile({file: new CustomFile("sticker.png", png.length, "", png), workers: 1}));

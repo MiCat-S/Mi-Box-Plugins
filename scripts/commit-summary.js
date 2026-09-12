@@ -224,7 +224,7 @@ const PLUGIN_CATEGORIES = {
   '👮 群组管理': ['aban', 'clean_member', 'bulk_delete', 'manage_admin', 'atadmins', 'sunremove', 'clearblocked', 'clear_sticker', 'da', 'dme'],
   '🎨 媒体处理': ['convert', 'gif', 'sticker', 'sticker_to_pic', 'pic_to_sticker', 'getstickers', 'copy_sticker_set', 'q', 'eat', 'eatgif'],
   '🎮 娱乐功能': ['cosplay', 'crazy4', 'bizhi', 'httpcat', 'moyu', 'lottery', 'dbdj', 'yvlu'],
-  '🔧 系统工具': ['speedtest', 'speedlink', 'ssh', 'ntp', 'dig', 'whois', 'encode', 'dc', 'trace'],
+  '🔧 系统工具': ['speedtest', 'speedlink', 'dig', 'whois', 'encode', 'dc', 'trace'],
   '📊 信息查询': ['weather', 'rate', 'news', 'ip', 'ids', 'his'],
   '📱 实用工具': ['qr', 'gt', 'yt-dlp', 'search', 'shift', 'keyword', 'oxost', 'yinglish'],
   '⏰ 定时任务': ['acron', 'autodel', 'autochangename'],

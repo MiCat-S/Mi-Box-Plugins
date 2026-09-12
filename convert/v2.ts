@@ -1,5 +1,5 @@
 import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext, type SubcommandDefinition} from "telebox/sdk";
-import {access, open, stat} from "node:fs/promises";
+import {access, open, stat, type FileHandle} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
 import type {Api as ApiTypes} from "teleproto";
@@ -7,17 +7,20 @@ import type {Api as ApiTypes} from "teleproto";
 const FFMPEG = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"] as const;
 const FFPROBE = ["/usr/bin/ffprobe", "/usr/local/bin/ffprobe", "/opt/homebrew/bin/ffprobe"] as const;
 const ITUNES_HOSTS = ["itunes.apple.com", "is1-ssl.mzstatic.com", "is2-ssl.mzstatic.com", "is3-ssl.mzstatic.com", "is4-ssl.mzstatic.com", "is5-ssl.mzstatic.com"] as const;
+const MAX_INPUT_BYTES = 512 * 1024 * 1024;
+const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 const defaults = {schemaVersion: 1, apiKey: "", legacyImported: false, aiMigrated: false};
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, character =>
   ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;"})[character]!);
 const filename = (value: string): string => value.replace(/[^\p{L}\p{N}\s._-]/gu, "").replace(/\s+/g, "_").slice(0, 100) || "audio";
 
-async function runHelper(context: PluginContext, candidates: readonly string[], args: readonly string[], timeoutMs: number) {
+async function runHelper(context: PluginContext, candidates: readonly string[], args: readonly string[], timeoutMs: number,
+  signal: AbortSignal = context.signal, cwd?: string) {
   for (const command of candidates) {
-    try { return await context.processes.run(command, args, {timeoutMs, maxOutputBytes: 256 * 1024}); }
+    try { return await context.processes.run(command, args, {timeoutMs, maxOutputBytes: 256 * 1024, signal, ...(cwd ? {cwd} : {})}); }
     catch (error) {
-      context.signal.throwIfAborted();
+      signal.throwIfAborted();
       if ((error as {code?: unknown})?.code !== "SPAWN_FAILED") throw error;
       try { await access(command, constants.F_OK); } catch { continue; }
       throw error;
@@ -26,21 +29,65 @@ async function runHelper(context: PluginContext, candidates: readonly string[], 
   throw new Error("Helper unavailable");
 }
 
+async function writeAll(handle: FileHandle, chunk: Uint8Array): Promise<void> {
+  let offset = 0;
+  while (offset < chunk.byteLength) {
+    const {bytesWritten} = await handle.write(chunk, offset, chunk.byteLength - offset, null);
+    if (bytesWritten <= 0) throw new Error("File write failed");
+    offset += bytesWritten;
+  }
+}
+
 async function streamFile(response: Response, target: string, signal: AbortSignal, maximum: number): Promise<void> {
   if (!response.ok || !response.body) throw new Error("Download failed");
   const handle = await open(target, "wx", 0o600);
   const reader = response.body.getReader();
-  let total = 0;
+  let total = 0, done = false;
   try {
     while (true) {
       signal.throwIfAborted();
       const item = await reader.read();
-      if (item.done) break;
+      if (item.done) { done = true; break; }
       total += item.value.byteLength;
       if (total > maximum) throw new Error("Download too large");
-      await handle.write(item.value);
+      await writeAll(handle, item.value);
     }
-  } finally { await reader.cancel().catch(() => undefined); await handle.close(); }
+  } finally {
+    try { if (!done) await reader.cancel(); } catch {}
+    finally {
+      try { reader.releaseLock(); }
+      finally { await handle.close(); }
+    }
+  }
+}
+
+function mediaSize(source: ApiTypes.Message): bigint | undefined {
+  const value = source.document?.size;
+  if (value === undefined || value === null) return;
+  try { return BigInt(String(value)); } catch { return; }
+}
+
+async function downloadTelegramMedia(client: any, source: ApiTypes.Message, target: string, signal: AbortSignal): Promise<void> {
+  const declared = mediaSize(source);
+  if (declared !== undefined && declared > BigInt(MAX_INPUT_BYTES)) throw new Error("Input too large");
+  if (typeof client.iterDownload !== "function") {
+    await client.downloadMedia(source.media!, {outputFile:target,signal,progressCallback:(downloaded:{toString():string})=>{
+      if(BigInt(downloaded.toString())>BigInt(MAX_INPUT_BYTES))throw new Error("Input too large");
+    }});
+    const info=await stat(target);if(!info.isFile()||!info.size||info.size>MAX_INPUT_BYTES)throw new Error("Input too large");
+    return;
+  }
+  const handle = await open(target, "wx", 0o600);
+  let total = 0;
+  try {
+    for await (const chunk of client.iterDownload(source.media!, {signal, requestSize: 512 * 1024})) {
+      signal.throwIfAborted();
+      total += chunk.length;
+      if (total > MAX_INPUT_BYTES) throw new Error("Input too large");
+      await writeAll(handle, chunk);
+    }
+  } finally { await handle.close(); }
+  if (!total) throw new Error("Empty input");
 }
 
 async function configuration(context: PluginContext) {
@@ -96,7 +143,7 @@ async function cover(context: PluginContext, query: string, target: string): Pro
     await context.http.withResponse(image, {credentials: "omit"}, (result, signal) => streamFile(result, target, signal, 5 * 1024 * 1024),
       {timeoutMs: 20_000, redirects: {allowedHosts: ITUNES_HOSTS, maxRedirects: 2}});
     return true;
-  } catch { return false; }
+  } catch { context.signal.throwIfAborted(); return false; }
 }
 
 async function runConvert(invocation: any, context: PluginContext, ai: boolean) {
@@ -115,10 +162,11 @@ async function runConvert(invocation: any, context: PluginContext, ai: boolean) 
       const finalMp3 = path.join(directory, "final.mp3");
       const coverFile = path.join(directory, "cover.jpg");
       await context.telegram.edit(message, "正在下载视频…");
-      await context.telegram.withClient(client => client.downloadMedia(source.media!, {outputFile: input}));
+      await context.telegram.withClient(client => downloadTelegramMedia(client, source, input, signal));
       signal.throwIfAborted();
       await context.telegram.edit(message, "正在转换为 MP3…");
-      await runHelper(context, FFMPEG, ["-nostdin", "-y", "-i", input, "-vn", "-c:a", "libmp3lame", "-q:a", "2", rawMp3], 180_000);
+      await runHelper(context, FFMPEG, ["-nostdin", "-y", "-protocol_whitelist", "file", "-i", input, "-vn", "-c:a", "libmp3lame", "-q:a", "2",
+        "-fs", String(MAX_OUTPUT_BYTES), rawMp3], 180_000, signal, directory);
       const query = invocation.args.join(" ").trim();
       const original = (source.document as any)?.attributes?.find((entry: any) => typeof entry?.fileName === "string")?.fileName ?? "video";
       let metadata: Song = {title: query || String(original).replace(/\.[^.]+$/, ""), artist: "Video Converter", album: ""};
@@ -135,13 +183,16 @@ async function runConvert(invocation: any, context: PluginContext, ai: boolean) 
         else args.push("-c:a", "copy");
         args.push("-id3v2_version", "3", "-metadata", `title=${metadata.title}`, "-metadata", `artist=${metadata.artist}`,
           "-metadata", `album=${metadata.album}`, finalMp3);
-        await runHelper(context, FFMPEG, args, 120_000); output = finalMp3;
+        args.splice(2, 0, "-protocol_whitelist", "file");
+        args.splice(args.length - 1, 0, "-fs", String(MAX_OUTPUT_BYTES));
+        await runHelper(context, FFMPEG, args, 120_000, signal, directory); output = finalMp3;
       }
       const info = await stat(output);
-      if (!info.isFile() || info.size === 0 || info.size > 2 * 1024 * 1024 * 1024) throw new Error("Invalid output");
+      if (!info.isFile() || info.size === 0 || info.size > MAX_OUTPUT_BYTES) throw new Error("Invalid output");
       let duration = 0;
       try { duration = Math.max(0, Math.round(Number((await runHelper(context, FFPROBE,
-        ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input], 30_000)).stdout.toString("utf8").trim()) || 0)); } catch {}
+        ["-v", "error", "-protocol_whitelist", "file", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input], 30_000,
+        signal, directory)).stdout.toString("utf8").trim()) || 0)); } catch { signal.throwIfAborted(); }
       await context.telegram.withClient(async client => {
         const {Api} = await import("teleproto");
         const raw = message.raw as ApiTypes.Message | undefined;
@@ -149,7 +200,8 @@ async function runConvert(invocation: any, context: PluginContext, ai: boolean) 
         await client.sendFile(raw.peerId, {file: output, thumb: coverFound ? coverFile : undefined, forceDocument: false,
           replyTo: message.replyToId, attributes: [new Api.DocumentAttributeAudio({duration,
             title: metadata.title || filename(query), performer: metadata.artist || "Video Converter"})]});
-        if (typeof raw.delete === "function") await raw.delete({revoke: true});
+        if (typeof raw.delete === "function") { try { await raw.delete({revoke: true}); }
+          catch { if (!context.signal.aborted) context.log.info("convert_receipt_cleanup_failed"); } }
       });
     });
   } catch {
@@ -186,7 +238,7 @@ const convertCommand: CommandDefinition = {
   subcommandsCaseSensitive: false,
   subcommands: {u, apikey, clear},
   help: [
-    {heading: "说明：", body: "回复视频后发送本命令即可转换为 MP3；不使用 <code>u</code> 时可直接指定输出文件名，不提供文件名则使用视频原名。AI 智能识别、自定义文件名、高质量音轨转 MP3，以及元数据嵌入（歌曲名、歌手、专辑和封面）。"},
+    {heading: "说明：", body: "回复视频后发送本命令即可转换为 MP3；输入视频上限 512 MiB。不使用 <code>u</code> 时可直接指定输出文件名，不提供文件名则使用视频原名。AI 智能识别、自定义文件名、高质量音轨转 MP3，以及元数据嵌入（歌曲名、歌手、专辑和封面）。"},
     {heading: "AI 配置：", body: "智能识别使用 ai 插件当前搜索供应商和模型；请先通过 <code>{prefix}ai config</code> 与 <code>{prefix}ai model search</code> 完成统一配置。"},
   ],
   async handle(invocation, context) {

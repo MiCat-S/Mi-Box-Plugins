@@ -3,7 +3,7 @@ import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition
 import type {Api as ApiTypes} from "teleproto";
 
 export default function createRestorePin() {
-  const command: CommandDefinition = {"args":"","examples":[{"args":""}],"help":[{"heading":"范围与权限：","body":"仅支持有管理员权限的超级群和频道。扫描最近 100 条置顶相关管理员日志，恢复其中被取消的置顶消息；逐条操作间隔 1 秒，显示成功和失败数量。"}],helpArgs: ["help","h"], description: "恢复最近取消的置顶消息", async handle(invocation, context) {
+  const command: CommandDefinition = {"args":"","examples":[{"args":""}],"help":[{"heading":"范围与权限：","body":"仅支持当前账号为群主或具有置顶消息权限的超级群和频道。扫描最近 100 条置顶相关管理员日志，恢复其中被取消的置顶消息；逐条操作间隔 1 秒，显示成功和失败数量。"}],helpArgs: ["help","h"], description: "恢复最近取消的置顶消息", async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
         await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
         return;
@@ -17,10 +17,11 @@ export default function createRestorePin() {
           if (!raw?.peerId) throw new Error("Missing peer");
           const chat = await client.getEntity(raw.peerId);
           if (!(chat instanceof Api.Channel)) throw new Error("Unsupported chat");
-          const me = await client.getMe();
-          const membership = await client.invoke(new Api.channels.GetParticipant({channel: chat, participant: me}));
-          if (!(membership.participant instanceof Api.ChannelParticipantAdmin) &&
-              !(membership.participant instanceof Api.ChannelParticipantCreator)) throw new Error("Admin required");
+          const membership = await client.invoke(new Api.channels.GetParticipant({channel: chat, participant: new Api.InputPeerSelf()}));
+          if (!(membership.participant instanceof Api.ChannelParticipantCreator) &&
+              (!(membership.participant instanceof Api.ChannelParticipantAdmin) || !membership.participant.adminRights?.pinMessages)) {
+            throw new Error("Pin permission required");
+          }
           const log = await client.invoke(new Api.channels.GetAdminLog({
             channel: chat, q: "", maxId: returnBigInt(0), minId: returnBigInt(0), limit: 100,
             eventsFilter: new Api.ChannelAdminLogEventsFilter({pinned: true}),

@@ -40,15 +40,15 @@ async function entity(ctx:PluginContext,message:MessageEnvelope,inputChannel:any
       return result(full,await client.getInputEntity(full.id),String(full.id));
     }catch(error){
       signal.throwIfAborted();
-      const numeric=Number(arg);
-      if(!Number.isFinite(numeric))throw error;
+      if(!/^[1-9][0-9]*$/.test(arg))throw error;
+      const numeric=BigInt(arg).toString();
       let offset=0;
       for(let page=0;page<5;page++){
         signal.throwIfAborted();
         const found:any=await client.invoke(new Api.channels.GetParticipants({channel:inputChannel,filter:new Api.ChannelParticipantsRecent(),offset,limit:200,hash:0 as any}));
         const participants:any[]=found.participants??[],users:any[]=found.users??[];
-        if(participants.some(p=>Number(p.userId)===numeric)){
-          const user=users.find(u=>Number(u.id)===numeric);
+        if(participants.some(p=>String(p.userId)===numeric)){
+          const user=users.find(u=>String(u.id)===numeric);
           if(user)return result(user,await client.getInputEntity(user),String(user.id));
         }
         if(!participants.length)break;

@@ -2,6 +2,7 @@ import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type Com
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
+const truncate = (value: string, length: number): string => Array.from(value).slice(0, length).join("");
 
 function parse(args: readonly string[]): {name: string; title?: string; limit: number} | undefined {
   if (!args.length) return;
@@ -73,9 +74,10 @@ const copyCommand: CommandDefinition = {
         const suffix = Date.now().toString(36);
         const stem = input.name.toLowerCase().replace(/_+/g, "_").slice(0, 40).replace(/^_+|_+$/g, "") || "stickers";
         const shortName = `mibox_${stem}_${suffix}`.slice(0, 64);
-        await client.invoke(new Api.stickers.CreateStickerSet({userId: "me", title: input.title || `${source.set.title} (复制)`, shortName, stickers}));
+        const title = truncate(input.title || `${source.set.title} (复制)`, 64);
+        await client.invoke(new Api.stickers.CreateStickerSet({userId: "me", title, shortName, stickers}));
         await context.telegram.edit(invocation.message,
-          `<b>贴纸包复制完成</b>\n原包：${escape(source.set.title)}\n新包：${escape(input.title || `${source.set.title} (复制)`)}\n` +
+          `<b>贴纸包复制完成</b>\n原包：${escape(source.set.title)}\n新包：${escape(title)}\n` +
           `数量：${stickers.length}\n<a href="https://t.me/addstickers/${shortName}">打开新贴纸包</a>`,
           {parseMode: "html", linkPreview: false});
       });

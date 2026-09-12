@@ -27,20 +27,26 @@ const administrator = (adding: boolean): SubcommandDefinition => ({
   async handle(invocation, ctx) {
     const message = invocation.message, args = invocation.args;
     await withChat(invocation, ctx, args, async ({Api, client, signal, chat, channel, reply, resolve}) => {
-    let allowed=chat.className==="Chat"?(!!chat.creator||!!chat.adminRights):false;if(chat.className==="Channel")try{const me=await client.getMe(),self=(await client.invoke(new Api.channels.GetParticipant({channel,participant:me.id}))).participant;allowed=self?.className==="ChannelParticipantCreator"||(self?.className==="ChannelParticipantAdmin"&&!!self.adminRights?.addAdmins);}catch{allowed=false;}if(!allowed){await ctx.telegram.edit(message,"权限不足：需要添加管理员权限");return;}
+    let allowed=chat.className==="Chat"?(!!chat.creator||!!chat.adminRights?.addAdmins):false;if(chat.className==="Channel")try{const self=(await client.invoke(new Api.channels.GetParticipant({channel,participant:new Api.InputPeerSelf()}))).participant;allowed=self?.className==="ChannelParticipantCreator"||(self?.className==="ChannelParticipantAdmin"&&!!self.adminRights?.addAdmins);}catch{allowed=false;}if(!allowed){await ctx.telegram.edit(message,"权限不足：需要添加管理员权限");return;}
     const target=await resolve();if(!target){await ctx.telegram.edit(message,"请回复一条消息或提供 用户ID/用户名");return;}
-    const title=(reply?args:args.slice(1)).join(" ").slice(0,16);
+    const title=Array.from((reply?args:args.slice(1)).join(" ")).slice(0,16).join("");
     try{if(chat.className==="Channel")await client.invoke(new Api.channels.EditAdmin({channel,userId:target.input,adminRights:new Api.ChatAdminRights(adding?{banUsers:true}:{}),rank:adding?title:""}));else await client.invoke(new Api.messages.EditChatAdmin({chatId:chat.id,userId:target.input,isAdmin:adding}));
-      let appliedRank=title,selfIsCreator=false;
-      if(adding){
-        if(chat.className==="Channel")await sleep(1200,undefined,{signal});
-        try{
-          const me=await client.getMe();
-          selfIsCreator=(await client.invoke(new Api.channels.GetParticipant({channel,participant:me.id}))).participant?.className==="ChannelParticipantCreator";
-          const refreshed=(await client.invoke(new Api.channels.GetParticipant({channel,participant:target.input}))).participant;
-          if(["ChannelParticipantAdmin","ChannelParticipantCreator"].includes(refreshed?.className))appliedRank=refreshed.rank||"";
-        }catch{signal.throwIfAborted();}
+      if(chat.className==="Channel")await sleep(1200,undefined,{signal});
+      let appliedRank=title,selfIsCreator=false,applied=false;
+      if(chat.className==="Channel"){
+        const self=(await client.invoke(new Api.channels.GetParticipant({channel,participant:new Api.InputPeerSelf()}))).participant;
+        selfIsCreator=self?.className==="ChannelParticipantCreator";
+        const refreshed=(await client.invoke(new Api.channels.GetParticipant({channel,participant:target.input}))).participant;
+        const administrator=["ChannelParticipantAdmin","ChannelParticipantCreator"].includes(refreshed?.className);
+        applied=adding?administrator&&!!refreshed?.adminRights?.banUsers:!administrator;
+        if(administrator)appliedRank=refreshed.rank||"";
+      }else{
+        const full:any=await client.invoke(new Api.messages.GetFullChat({chatId:chat.id}));
+        const refreshed=(full?.fullChat?.participants?.participants??[]).find((item:any)=>String(item.userId)===target.id);
+        const administrator=["ChatParticipantAdmin","ChatParticipantCreator"].includes(refreshed?.className);
+        applied=adding?administrator:!administrator;
       }
+      if(!applied){await ctx.telegram.edit(message,`${adding?"设置":"移除"}管理员请求已发送，但服务端状态未生效：${display(target.entity,target.id)}${adding&&title?"，头衔未更新":""}`,{parseMode:"html"});return;}
       const rankText=adding&&title?(appliedRank===title?`，头衔：<code>${escape(title)}</code>`:`，但头衔未更新。${selfIsCreator?"可能原因：非超级群或系统暂未同步。":"可能原因：仅群主可设置头衔；或非超级群；或系统暂未同步。"}`):"";
       await ctx.telegram.edit(message,`${adding?"已设置":"已移除"}管理员: ${display(target.entity,target.id)}${rankText}`,{parseMode:"html"});
     }catch(error){const detail=String((error as any)?.message??error);const extra=detail.includes("USER_ID_INVALID")?"\n可能原因：目标不是当前对话中的用户、匿名管理员、或数字 ID 无法解析。":"";await ctx.telegram.edit(message,`${adding?"设置":"移除"}管理员失败：<code>${escape(detail)}</code>${extra}`,{parseMode:"html"});}

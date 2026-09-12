@@ -88,7 +88,7 @@ test('cosplay accepts only bounded same-domain media and streams temp files to T
     const isImage = init.headers.Accept === 'image/*';
     const body = isImage ? Buffer.from('image') : String(url).includes('/set-one/') ? detail : listing;
     const type = isImage ? 'image/jpeg' : 'text/html';
-    assert.deepEqual(options.redirects, {allowedHosts: ['cosplaytele.com'], maxRedirects: 3});
+    assert.deepEqual(options.redirects, {allowedHosts: [new URL(url).hostname], maxRedirects: 3});
     return consume(new Response(body, {status: 200, headers: {'content-type': type}}), f.context.signal);
   }};
   f.context.files = {async withTemp(use) {const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cos-v2-')); try {return await use(directory, f.context.signal);} finally {await fs.rm(directory, {recursive: true, force: true});}}};

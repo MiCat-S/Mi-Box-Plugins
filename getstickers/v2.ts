@@ -178,7 +178,8 @@ const getstickersCommand: CommandDefinition = {
               const raw = invocation.message.raw as ApiTypes.Message | undefined;
               if (!raw?.peerId) throw new Error("Missing peer");
               await client.sendFile(raw.peerId, {file: archive, caption: name, replyTo: invocation.message.replyToId, forceDocument: true});
-              if (typeof raw.delete === "function") await raw.delete({revoke: true});
+              if (typeof raw.delete === "function") { try { await raw.delete({revoke: true}); }
+                catch { if (!context.signal.aborted) context.log.info("getstickers_receipt_cleanup_failed"); } }
             });
           });
         } catch {

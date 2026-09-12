@@ -5,6 +5,7 @@ import type { TelegramClient } from "teleproto";
 
 const defaults = { batchSize: 50, searchLimit: 100, retryAttempts: 3 };
 type Config = typeof defaults;
+const MAX_TROLL_IMAGE_BYTES = 5 * 1024 * 1024;
 const escape = (value: unknown) => String(value).replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 function topic(message: any): number | undefined {
@@ -97,15 +98,21 @@ async function execute(ctx: PluginContext, client: TelegramClient, signal: Abort
     imageLoaded = true;
     try {
       image = await ctx.tasks.run("dme:image", async scoped => {
-        const { readFile, writeFile, rename, unlink } = await import("node:fs/promises");
+        const { readFile, writeFile, rename, stat, unlink } = await import("node:fs/promises");
         const combined = AbortSignal.any([signal, scoped]);
         const file = await ctx.files.dataFile("dme_troll_image.png");
-        try { return await readFile(file, { signal: combined }); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        try {
+          const info=await stat(file);if(info.isFile()&&info.size>0&&info.size<=MAX_TROLL_IMAGE_BYTES)return await readFile(file,{signal:combined});
+          await unlink(file);
+        } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
         const buffer = await ctx.http.withResponse("https://raw.githubusercontent.com/TeleBoxOrg/TeleBox/main/telebox.png",
-          { signal: combined }, async response => {
-            if (!response.ok) throw new Error(`Image HTTP ${response.status}`);
-            return Buffer.from(await response.arrayBuffer());
+          { signal: combined }, async (response, responseSignal) => {
+            if (!response.ok || !response.body) throw new Error(`Image HTTP ${response.status}`);
+            const reader=response.body.getReader(),chunks:Buffer[]=[];let total=0,done=false;
+            try {for(;;){responseSignal.throwIfAborted();const part=await reader.read();if(part.done){done=true;break;}total+=part.value.byteLength;
+                if(total>MAX_TROLL_IMAGE_BYTES)throw new Error("Image too large");chunks.push(Buffer.from(part.value));}}
+            finally {try{if(!done)await reader.cancel();}catch{}finally{reader.releaseLock();}}
+            if(!total)throw new Error("Image is empty");return Buffer.concat(chunks,total);
           }, {redirects:{allowedHosts:["raw.githubusercontent.com"],maxRedirects:2}});
         combined.throwIfAborted();
         // Publish the cache atomically so simultaneous chats never read a partial image.

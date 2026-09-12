@@ -73,7 +73,8 @@ const dbdjCommand: CommandDefinition = {
             `<b>点兵点将</b>\n${mentions}${suffix}\n\n扫描 ${scanCount} 条 · 有效 ${candidates.length} 人 · 选中 ${winners.length} 人 · 概率 ${probability}% · ${(Date.now() - started) / 1000}s`,
             {parseMode: "html", linkPreview: false});
         }
-        if (typeof raw.delete === "function") await raw.delete({revoke: true});
+        if (typeof raw.delete === "function") { try { await raw.delete({revoke: true}); }
+          catch { if (!context.signal.aborted) context.log.info("dbdj_receipt_cleanup_failed"); } }
       });
     } catch {
       if (context.signal.aborted) return;

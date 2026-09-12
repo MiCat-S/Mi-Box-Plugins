@@ -230,6 +230,20 @@ test('media failure falls through to text without exposing transport errors', as
   assert.doesNotMatch(JSON.stringify({texts: f.edits.map(edit => edit.text), logs: f.logs}), /private-send-token/);
 });
 
+test('sticker delivery rejects an external image above the 16M pixel budget', async t => {
+  const bomb = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="5000" height="5000"><rect width="100%" height="100%"/></svg>');
+  const f = await hostFixture(t, {fetch: fetchForResult(bomb), setup: async root => {
+    const dir = path.join(root, 'speedtest'); await fs.mkdir(dir, {recursive: true});
+    await fs.writeFile(path.join(dir, 'v2-config.json'), JSON.stringify({schemaVersion: 1, default_server_id: null, preferred_type: 'sticker', legacyImported: true}));
+    await writeExecutable(path.join(dir, 'speedtest'), cliSource(path.join(root, 'pixel-limit.argv')));
+  }});
+  await f.run('.speedtest');
+  assert.equal(f.sent.length, 1);
+  assert.deepEqual(f.sent[0].bytes, bomb);
+  assert.equal(f.sent[0].value.forceDocument, false);
+  assert.deepEqual(await fs.readdir(path.join(f.root, '.temp/speedtest')), []);
+});
+
 for (const externalIp of ['203.0.113.9', '2001:db8::1234']) {
   test(`report omits client address and interface (${externalIp})`, async t => {
     const signal = new AbortController().signal;

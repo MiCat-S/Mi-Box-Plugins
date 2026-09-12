@@ -61,12 +61,6 @@ test('bgp DNS uses /24 first and filters noisy root domains', async t => {
   assert.doesNotMatch(f.edits.at(-1).text,/one\.example\.com/);
 });
 
-test('ntp reads a server date through controlled HTTP and rejects unknown mode', async t => {
-  const f=await fixture(t,'ntp',async()=>new Response(null,{status:200,headers:{date:new Date().toUTCString()}}));
-  await f.run('.ntp'); assert.match(f.edits.at(-1).text,/时间查询完成/); assert.equal(f.requests[0].init.method,'HEAD'); assert.equal(f.requests[0].init.redirect,'manual');
-  const before=f.requests.length;await f.run('.ntp nope');assert.equal(f.requests.length,before);assert.match(f.edits.at(-1).text,/time\.cloudflare\.com/);assert.match(f.edits.at(-1).text,/HTTPS Date/);assert.match(f.edits.at(-1).text,/\.ntp s/);
-});
-
 test('network plugin errors are redacted', async t => {
   const f=await fixture(t,'duckduckgo',async()=>{throw new Error('secret-token');});
   await f.run('.ddg query');

@@ -1,6 +1,6 @@
 import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type PluginContext} from "telebox/sdk";
 import path from "node:path";
-import {open, stat} from "node:fs/promises";
+import {open, stat, type FileHandle} from "node:fs/promises";
 import {load} from "cheerio";
 import type {Api as ApiTypes} from "teleproto";
 
@@ -9,6 +9,15 @@ const MAX_IMAGES = 10;
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 const USER_AGENT = "MiBot-Cosplay/2.0";
 const EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+
+async function writeAll(handle: FileHandle, chunk: Uint8Array): Promise<void> {
+  let offset = 0;
+  while (offset < chunk.byteLength) {
+    const {bytesWritten} = await handle.write(chunk, offset, chunk.byteLength - offset, null);
+    if (bytesWritten <= 0) throw new Error("Image write failed");
+    offset += bytesWritten;
+  }
+}
 
 function safeUrl(value: string, base: URL): URL | undefined {
   try {
@@ -30,7 +39,7 @@ async function page(context: PluginContext, url: URL): Promise<string> {
           total += part.value.byteLength; if (total > 2 * 1024 * 1024) throw new Error("Page too large"); parts.push(decoder.decode(part.value, {stream: true})); }
         return parts.join("") + decoder.decode();
       } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
-    }, {timeoutMs: 30_000, signal: context.signal, redirects: {allowedHosts: [HOST], maxRedirects: 3}});
+    }, {timeoutMs: 30_000, signal: context.signal, redirects: {allowedHosts: [url.hostname], maxRedirects: 3}});
 }
 
 function sets(html: string, base: URL): URL[] {
@@ -68,10 +77,11 @@ async function download(context: PluginContext, url: URL, file: string): Promise
       const handle = await open(file, "wx", 0o600); const reader = response.body.getReader(); let total = 0;
       try {
         for (;;) { signal.throwIfAborted(); const part = await reader.read(); if (part.done) break;
-          total += part.value.byteLength; if (total > MAX_IMAGE_BYTES) throw new Error("Image too large"); await handle.write(part.value); }
+          total += part.value.byteLength; if (total > MAX_IMAGE_BYTES) throw new Error("Image too large"); await writeAll(handle, part.value); }
         if (!total) throw new Error("Empty image");
-      } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); await handle.close(); }
-    }, {timeoutMs: 45_000, signal: context.signal, redirects: {allowedHosts: [HOST], maxRedirects: 3}});
+      } finally { try { await reader.cancel().catch(() => undefined); }
+        finally { try { reader.releaseLock(); } finally { await handle.close(); } } }
+    }, {timeoutMs: 45_000, signal: context.signal, redirects: {allowedHosts: [url.hostname], maxRedirects: 3}});
 }
 
 async function find(context: PluginContext, count: number): Promise<{set: URL; title: string; images: URL[]}> {
@@ -103,7 +113,7 @@ async function run(invocation: any, context: PluginContext): Promise<void> {
         const file = path.join(directory, `${index}${path.extname(url.pathname).toLowerCase() || ".jpg"}`); await download(context, url, file); files[index] = file; } };
       await Promise.all(Array.from({length: Math.min(3, result.images.length)}, worker));
       signal.throwIfAborted();
-      await context.telegram.withClient(async client => {
+      await context.telegram.withClient(async (client, nativeSignal) => {
         const {CustomFile} = await import("teleproto/client/uploads.js");
         const raw = invocation.message.raw as ApiTypes.Message | undefined;
         if (!raw?.peerId) throw new Error("Missing peer");
@@ -112,7 +122,10 @@ async function run(invocation: any, context: PluginContext): Promise<void> {
           await client.sendFile(raw.peerId, {file: new CustomFile(path.basename(files[index]!), info.size, files[index]!), spoiler: true,
             caption: index === 0 ? `套图链接: ${result.set.href}` : "", replyTo: index === 0 ? invocation.message.replyToId : undefined});
         }
-        if (typeof raw.delete === "function") await raw.delete({revoke: true});
+        if (typeof raw.delete === "function") {
+          try { await raw.delete({revoke: true}); }
+          catch { if (!nativeSignal.aborted) context.log.info("cosplay_receipt_cleanup_failed"); }
+        }
       });
     });
   } catch {

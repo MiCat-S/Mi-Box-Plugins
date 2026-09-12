@@ -29,7 +29,8 @@ export default function createCy(){
     await c.telegram.edit(message, `正在统计最近 ${count} 条消息…`);
     try {
       await send(c, target, count, message.replyToId ?? message.id);
-      await c.telegram.withClient(async client => { const raw = message.raw as any; if (typeof raw?.delete === "function") await raw.delete({revoke: true}); });
+      await c.telegram.withClient(async (_client, signal) => { const raw = message.raw as any; if (typeof raw?.delete === "function") {
+        try { await raw.delete({revoke: true}); } catch { if (!signal.aborted) c.log.info("cy_receipt_cleanup_failed"); } } });
     } catch {
       if (!c.signal.aborted) await c.telegram.edit(message, "没有统计到足够的热词，或词云生成失败");
     }
@@ -57,34 +58,41 @@ export default function createCy(){
         arguments: [{name: "时间", required: true, description: "一个或多个 HH:MM，可用逗号分隔"}, {name: "数量", description: "可选，50–2000"}],
         async handle(invocation, c) {
           const message = invocation.message;
-          const state = normalize(await store(c).read());
           const values = invocation.args.flatMap(x => x.split(","));
           const times = values.filter(valid), numeric = values.find(x => /^\d+$/.test(x));
           if (!times.length || values.some(x => !valid(x) && !/^\d+$/.test(x))) {
             await c.telegram.edit(message, `用法：${invocation.prefix}cy time 09:00,21:30 [数量]`);
             return;
           }
-          const next = normalize({...state, times, limit: numeric ? limit(numeric, state.limit) : state.limit});
-          await store(c).update(() => next);
+          let next!: State;
+          await store(c).update(value => {
+            const state = normalize(value);
+            next = normalize({...state, times, limit: numeric ? limit(numeric, state.limit) : state.limit});
+            return next;
+          });
           await c.telegram.edit(message, status(next));
         },
       },
       on: {
         description: "开启定时任务", args: "", examples: [{args: "on"}],
         async handle(invocation, c) {
-          const state = normalize(await store(c).read());
-          const next = normalize({...state, enabled: true});
-          if (!next.target || !next.times.length) { await c.telegram.edit(invocation.message, "请先设置目标和时间"); return; }
-          await store(c).update(() => next);
+          let next!: State, changed = false;
+          await store(c).update(value => {
+            const state = normalize(value);
+            next = normalize({...state, enabled: true});
+            if (!next.target || !next.times.length) return state;
+            changed = true;
+            return next;
+          });
+          if (!changed) { await c.telegram.edit(invocation.message, "请先设置目标和时间"); return; }
           await c.telegram.edit(invocation.message, status(next));
         },
       },
       off: {
         description: "关闭定时任务", args: "", examples: [{args: "off"}],
         async handle(invocation, c) {
-          const state = normalize(await store(c).read());
-          const next = normalize({...state, enabled: false});
-          await store(c).update(() => next);
+          let next!: State;
+          await store(c).update(value => (next = normalize({...normalize(value), enabled: false})));
           await c.telegram.edit(invocation.message, status(next));
         },
       },

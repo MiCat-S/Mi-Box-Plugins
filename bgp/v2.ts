@@ -1,9 +1,15 @@
 import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, maskIpText, type CommandDefinition, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import path from "node:path";
 
+export const BGP_INPUT_PIXEL_LIMIT = 32 * 1024 * 1024;
+
 function sharp(input: Buffer, options: import("sharp").SharpOptions) {
   const createImage = require("sharp") as typeof import("sharp");
   return createImage(input, options);
+}
+export async function rasterizeGraph(input: Buffer, output: string): Promise<void> {
+  await sharp(input, {density:300, limitInputPixels:BGP_INPUT_PIXEL_LIMIT})
+    .resize({width:2400,height:1800,fit:"inside"}).png({compressionLevel:6}).toFile(output);
 }
 export function privateGraph(source: string): string {
   const {load} = require("cheerio") as typeof import("cheerio");
@@ -63,7 +69,7 @@ export default function createBgp(){
         if (!result) { await ctx.telegram.edit(invocation.message, `❌ 没有可用的 BGP 路由图\n<code>${prefix(ip,24)}</code>`, {parseMode: "html"}); return; }
         await ctx.files.withTemp(async dir => {
           const file = path.join(dir, "bgp.png");
-          await sharp(Buffer.from(privateGraph(result.raw.toString("utf8"))), {density:300}).resize({width:2400,height:1800,fit:"inside"}).png({compressionLevel:6}).toFile(file);
+          await rasterizeGraph(Buffer.from(privateGraph(result.raw.toString("utf8"))), file);
           await ctx.telegram.withClient(async (client, signal) => {
             signal.throwIfAborted();
             await client.sendFile(invocation.message.chatId, {file, caption: `🌐 <b>BGP路由图</b>\n<code>${ip}</code>\n<i>使用前缀: ${result.p}</i>`, parseMode: "html"});

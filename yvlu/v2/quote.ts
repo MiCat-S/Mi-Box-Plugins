@@ -29,10 +29,8 @@ export function convertEntities(entities: readonly any[] = []): any[] {
   });
 }
 
-export function exactId(value: any): number | string {
-  const id = String(value ?? "0");
-  const n = Number(id);
-  return Number.isSafeInteger(n) ? n : id;
+export function exactId(value: any): string {
+  return String(value ?? "0");
 }
 
 function hash(text: string): number {

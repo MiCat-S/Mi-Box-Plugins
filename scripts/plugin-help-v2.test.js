@@ -64,6 +64,7 @@ for (const id of ids) test(`${id}: complete artifact help survives both command 
     for (const args of [['--help'], ...(command.helpArgs || []).map(arg => [arg]), ...(command.helpOnEmpty ? [[]] : [])]) {
       output.length = 0;
       await host.dispatchPrimary({id: 1, chatId: '1', senderId: '1', outgoing: true,
+        chatType: command.chats?.[0] ?? 'unknown',
         text: `${prefix}${name}${args.length ? ` ${args.join(' ')}` : ''}`});
       validate(output);
       assert.equal(visible(output.join('\n')), expected, 'all section bodies and examples are delivered');

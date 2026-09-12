@@ -35,6 +35,18 @@ export default function createPortball() {
           signal.throwIfAborted();
           if (!(chat instanceof Api.Channel)) throw new Error("Unsupported chat");
           if (String((target as ApiTypes.User).id) === String(me.id)) throw new Error("Self target");
+          const self = await client.invoke(new Api.channels.GetParticipant({
+            channel: chat, participant: new Api.InputPeerSelf(),
+          }));
+          if (!(self.participant instanceof Api.ChannelParticipantCreator) &&
+              (!(self.participant instanceof Api.ChannelParticipantAdmin) || !self.participant.adminRights?.banUsers)) {
+            throw new Error("Ban permission required");
+          }
+          const targetMembership = await client.invoke(new Api.channels.GetParticipant({
+            channel: chat, participant: await client.getInputEntity(target),
+          }));
+          if (targetMembership.participant instanceof Api.ChannelParticipantCreator ||
+              targetMembership.participant instanceof Api.ChannelParticipantAdmin) throw new Error("Admin target");
           await client.invoke(new Api.channels.EditBanned({
             channel: chat, participant: target,
             bannedRights: new Api.ChatBannedRights({
@@ -48,7 +60,10 @@ export default function createPortball() {
           const name = `${user.firstName ?? ""} ${user.lastName ?? ""}`.trim() || user.username || String(user.id);
           await client.sendMessage(raw.peerId, {message:
             `<b>禁言成功</b>\n用户：${escape(name)}\n时长：${seconds} 秒${reason ? `\n理由：${escape(reason)}` : ""}\n到期自动解除`, parseMode: "html"});
-          if (typeof raw.delete === "function") await raw.delete({revoke: true});
+          if (typeof raw.delete === "function") {
+            try { await raw.delete({revoke: true}); }
+            catch { context.log.error("portball_command_cleanup_failed"); }
+          }
         });
       } catch {
         if (context.signal.aborted) return;

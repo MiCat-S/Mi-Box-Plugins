@@ -99,22 +99,26 @@ export default function createPlugin() {
     await context.telegram.edit(invocation.message, `✅ 已重置为默认配置，共 ${defaultRules().length} 条规则`);
   };
   const add = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
-    const state = await database(context).read();
     const values = invocation.args, response = values.includes("-r") || values.includes("--response"), exact = values.includes("-e") || values.includes("--exact");
     const filtered = values.filter(value => !["-r", "--response", "-e", "--exact"].includes(value));
     const command = filtered[0]?.toLowerCase(), delay = Number(filtered[1]), parameters = filtered.slice(2);
     if (!command || !/^[a-z0-9_]+$/i.test(command) || !Number.isInteger(delay) || delay < 1 || delay > 86400 || (exact && parameters.length)) {
       await context.telegram.edit(invocation.message, `❌ 用法：<code>${invocation.prefix}autodelcmd add [命令] [1-86400秒] [参数...] [-r] [-e]</code>`, {parseMode: "html"}); return;
     }
-    const conflict = state.rules.find(rule => rule.command === command && !!rule.exactMatch === exact && (!parameters.length ? !rule.parameters?.length : parameters.some(value => rule.parameters?.includes(value))));
-    if (conflict && (conflict.delay !== delay || !!conflict.deleteResponse !== response)) { await context.telegram.edit(invocation.message, `❌ 规则冲突，请先删除 ID ${escape(conflict.id)}`, {parseMode: "html"}); return; }
+    let conflictId: string | undefined;
     await database(context).update(value => {
       const rules = [...value.rules];
+      const conflict = rules.find(rule => rule.command === command && !!rule.exactMatch === exact && (!parameters.length ? !rule.parameters?.length : parameters.some(parameter => rule.parameters?.includes(parameter))));
+      if (conflict && (conflict.delay !== delay || !!conflict.deleteResponse !== response)) {
+        conflictId = conflict.id;
+        return value;
+      }
       const merge = rules.find(rule => rule.command === command && rule.delay === delay && !!rule.deleteResponse === response && !!rule.exactMatch === exact);
       if (merge && parameters.length) merge.parameters = [...new Set([...(merge.parameters ?? []), ...parameters])];
       else rules.push({id: nextId(rules), command, delay, ...(parameters.length ? {parameters} : {}), ...(response ? {deleteResponse: true} : {}), ...(exact ? {exactMatch: true} : {})});
       return {...value, rules};
     });
+    if (conflictId) { await context.telegram.edit(invocation.message, `❌ 规则冲突，请先删除 ID ${escape(conflictId)}`, {parseMode: "html"}); return; }
     await context.telegram.edit(invocation.message, "✅ 已保存自动删除规则");
   };
   const del = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {

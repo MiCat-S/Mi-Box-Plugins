@@ -1,4 +1,4 @@
-import {access, stat} from "node:fs/promises";
+import {access, open, stat} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
 import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
@@ -6,6 +6,8 @@ import type {Api as ApiTypes} from "teleproto";
 
 type Flip = "h" | "v" | undefined;
 const FFMPEG = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"] as const;
+const MAX_INPUT_BYTES = 100 * 1024 * 1024;
+async function writeAll(file:Awaited<ReturnType<typeof open>>,chunk:Uint8Array){let offset=0;while(offset<chunk.length){const result=await file.write(chunk,offset,chunk.length-offset);if(result.bytesWritten<=0)throw new Error("Input write failed");offset+=result.bytesWritten;}}
 const segmenter = new Intl.Segmenter(undefined, {granularity: "grapheme"});
 const FORMAT_ENTITIES = new Set(["MessageEntityBold", "MessageEntityItalic", "MessageEntityUnderline",
   "MessageEntityStrike", "MessageEntitySpoiler"]);
@@ -135,7 +137,7 @@ function ffmpegArgs(input: string, output: string, flip: Flip, invert: boolean, 
     args.push("-filter_complex", `[0:v]${base}[flip];[flip]split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer`, "-loop", "0");
   } else if (filters.length) args.push("-vf", filters.join(","));
   if (webm) args.push("-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", "32", "-auto-alt-ref", "0");
-  args.push(output);
+  args.push("-fs", String(50 * 1024 * 1024), output);
   return args;
 }
 
@@ -167,7 +169,7 @@ async function editReversedReply(context: PluginContext, invocation: any, reply:
 }
 
 export default function createRev() {
-  const command: CommandDefinition = {"args":"[h|v] [c] [文字]","arguments":[{"name":"h / v","description":"媒体水平翻转（h，默认）或垂直翻转（v），多个方向以最后一个为准"},{"name":"c","description":"颜色反转；单独使用只反色，可与方向组合"}],"examples":[{"args":"你好世界","description":"得到“界世好你”，支持 emoji"},{"args":"","description":"回复文字反转内容；回复媒体默认水平翻转"},{"args":"v","description":"回复图片上下翻转"},{"args":"c","description":"回复 GIF 反色"},{"args":"h c","description":"回复 WebM 水平翻转并反色"}],"help":[{"heading":"支持与依赖：","body":"文字按行反转并保留 emoji 组合；回复文字尽量保留格式实体。媒体支持图片、GIF、WebM、WebP，需要服务器已安装 FFmpeg，输出最多 50 MiB。"}],description: "反转文字或翻转回复的媒体", async handle(invocation, context) {
+  const command: CommandDefinition = {"args":"[h|v] [c] [文字]","arguments":[{"name":"h / v","description":"媒体水平翻转（h，默认）或垂直翻转（v），多个方向以最后一个为准"},{"name":"c","description":"颜色反转；单独使用只反色，可与方向组合"}],"examples":[{"args":"你好世界","description":"得到“界世好你”，支持 emoji"},{"args":"","description":"回复文字反转内容；回复媒体默认水平翻转"},{"args":"v","description":"回复图片上下翻转"},{"args":"c","description":"回复 GIF 反色"},{"args":"h c","description":"回复 WebM 水平翻转并反色"}],"help":[{"heading":"支持与依赖：","body":"文字按行反转并保留 emoji 组合；回复文字尽量保留格式实体。媒体支持图片、GIF、WebM、WebP，需要服务器已安装 FFmpeg，输入最多 100 MiB、输出最多 50 MiB。"}],helpArgs:["help"],description: "反转文字或翻转回复的媒体", async handle(invocation, context) {
       const selected = parse(invocation.args);
       if (selected.text) { await context.telegram.edit(invocation.message, reverse(selected.text)); return; }
       const reply = invocation.message.replyToId === undefined ? undefined : await context.telegram.getReply(invocation.message);
@@ -181,10 +183,30 @@ export default function createRev() {
       try {
         await context.telegram.edit(invocation.message, "正在处理媒体…");
         const source = reply!.raw as ApiTypes.Message;
+        if (Number(source.document?.size ?? 0) > MAX_INPUT_BYTES) throw new Error("Input too large");
         await context.files.withTemp(async (directory, signal) => {
           const input = path.join(directory, `input${info.extension}`);
           const output = path.join(directory, `output${info.extension}`);
-          await context.telegram.withClient(async client => { await client.downloadMedia(source.media!, {outputFile: input}); });
+          await context.telegram.withClient(async (client: any) => {
+            if (typeof client.iterDownload !== "function") {
+              await client.downloadMedia(source.media!, {outputFile: input, signal, progressCallback(received: any) {
+                signal.throwIfAborted(); if (typeof received?.greater === "function" && received.greater(MAX_INPUT_BYTES)) throw new Error("Input too large");
+              }});
+              const info = await stat(input);
+              if (!info.isFile() || !info.size || info.size > MAX_INPUT_BYTES) throw new Error("Input too large");
+              return;
+            }
+            const file = await open(input, "wx", 0o600);
+            let total = 0;
+            try {
+              for await (const chunk of client.iterDownload(source.media!, {})) {
+                signal.throwIfAborted(); total += chunk.length;
+                if (total > MAX_INPUT_BYTES) throw new Error("Input too large");
+                await writeAll(file,chunk);
+              }
+              if (!total) throw new Error("Empty input");
+            } finally { await file.close(); }
+          });
           signal.throwIfAborted();
           await runFfmpeg(context, ffmpegArgs(input, output, selected.flip, selected.invert, info.gif, info.webm));
           const result = await stat(output);
@@ -204,7 +226,10 @@ export default function createRev() {
               options.attributes = [new Api.DocumentAttributeSticker({alt: "rev", stickerset: new Api.InputStickerSetEmpty()})];
             }
             await client.sendFile(raw.peerId, options);
-            if (typeof raw.delete === "function") await raw.delete({revoke: true});
+            if (typeof raw.delete === "function") {
+              try { await raw.delete({revoke: true}); }
+              catch { context.log.error("rev_command_cleanup_failed"); }
+            }
           });
         });
       } catch {

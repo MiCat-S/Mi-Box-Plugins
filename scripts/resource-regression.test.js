@@ -23,7 +23,6 @@ const pluginFiles = [
   "quote/quote.ts",
   "speedlink/speedlink.ts",
   "speedtest/speedtest.ts",
-  "ssh/ssh.ts",
   "subinfo/subinfo.ts",
   "yvlu/yvlu.ts",
 ];
@@ -68,7 +67,7 @@ for (const file of ["bgp/bgp.ts", "javdb/javdb.ts", "subinfo/subinfo.ts"]) {
   assert.match(sources[file], /function getCheerio\(\)/, file);
 }
 
-for (const file of ["getstickers/getstickers.ts", "ssh/ssh.ts"]) {
+for (const file of ["getstickers/getstickers.ts"]) {
   assert.doesNotMatch(sources[file], /^import .* from ["']archiver["']/m, file);
   assert.match(sources[file], /function createZipArchive\(/, file);
 }

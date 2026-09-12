@@ -2,22 +2,21 @@ import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition
 import type {Api as ApiTypes, TelegramClient} from "teleproto";
 
 const defaults = {schemaVersion: 1, sticker_default_pack: ""};
-const tails = new Map<string, Promise<void>>();
-const cursors = new Map<string, number>();
 const BOT = "stickers";
 const emojis = ["😀", "😁", "😂", "🤣", "😊", "🙂", "😉", "😎", "😍", "🤔"];
+type StickerRuntime = {tails: Map<string, Promise<void>>; cursors: Map<string, number>};
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, character =>
   ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;"})[character]!);
 
-async function serial<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  const previous = tails.get(key) ?? Promise.resolve();
+async function serial<T>(runtime: StickerRuntime, key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = runtime.tails.get(key) ?? Promise.resolve();
   let release!: () => void;
   const current = new Promise<void>(resolve => { release = resolve; });
-  tails.set(key, current);
+  runtime.tails.set(key, current);
   await previous.catch(() => undefined);
   try { return await operation(); }
-  finally { release(); if (tails.get(key) === current) tails.delete(key); }
+  finally { release(); if (runtime.tails.get(key) === current) runtime.tails.delete(key); }
 }
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
@@ -43,35 +42,35 @@ async function latest(client: TelegramClient): Promise<any[]> {
   return Array.isArray(values) ? values : [];
 }
 
-async function waitBot(client: TelegramClient, signal: AbortSignal, after: number,
+async function waitBot(runtime: StickerRuntime, client: TelegramClient, signal: AbortSignal, after: number,
   accept: (message: any) => boolean): Promise<any> {
   for (let attempt = 0; attempt < 18; attempt++) {
     signal.throwIfAborted();
-    const cursor = cursors.get(BOT) ?? 0;
+    const cursor = runtime.cursors.get(BOT) ?? 0;
     const result = (await latest(client)).slice().reverse().find(message => {
       const id = Number(message?.id ?? 0);
       return !message?.out && id > cursor && Number(message?.date ?? 0) >= after && accept(message);
     });
-    if (result) { cursors.set(BOT, Number(result.id)); return result; }
+    if (result) { runtime.cursors.set(BOT, Number(result.id)); return result; }
     await delay(650, signal);
   }
   throw new Error("Sticker bot timeout");
 }
 
-async function addWithBot(client: TelegramClient, signal: AbortSignal, source: ApiTypes.Message,
+async function addWithBot(runtime: StickerRuntime, client: TelegramClient, signal: AbortSignal, source: ApiTypes.Message,
   packName: string, emoji: string): Promise<void> {
-  await serial(BOT, async () => {
+  await serial(runtime, BOT, async () => {
     const baseline = await latest(client);
-    cursors.set(BOT, Math.max(cursors.get(BOT) ?? 0, ...baseline.map(item => Number(item?.id ?? 0))));
+    runtime.cursors.set(BOT, Math.max(runtime.cursors.get(BOT) ?? 0, ...baseline.map(item => Number(item?.id ?? 0))));
     const started = Math.floor(Date.now() / 1000) - 1;
     try {
       await client.sendMessage(BOT, {message: "/addsticker"});
-      await waitBot(client, signal, started, message => Boolean(message?.message));
+      await waitBot(runtime, client, signal, started, message => Boolean(message?.message));
       await client.sendMessage(BOT, {message: packName});
-      const pack = await waitBot(client, signal, started, message => Boolean(message?.message));
+      const pack = await waitBot(runtime, client, signal, started, message => Boolean(message?.message));
       if (/invalid set/i.test(String(pack.message))) throw new Error("Invalid sticker set");
       await client.forwardMessages(BOT, {messages: [source.id], fromPeer: source.peerId});
-      const response = await waitBot(client, signal, started, message => Boolean(message?.message));
+      const response = await waitBot(runtime, client, signal, started, message => Boolean(message?.message));
       const text = String(response.message).toLowerCase();
       if (!text.includes("now send me an emoji")) {
         if (text.includes("video is too long") || text.includes("3 seconds or less")) throw new Error("Video too long");
@@ -79,7 +78,7 @@ async function addWithBot(client: TelegramClient, signal: AbortSignal, source: A
         throw new Error("Unexpected sticker bot response");
       }
       await client.sendMessage(BOT, {message: emoji});
-      await waitBot(client, signal, started, message => Boolean(message?.message));
+      await waitBot(runtime, client, signal, started, message => Boolean(message?.message));
       await client.sendMessage(BOT, {message: "/done"});
     } catch (error) {
       if (!signal.aborted) await client.sendMessage(BOT, {message: "/cancel"}).catch(() => undefined);
@@ -92,6 +91,7 @@ function validPack(value: string): boolean { return /^[A-Za-z][A-Za-z0-9_]{0,63}
 
 
 export default function createSticker() {
+  const runtime: StickerRuntime = {tails: new Map(), cursors: new Map()};
   const command: CommandDefinition = {"args":"[默认包名]","alternates":[{"args":"to 包名","description":"回复贴纸时临时指定收藏包"},{"args":"cancel","description":"未回复贴纸时取消默认包；回复贴纸时仍按默认目标收藏"}],"examples":[{"args":"","description":"回复贴纸收藏"},{"args":"MyStickers","description":"未回复贴纸时设置默认包"},{"args":"cancel","description":"未回复贴纸时取消默认包"},{"args":"to TempPack","description":"回复贴纸临时指定包"}],"help":[{"body":"回复贴纸时收藏到默认或自动创建的包；未回复贴纸且不带参数时查看当前默认包。"},{"heading":"名称与类型：","body":"包名以字母开头，仅含字母、数字和下划线，最多 64 字符。支持普通、TGS 动态和 WebM 视频贴纸。默认包或临时指定包已满时提示失败；自动选择目标时，按类型查找最多 50 个序号包，每包以 120 张为上限。"},{"heading":"依赖与标签：","body":"请先私聊官方 @Stickers 机器人。目标包不存在时创建新包；向已有包添加时与机器人交互。源贴纸无基础 emoji 时随机选一个基础表情。"}],helpArgs: ["help","h"], description: "收藏贴纸或配置默认贴纸包", async handle(invocation, context) {
       const args = invocation.args;
       if (["help", "h"].includes(args[0]?.toLowerCase() ?? "")) {
@@ -148,7 +148,7 @@ export default function createSticker() {
             await client.invoke(new Api.stickers.CreateStickerSet({userId: "me", title: `@${me.username ?? "user"} 的收藏`, shortName: packName,
               stickers: [new Api.InputStickerSetItem({document: new Api.InputDocument({id: document.id, accessHash: document.accessHash,
                 fileReference: document.fileReference ?? Buffer.alloc(0)}), emoji})]}));
-          } else await addWithBot(client, signal, rawReply, packName, emoji);
+          } else await addWithBot(runtime, client, signal, rawReply, packName, emoji);
           await context.telegram.edit(invocation.message, `贴纸已添加到 <a href="https://t.me/addstickers/${escape(packName)}">${escape(packName)}</a>`, {parseMode: "html", linkPreview: false});
         });
       } catch (error) {
@@ -160,5 +160,5 @@ export default function createSticker() {
   const help = (prefix: string) => renderCommandHelp("sticker", command, {prefix, title: "⭐ 贴纸收藏"});
   return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "sticker", description: "收藏贴纸到自己的贴纸包", commands: {
     sticker: command,
-  }, cleanup() { tails.clear(); cursors.clear(); }});
+  }, cleanup() { runtime.tails.clear(); runtime.cursors.clear(); }});
 }

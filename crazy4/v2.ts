@@ -26,7 +26,8 @@ const crazy4Command: CommandDefinition = {
         const raw = invocation.message.raw as Api.Message | undefined;
         if (!raw?.peerId) throw new Error("Missing peer");
         await client.sendMessage(raw.peerId, {message: escape(text), parseMode: "html", replyTo: invocation.message.replyToId});
-        if (typeof raw.delete === "function") await raw.delete({revoke: true});
+        if (typeof raw.delete === "function") { try { await raw.delete({revoke: true}); }
+          catch { if (!context.signal.aborted) context.log.info("crazy4_receipt_cleanup_failed"); } }
       });
     } catch {
       if (context.signal.aborted) return;

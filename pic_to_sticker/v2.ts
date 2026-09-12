@@ -1,4 +1,4 @@
-import {stat} from "node:fs/promises";
+import {open, stat} from "node:fs/promises";
 import path from "node:path";
 import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type CommandInvocation, type SubcommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
@@ -7,6 +7,9 @@ type Config = {schemaVersion: number; defaultEmoji: string; quality: number; for
   size: number; background: "transparent" | "white" | "black"; autoDelete: boolean; compressionLevel: number};
 const defaults: Config = {schemaVersion: 1, defaultEmoji: "🙂", quality: 90, format: "webp", size: 512,
   background: "transparent", autoDelete: true, compressionLevel: 6};
+const MAX_INPUT_BYTES = 50 * 1024 * 1024;
+const MAX_DECODE_PIXELS = 20_000_000;
+async function writeAll(file:Awaited<ReturnType<typeof open>>,chunk:Uint8Array){let offset=0;while(offset<chunk.length){const result=await file.write(chunk,offset,chunk.length-offset);if(result.bytesWritten<=0)throw new Error("Image write failed");offset+=result.bytesWritten;}}
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, character =>
   ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;"})[character]!);
@@ -38,14 +41,26 @@ function background(value: Config["background"]) {
 async function convert(context: PluginContext, source: ApiTypes.Message, config: Config, emoji: string,
   send: (output: string) => Promise<void>): Promise<void> {
   if (!source.media) throw new Error("Photo required");
+  if (Number(source.document?.size ?? 0) > MAX_INPUT_BYTES) throw new Error("Image too large");
   await context.files.withTemp(async (directory, signal) => {
     const input = path.join(directory, "source-image");
     const output = path.join(directory, `sticker.${config.format}`);
-    await context.telegram.withClient(client => client.downloadMedia(source.media!, {outputFile: input}));
+    await context.telegram.withClient(async client => {
+      const file = await open(input, "wx", 0o600);
+      let total = 0;
+      try {
+        for await (const chunk of client.iterDownload(source.media! as any, {})) {
+          signal.throwIfAborted();
+          total += chunk.length;
+          if (total > MAX_INPUT_BYTES) throw new Error("Image too large");
+          await writeAll(file,chunk);
+        }
+        if (!total) throw new Error("Empty image");
+      } finally { await file.close(); }
+    });
     signal.throwIfAborted();
     const sharp = (await import("sharp")).default;
-    const metadata = await sharp(input, {animated: true}).metadata();
-    let operation = sharp(input, {animated: Boolean(metadata.pages && metadata.pages > 1)}).resize(config.size, config.size,
+    let operation = sharp(input, {animated: false, pages: 1, limitInputPixels: MAX_DECODE_PIXELS}).resize(config.size, config.size,
       {fit: "contain", background: background(config.background)});
     operation = config.format === "png" ? operation.png({compressionLevel: config.compressionLevel}) :
       operation.webp({quality: config.quality, effort: Math.min(6, config.compressionLevel)});
@@ -53,7 +68,7 @@ async function convert(context: PluginContext, source: ApiTypes.Message, config:
     let info = await stat(output);
     if (!info.isFile() || info.size === 0) throw new Error("Invalid output");
     if (info.size > 512 * 1024 && config.format === "webp") {
-      await sharp(input, {animated: Boolean(metadata.pages && metadata.pages > 1)}).resize(config.size, config.size,
+      await sharp(input, {animated: false, pages: 1, limitInputPixels: MAX_DECODE_PIXELS}).resize(config.size, config.size,
         {fit: "contain", background: background(config.background)}).webp({quality: Math.max(10, Math.floor(config.quality * 0.6)), effort: 6}).toFile(output);
       info = await stat(output);
     }
@@ -76,19 +91,32 @@ const convertReply = (batch: boolean): CommandDefinition["handle"] => async (inv
       const selected = batch ? config.defaultEmoji : (invocation.args[0] || config.defaultEmoji).slice(0, 32);
       const candidates: ApiTypes.Message[] = [source];
       if (batch && (source as any).groupedId) {
-        const group = await context.telegram.withClient(client => client.getMessages(raw.peerId!, {limit: 20, offsetId: source.id}));
-        for (const item of group as any[]) if (String(item?.groupedId ?? "") === String((source as any).groupedId) && item?.media && !candidates.some(value => value.id === item.id)) candidates.push(item);
+        const groups = await context.telegram.withClient(async client => Promise.all([
+          client.getMessages(raw.peerId!, {limit: 20, offsetId: source.id}),
+          client.getMessages(raw.peerId!, {limit: 20, minId: source.id, reverse: true}),
+        ]));
+        for (const item of groups.flat() as any[]) {
+          const mime = String(item?.document?.mimeType ?? "").toLowerCase();
+          const image = Boolean(item?.photo || item?.sticker || mime.startsWith("image/"));
+          if (String(item?.groupedId ?? "") === String((source as any).groupedId) && item?.media && image && !candidates.some(value => value.id === item.id)) candidates.push(item);
+        }
       }
-      let completed = 0;
+      candidates.sort((left, right) => left.id - right.id);
+      let completed = 0, failed = 0;
       for (const item of candidates.slice(0, 20)) {
-        await convert(context, item, config, selected, output => context.telegram.withClient(async client => {
-          await client.sendFile(raw.peerId!, {file: output,
-            attributes: [new Api.DocumentAttributeSticker({alt: selected, stickerset: new Api.InputStickerSetEmpty()})], replyTo: invocation.message.replyToId});
-        }));
-        completed++;
+        try {
+          await convert(context, item, config, selected, output => context.telegram.withClient(async client => {
+            await client.sendFile(raw.peerId!, {file: output,
+              attributes: [new Api.DocumentAttributeSticker({alt: selected, stickerset: new Api.InputStickerSetEmpty()})], replyTo: invocation.message.replyToId});
+          }));
+          completed++;
+        } catch { context.signal.throwIfAborted(); failed++; }
       }
-      if (config.autoDelete && typeof raw.delete === "function") await raw.delete({revoke: true});
-      else await context.telegram.edit(invocation.message, batch ? `批量转换完成：${completed} 张` : `贴纸已发送 ${escape(selected)}`, {parseMode: "html"});
+      if (!completed) throw new Error("No image converted");
+      if (config.autoDelete && failed === 0 && typeof raw.delete === "function") {
+        try { await raw.delete({revoke: true}); }
+        catch { context.log.error("pic_to_sticker_command_cleanup_failed"); }
+      } else await context.telegram.edit(invocation.message, batch ? `批量转换完成：成功 ${completed} 张，失败 ${failed} 张` : `贴纸已发送 ${escape(selected)}`, {parseMode: "html"});
     } catch {
       if (context.signal.aborted) return;
       context.log.error("pic_to_sticker_failed");
@@ -122,7 +150,7 @@ const command: CommandDefinition = {
         await context.telegram.edit(i.message, `<b>当前配置</b>\n默认表情：${escape(current.defaultEmoji)}\n尺寸：${current.size}\n质量：${current.quality}\n格式：${current.format}\n背景：${current.background}\n自动删除：${current.autoDelete ? "开启" : "关闭"}`, {parseMode: "html"});
       }},
   },
-  help: [{heading: "格式与默认值：", body: "回复 JPG/PNG/GIF/WebP 等图片，通过 sharp 保持比例并优化尺寸和质量；GIF 按动画读取。默认表情 🙂、512 像素、WebP 质量 90、透明背景，发送成功后删除命令。WebP 超限时再压缩一次，输出仍超过 512 KiB 会报错。"},
+  help: [{heading: "格式与默认值：", body: "回复 JPG/PNG/GIF/WebP 等图片，通过 sharp 保持比例并优化尺寸和质量；动画输入取首帧生成静态贴纸，输入最多 50 MiB、解码最多 2000 万像素。默认表情 🙂、512 像素、WebP 质量 90、透明背景，发送成功后删除命令。WebP 超限时再压缩一次，输出仍超过 512 KiB 会报错。"},
     {heading: "命令别名：", body: "<code>{prefix}pts</code> 与 <code>{prefix}pic_to_sticker</code> 使用相同参数。"}],
   async handle(i, context) {
     if (["help", "h"].includes(i.args[0]?.toLowerCase() ?? "")) { await context.telegram.edit(i.message, help(i.prefix), {parseMode: "html"}); return; }

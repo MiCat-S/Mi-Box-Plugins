@@ -36,7 +36,7 @@ const run = (force: boolean): CommandDefinition["handle"] => async (invocation, 
             if (processed % 500 === 0) await context.telegram.edit(invocation.message, `正在统计群组成员… ${processed}`);
           }
           const percent = users ? (premium / users * 100).toFixed(2) : "0.00";
-          const limited = participantCount >= 10_000 ? "\n\n<i>Telegram 最多返回前 10,000 名成员，结果可能不完整。</i>" : "";
+          const limited = participantCount >= 10_000 || processed >= 10_000 ? "\n\n<i>Telegram 最多返回前 10,000 名成员，结果可能不完整。</i>" : "";
           await context.telegram.edit(invocation.message,
             `<b>Premium 统计</b>\nPremium：<b>${premium}</b> / ${users}（<b>${percent}%</b>）\n过滤 Bot ${bots} · 已注销 ${deleted}\n处理成员 ${processed}${limited}`,
             {parseMode: "html"});

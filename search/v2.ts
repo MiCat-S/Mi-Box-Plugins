@@ -2,11 +2,15 @@ import {fileName, duration, matches, score, channelVideos} from "./v2/videos";
 import {setTimeout as sleep} from "node:timers/promises";
 import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type CommandInvocation, definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import path from "node:path";
+import {open} from "node:fs/promises";
 
 type Channel = {title: string; handle: string; linkedGroup?: string};
 type Config = {schemaVersion: 1; defaultChannel: string | null; channelList: Channel[]; adFilters: string[]};
 const DEFAULT_FILTERS = ["广告","推广","赞助","合作","代理","招商","加盟","投资","理财","贷款","借钱","网贷","信用卡","pos机","刷单","兼职","副业","微商","代购","优惠券","返利","红包","博彩","赌博","股票","期货","外汇","数字货币","比特币","vpn","代理ip"];
 const defaults: Config = {schemaVersion: 1, defaultChannel: null, channelList: [], adFilters: DEFAULT_FILTERS};
+const MAX_MEDIA_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_IMPORT_BYTES = 256 * 1024;
+async function writeAll(file:Awaited<ReturnType<typeof open>>,chunk:Uint8Array){let offset=0;while(offset<chunk.length){const result=await file.write(chunk,offset,chunk.length-offset);if(result.bytesWritten<=0)throw new Error("视频写入失败");offset+=result.bytesWritten;}}
 const database = (ctx: PluginContext) => ctx.storage.json<Config>("channel_search_config.json", defaults);
 const messageText = (m: any) => String(m?.text || m?.message || "");
 const isAd = (m: any, config: Config) => config.adFilters.some(word => `${messageText(m)}\n${fileName(m)}`.toLowerCase().includes(word.toLowerCase()));
@@ -30,8 +34,14 @@ async function add(ctx: PluginContext, message: MessageEnvelope, raw: string) {
       } catch (error) { failures.push(`${value}: ${errorText(error)}`); }
     }
   });
-  await database(ctx).update(current => ({...current, schemaVersion: 1, channelList: [...current.channelList, ...added], defaultChannel: current.defaultChannel ?? added[0]?.handle ?? null}));
-  await ctx.telegram.edit(message, `✅ 成功添加 ${added.length} 个频道。${failures.length ? `\n⚠️ ${failures.join("\n")}` : ""}`);
+  let applied = 0;
+  await database(ctx).update(current => {
+    const existing = new Set(current.channelList.map(item => item.handle));
+    const fresh = added.filter(item => !existing.has(item.handle) && !!existing.add(item.handle));
+    applied = fresh.length;
+    return {...current, schemaVersion: 1, channelList: [...current.channelList, ...fresh], defaultChannel: current.defaultChannel ?? fresh[0]?.handle ?? null};
+  });
+  await ctx.telegram.edit(message, `✅ 成功添加 ${applied} 个频道。${failures.length ? `\n⚠️ ${failures.join("\n")}` : ""}`);
 }
 
 async function search(ctx: PluginContext, message: MessageEnvelope, originalArgs: readonly string[], forcedType?: "kkp") {
@@ -68,10 +78,14 @@ async function search(ctx: PluginContext, message: MessageEnvelope, originalArgs
     await ctx.telegram.edit(message, "✅ 已找到结果，准备发送...");
     const peer: any = (message.raw as any)?.peerId ?? message.chatId;
     if (!spoiler) {
-      try { await client.forwardMessages(peer, {messages:[selected.id], fromPeer:selected.peerId}); if(message.outgoing&&typeof (message.raw as any)?.delete==="function")await (message.raw as any).delete().catch(()=>{}); return; } catch {}
+      try { await client.forwardMessages(peer, {messages:[selected.id], fromPeer:selected.peerId, ...(message.topicId ? {topMsgId: message.topicId} : {})}); if(message.outgoing&&typeof (message.raw as any)?.delete==="function")await (message.raw as any).delete().catch(()=>{}); return; } catch {}
     }
     await ctx.files.withTemp(async (directory, scoped) => {
-      const target = path.join(directory, "video.mp4"); await client.downloadMedia(selected.media, {outputFile: target}); scoped.throwIfAborted();
+      if (Number(selected.document?.size ?? 0) > MAX_MEDIA_BYTES) throw new Error("视频超过 2 GiB 上限");
+      const target = path.join(directory, "video.mp4"), file = await open(target, "wx", 0o600); let total = 0;
+      try { for await (const chunk of client.iterDownload(selected.media, {})) { scoped.throwIfAborted(); total += chunk.length; if (total > MAX_MEDIA_BYTES) throw new Error("视频超过 2 GiB 上限"); await writeAll(file,chunk); } }
+      finally { await file.close(); }
+      if (!total) throw new Error("视频下载为空"); scoped.throwIfAborted();
       const {Api}=await import("teleproto");
       const attribute=selected.video?.attributes.find((item:any)=>item.className==="DocumentAttributeVideo");
       await client.sendFile(peer, {file:target,caption:query||messageText(selected),spoiler,forceDocument:false,replyTo:message.id,
@@ -112,17 +126,18 @@ const command: CommandDefinition = {
     default: {description: "设置默认频道", args: "频道链接", alternates: [{args: "d", description: "移除默认频道"}], handle: guarded(async ({message, args}, ctx) => {
       const raw = args.join(" ");
 
-    const config = await database(ctx).read();
     if (!raw) throw new Error("用法: so default <频道链接> 或 so default d。");
     const value = raw === "d" ? null : raw;
-    if (value && !config.channelList.some(item => item.handle === value)) throw new Error("请先使用 so add 添加此频道。");
-    await database(ctx).update(current => ({...current, defaultChannel: value}));
+    await database(ctx).update(current => {
+      if (value && !current.channelList.some(item => item.handle === value)) throw new Error("请先使用 so add 添加此频道。");
+      return {...current, defaultChannel: value};
+    });
     await ctx.telegram.edit(message, value ? `✅ 已将 "${value}" 设为默认频道。` : "✅ 默认频道已移除。"); return;
 
     })},
     list: {description: "列出频道源及默认项", args: "", handle: guarded(async ({message, args}, ctx) => {
       const raw = args.join(" ");
- const config = await database(ctx).read(); await ctx.telegram.edit(message, config.channelList.length ? `**当前搜索频道列表:**\n\n${config.channelList.map((item,i) => `${i+1}. ${item.title}${item.handle === config.defaultChannel ? " (默认)" : ""}`).join("\n")}` : "没有添加任何搜索频道。", {parseMode:"markdown"}); return;
+ const config = await database(ctx).read(); await ctx.telegram.edit(message, config.channelList.length ? `当前搜索频道列表：\n\n${config.channelList.map((item,i) => `${i+1}. ${item.title}${item.handle === config.defaultChannel ? " (默认)" : ""}`).join("\n")}` : "没有添加任何搜索频道。"); return;
     })},
     export: {description: "导出频道源列表文件", args: "", handle: guarded(async ({message, args}, ctx) => {
       const raw = args.join(" ");
@@ -135,7 +150,7 @@ const command: CommandDefinition = {
       const raw = args.join(" ");
 
     const reply = await ctx.telegram.getReply(message); if (!reply) throw new Error("❌ 请回复备份文件。");
-    const text = await ctx.telegram.withClient(async (client: any) => { const raw: any = reply.raw; const data = await client.downloadMedia(raw?.media); return Buffer.isBuffer(data) ? data.toString() : String(data ?? ""); });
+    const text = await ctx.telegram.withClient(async (client: any, signal) => { const raw: any = reply.raw; if (!raw?.media || Number(raw.document?.size ?? 0) > MAX_IMPORT_BYTES) throw new Error("备份文件超过 256 KiB"); const chunks:Buffer[]=[];let total=0;for await(const chunk of client.iterDownload(raw.media,{})){signal.throwIfAborted();total+=chunk.length;if(total>MAX_IMPORT_BYTES)throw new Error("备份文件超过 256 KiB");chunks.push(Buffer.from(chunk));}return Buffer.concat(chunks,total).toString("utf8"); });
     const handles = text.split(/\r?\n/).map(item => item.trim()).filter(Boolean); if (!handles.length) throw new Error("备份文件无效。"); await add(ctx, message, handles.join("\\")); return;
 
     })},
@@ -149,7 +164,7 @@ const command: CommandDefinition = {
     }, handle: guarded(async () => { throw new Error("用法: so ad <add|del|list> [关键词]"); })},
     kkp: {description: "随机速览 20 秒至 3 分钟的视频", args: "[-s] [-r]", examples: [{args: "kkp -s"}], handle: guarded((i, ctx) => search(ctx, i.message, i.args, "kkp"))},
   },
-  help: [{heading: "搜索行为：", body: "先用 add 添加频道源；关键词搜索不限制视频大小和时长，优先搜索默认频道。普通搜索选匹配结果，-r 随机选择，kkp 随机速览。发送时优先转发，防剧透或转发失败时下载并发送。"},
+  help: [{heading: "搜索行为：", body: "先用 add 添加频道源；关键词搜索不限制视频时长，优先搜索默认频道。普通搜索选匹配结果，-r 随机选择，kkp 随机速览。发送时优先转发，防剧透或转发失败时下载并发送，下载上限 2 GiB。"},
     {heading: "命令别名：", body: "<code>{prefix}search</code> 与 <code>{prefix}so</code> 使用相同参数。"}],
   handle: guarded((i, ctx) => search(ctx, i.message, i.args)),
 };

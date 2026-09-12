@@ -8,8 +8,9 @@ async function deletion(client:any,chat:any,ids:number[],signal:AbortSignal){
 }
 async function run(message:MessageEnvelope,ctx:PluginContext){
   const raw:any=message.raw;if(raw?.isPrivate||!message.chatId.startsWith("-")){await ctx.telegram.edit(message,"❌ 仅群组可用",{parseMode:"html"});return;}
-  await ctx.telegram.withClient(async(client:any,signal)=>{const {Api}=await import("teleproto");const chat=await client.getEntity(raw?.peerId??message.chatId),me=await client.getMe();let participant:any;
-    try{participant=(await client.invoke(new Api.channels.GetParticipant({channel:chat,participant:me.id}))).participant;}catch{await ctx.telegram.edit(message,"❌ 无法确认管理员权限",{parseMode:"html"});return;}
+  await ctx.telegram.withClient(async(client:any,signal)=>{const {Api}=await import("teleproto");const chat=await client.getEntity(raw?.peerId??message.chatId);let participant:any;
+    if(chat?.className!=="Channel"){await ctx.telegram.edit(message,"❌ 仅支持超级群和频道",{parseMode:"html"});return;}
+    try{participant=(await client.invoke(new Api.channels.GetParticipant({channel:chat,participant:new Api.InputPeerSelf()}))).participant;}catch{await ctx.telegram.edit(message,"❌ 无法确认管理员权限",{parseMode:"html"});return;}
     const rights=participant?.adminRights;if(participant?.className!=="ChannelParticipantCreator"&&(participant?.className!=="ChannelParticipantAdmin"||!rights?.banUsers||!rights?.deleteMessages)){await ctx.telegram.edit(message,"❌ 需要封禁成员和删除消息权限才能执行此操作",{parseMode:"html"});return;}
     await ctx.telegram.edit(message,"🚨 <b>一键跑路</b>\n\n正在处理中...",{parseMode:"html"});let muted=false,deleted=0,failed=0;
     try{await client.invoke(new Api.messages.EditChatDefaultBannedRights({peer:chat,bannedRights:new Api.ChatBannedRights({sendMessages:true,sendMedia:true,sendStickers:true,sendGifs:true,sendGames:true,sendInline:true,sendPolls:true,changeInfo:true,inviteUsers:true,pinMessages:true,untilDate:0})}));muted=true;}catch{ctx.log.error("paolu:mute");}
@@ -19,6 +20,6 @@ async function run(message:MessageEnvelope,ctx:PluginContext){
     void ctx.tasks.run(`paolu:cleanup:${message.chatId}:${sent.id}`,async scoped=>{await sleep(10000,undefined,{signal:scoped});await ctx.telegram.withClient(c=>c.deleteMessages(chat,[sent.id],{revoke:true}));}).catch(()=>undefined);
   });
 }
-export default function createPaolu(){const command: CommandDefinition = {"args":"","examples":[{"args":""}],"help":[{"heading":"操作范围：","body":"删除群内消息并尝试禁言所有成员，需要当前账号具有封禁成员和删除消息权限。完成回执在 10 秒后删除。删除操作不可逆。"}],description:"群组一键跑路",ignoreEdited:true,async handle({message},ctx){try{await run(message,ctx);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ 操作失败: ${escape((error as any)?.message??error)}`,{parseMode:"html"});}}};
+export default function createPaolu(){const command: CommandDefinition = {"args":"","examples":[{"args":""}],"help":[{"heading":"操作范围：","body":"删除群内消息并尝试禁言所有成员，需要当前账号具有封禁成员和删除消息权限。完成回执在 10 秒后删除。删除操作不可逆。"}],helpArgs:["help","h"],description:"群组一键跑路",ignoreEdited:true,async handle({message,args,prefix},ctx){if(args.length){await ctx.telegram.edit(message,help(prefix),{parseMode:"html"});return;}try{await run(message,ctx);}catch(error){if(!ctx.signal.aborted)await ctx.telegram.edit(message,`❌ 操作失败: ${escape((error as any)?.message??error)}`,{parseMode:"html"});}}};
   const help = (prefix: string) => renderCommandHelp("paolu", command, {prefix, title: "⚠️ 一键跑路"});
   return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION,id:"paolu",description:"删除群内消息并禁言所有成员",commands:{paolu:command}});}

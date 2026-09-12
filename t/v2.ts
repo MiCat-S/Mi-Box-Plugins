@@ -3,6 +3,7 @@ import {constants} from "node:fs";
 import path from "node:path";
 import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type CommandInvocation, definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
+import {writeAll} from "./v2/io";
 
 const FFMPEG = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"] as const;
 const FISH_HOST = "api.fish.audio";
@@ -38,12 +39,25 @@ async function state(context: PluginContext) {
   return {store, value: value as State};
 }
 
-async function stream(response: Response, target: string, signal: AbortSignal, maximum = 50 * 1024 * 1024): Promise<void> {
+export async function stream(response: Response, target: string, signal: AbortSignal, maximum = 50 * 1024 * 1024): Promise<void> {
   if (!response.ok || !response.body) throw new Error("Download failed");
-  const reader = response.body.getReader(); const handle = await open(target, "wx", 0o600); let total = 0;
-  try { while (true) { signal.throwIfAborted(); const item = await reader.read(); if (item.done) break;
-      total += item.value.byteLength; if (total > maximum) throw new Error("Response too large"); await handle.write(item.value); } }
-  finally { await reader.cancel().catch(() => undefined); await handle.close(); }
+  const reader = response.body.getReader(); let handle: Awaited<ReturnType<typeof open>> | undefined; let total = 0, done = false;
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => cancellation ??= reader.cancel();
+  const abort = () => { void cancel().catch(() => undefined); };
+  signal.addEventListener("abort", abort, {once: true});
+  try {
+    handle = await open(target, "wx", 0o600);
+    while (true) {
+      signal.throwIfAborted(); const item = await reader.read(); signal.throwIfAborted();
+      if (item.done) { done = true; break; }
+      total += item.value.byteLength; if (total > maximum) throw new Error("Response too large"); await writeAll(handle, item.value);
+    }
+  } finally {
+    signal.removeEventListener("abort", abort);
+    try { if (!done || cancellation) await cancel(); }
+    finally { try { await handle?.close(); } finally { reader.releaseLock(); } }
+  }
 }
 
 async function ffmpeg(context: PluginContext, args: readonly string[]): Promise<void> {
@@ -77,8 +91,9 @@ async function downloadCover(context: PluginContext, url: string, target: string
 async function send(context: PluginContext, invocation: any, file: string, options: Record<string, unknown>): Promise<void> {
   const raw = invocation.message.raw as ApiTypes.Message | undefined;
   if (!raw?.peerId) throw new Error("Missing peer");
-  await context.telegram.withClient(async client => { await client.sendFile(raw.peerId, {file, ...options});
-    if (typeof raw.delete === "function") await raw.delete({revoke: Boolean((raw as any).isPrivate)}); });
+  await context.telegram.withClient(async (client, signal) => { await client.sendFile(raw.peerId, {file, ...options});
+    if (typeof raw.delete === "function") { try { await raw.delete({revoke: Boolean((raw as any).isPrivate)}); }
+      catch { if (!signal.aborted) context.log.info("t_receipt_cleanup_failed"); } } });
 }
 
 function userId(invocation: any): string { return String(invocation.message.senderId ?? ""); }

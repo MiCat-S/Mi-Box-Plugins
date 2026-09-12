@@ -169,8 +169,7 @@ async function search(state: MusicBotState, context: PluginContext, invocation: 
         try {
           const peer = await client.getInputEntity(bot);
           signal.throwIfAborted();
-          await client.invoke(new Api.account.UpdateNotifySettings({peer,
-            settings: new Api.InputPeerNotifySettings({silent: true, muteUntil: 2_147_483_647})}));
+          await client.updateNotifySettings(peer, {silent: true, muteUntil: 2_147_483_647});
         } catch {}
         signal.throwIfAborted();
         const request = action === "vk" || action === "ym" ? query : `/${action} ${query}`;
@@ -201,7 +200,10 @@ async function search(state: MusicBotState, context: PluginContext, invocation: 
         await client.sendFile(raw.peerId, {file: media.media, replyTo: invocation.message.replyToId,
           ...(action === "ym" ? {} : {caption: `🎵 ${query}`})});
         signal.throwIfAborted();
-        if (typeof raw.delete === "function") await raw.delete({revoke: true});
+        if (typeof raw.delete === "function") {
+          try { await raw.delete({revoke: true}); }
+          catch { context.log.error("music_bot_command_cleanup_failed"); }
+        }
       });
     });
   } catch (error) {

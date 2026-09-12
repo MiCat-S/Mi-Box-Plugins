@@ -9,7 +9,7 @@ const DAY = 86_400_000, WEEK = 604_800;
 const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#x27;"})[c]!);
 const locks = (ctx: PluginContext) => ctx.storage.json<LockData>("seat_locks.json", {schemaVersion:1,lockedSeats:{}});
 const cache = (ctx: PluginContext) => ctx.storage.json<CacheData>("avg_cache.json", {schemaVersion:1,values:{}});
-const errorText = (error: unknown) => { const value = error instanceof Error ? error.message : String(error); return value.includes("CHAT_ADMIN_REQUIRED") ? "需要管理员权限才能执行该操作" : value.includes("CHANNEL_PRIVATE") ? "无法访问该私有频道/群组" : value.includes("USER_NOT_PARTICIPANT") ? "目标用户不在该对话中" : value.includes("RIGHT_FORBIDDEN") ? "当前账号没有足够权限执行该操作" : value.includes("USER_CREATOR") ? "群主无法被下掉管理员" : value; };
+const errorText = (error: unknown) => { const value = error instanceof Error ? error.message : String(error); return value.includes("CHAT_ADMIN_REQUIRED") ? "需要管理员权限才能执行该操作" : value.includes("CHANNEL_PRIVATE") ? "无法访问该私有频道/群组" : value.includes("USER_NOT_PARTICIPANT") ? "目标用户不在该对话中" : value.includes("RIGHT_FORBIDDEN") ? "当前账号没有足够权限执行该操作" : value.includes("USER_CREATOR") ? "群主无法被下掉管理员" : "操作失败，请检查目标与权限"; };
 const userName = (user:any) => [user.firstName,user.lastName].filter(Boolean).join(" ") || user.username || String(user.id);
 const userDisplay = (stat:Stat) => `${escape(stat.name)}${stat.username ? ` <code>@${escape(stat.username)}</code>`:""} <a href="tg://user?id=${escape(stat.id)}">${escape(stat.id)}</a>`;
 
@@ -44,6 +44,9 @@ async function stats(ctx: PluginContext, target: Target): Promise<Stat[]> {
 }
 function header(target:Target, title:string, total:number, unlocked?:number){return `${title}\n目标对话: <b>${escape(target.title)}</b>${target.username?` <code>${escape(target.username)}</code>`:""}\n管理员数量: <code>${total}</code>${unlocked===undefined?"":` | 未锁席位: <code>${unlocked}</code>`}`;}
 function line(stat:Stat,index:number){return `${index+1}. ${userDisplay(stat)}\n   头衔 <code>${escape(stat.rank)}</code> · 周日均 <code>${stat.avgText}</code> · 最后发言 <code>${stat.lastText}</code> · 锁定 <code>${stat.locked?"是":"否"}</code>`;}
+export function tailCandidates(all: readonly Stat[], count: number, excludeCreators = false): Stat[] {
+  return all.filter(item => item.avg >= 0 && !item.locked && (!excludeCreators || !item.creator)).slice(-count).reverse();
+}
 async function send(ctx:PluginContext,message:MessageEnvelope,text:string){const chunks:string[]=[];let current="";for(const row of text.split("\n")){if(`${current}\n${row}`.length>3500){chunks.push(current);current=row;}else current+=`${current?"\n":""}${row}`;}if(current)chunks.push(current);await ctx.telegram.edit(message,chunks[0],{parseMode:"html",linkPreview:false});for(const chunk of chunks.slice(1))await ctx.telegram.reply(message,chunk,{parseMode:"html",linkPreview:false});}
 async function seat(ctx:PluginContext,message:MessageEnvelope,action:"lock"|"unlock",args:readonly string[]){
   if(!args.length){await ctx.telegram.edit(message,`❌ 参数不足\n\n用法: <code>${escape(message.text.split(/\s/)[0])} ${action} 用户1,用户2 [对话id/@username]</code>`,{parseMode:"html"});return;}
@@ -86,8 +89,8 @@ export default function createAdminBoard(){
     }
     await ctx.telegram.edit(invocation.message, `📊 正在统计管理员排序简表...\n目标: <b>${escape(target.title)}</b>`, {parseMode:"html"});
     const all = await stats(ctx, target);
-    const candidates = all.filter(item => !item.locked);
-    const selected = candidates.slice(-count).reverse();
+    const candidates = all.filter(item => item.avg >= 0 && !item.locked);
+    const selected = tailCandidates(all, count);
     await send(ctx, invocation.message, `${header(target, "📉 <b>未锁席位倒数榜</b>", all.length, candidates.length)}\n\n${selected.map(line).join("\n")||"暂无未锁定席位的管理员。"}`);
   });
   const rm = guard(async (invocation, ctx) => {
@@ -100,10 +103,27 @@ export default function createAdminBoard(){
     const limit = Number(invocation.args[0]);
     await ctx.telegram.edit(invocation.message, `📊 正在统计管理员排序简表...\n目标: <b>${escape(target.title)}</b>`, {parseMode:"html"});
     const all = await stats(ctx, target);
-    const candidates = all.filter(item => !item.locked);
-    const selected = candidates.slice(-limit).reverse();
+    const selected = tailCandidates(all, limit, true);
     const success:Stat[]=[],fail:string[]=[];
-    await ctx.telegram.withClient(async(client:any)=>{const {Api}=await import("teleproto");for(const stat of selected.filter(item=>!item.creator)){try{const user=await client.getInputEntity(stat.user);if(target.channel){const channel=await client.getInputEntity(target.entity);await client.invoke(new Api.channels.EditAdmin({channel,userId:user,adminRights:new Api.ChatAdminRights({}),rank:""}));}else await client.invoke(new Api.messages.EditChatAdmin({chatId:target.entity.id,userId:user,isAdmin:false}));success.push(stat);}catch(error){fail.push(`${stat.name}（${errorText(error)}）`);}}});
+    await ctx.telegram.withClient(async(client:any,signal)=>{
+      const {Api}=await import("teleproto");
+      for(const stat of selected){
+        try{
+          signal.throwIfAborted();
+          const user=await client.getInputEntity(stat.user);
+          signal.throwIfAborted();
+          if(target.channel){
+            const channel=await client.getInputEntity(target.entity);
+            signal.throwIfAborted();
+            await client.invoke(new Api.channels.EditAdmin({channel,userId:user,adminRights:new Api.ChatAdminRights({}),rank:""}));
+          }else{
+            signal.throwIfAborted();
+            await client.invoke(new Api.messages.EditChatAdmin({chatId:target.entity.id,userId:user,isAdmin:false}));
+          }
+          success.push(stat);
+        }catch(error){if(signal.aborted)throw error;fail.push(`${stat.name}（${errorText(error)}）`);}
+      }
+    });
     await send(ctx, invocation.message, `✂️ <b>尾部管理员清理完成</b>\n目标人数: <code>${limit}</code>\n实际候选: <code>${selected.length}</code>\n成功: <code>${success.length}</code>\n失败: <code>${fail.length}</code>${fail.length?`\n${fail.map(v=>`• ${escape(v)}`).join("\n")}`:""}`);
   });
   const adminBoard: CommandDefinition = {

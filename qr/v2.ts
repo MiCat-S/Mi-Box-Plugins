@@ -42,7 +42,51 @@ async function decode(context: PluginContext, image: Buffer): Promise<string[]> 
       signal, timeoutMs: 30_000, maxOutputBytes: 64 * 1024,
       env: {LANG: "C.UTF-8", LC_ALL: "C.UTF-8"},
     });
-    return result.stdout.toString("utf8").split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20);
+    return result.stdout.toString("utf8").split("\n").map(value => value.endsWith("\r") ? value.slice(0, -1) : value)
+      .filter(value => value.length > 0).slice(0, 20);
+  });
+}
+
+function resultPages(values: readonly string[]): string[] {
+  const blocks: string[] = [];
+  for (const value of values) {
+    let chunk = "";
+    for (const character of value) {
+      const encoded = escape(character);
+      if (chunk && chunk.length + encoded.length > 3300) { blocks.push(`<code>${chunk}</code>`); chunk = ""; }
+      chunk += encoded;
+    }
+    blocks.push(`<code>${chunk}</code>`);
+  }
+  const pages: string[] = [];
+  let page = "<b>二维码内容</b>";
+  for (const block of blocks) {
+    if (page.length + block.length + 2 > 3500) { pages.push(page); page = ""; }
+    page += `${page ? "\n\n" : ""}${block}`;
+  }
+  if (page) pages.push(page);
+  return pages;
+}
+
+async function download(context: PluginContext, source: Api.Message): Promise<Buffer> {
+  if (Number(source.document?.size ?? 0) > MAX_IMAGE_BYTES) throw new Error("Invalid image");
+  return context.telegram.withClient(async (client: any, signal) => {
+    if (typeof client.iterDownload !== "function") {
+      const value = await client.downloadMedia(source.media!, {outputFile: Buffer.alloc(0), signal, progressCallback(received: any) {
+        signal.throwIfAborted(); if (typeof received?.greater === "function" && received.greater(MAX_IMAGE_BYTES)) throw new Error("Invalid image");
+      }});
+      if (!Buffer.isBuffer(value) || !value.length || value.length > MAX_IMAGE_BYTES) throw new Error("Invalid image");
+      return value;
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of client.iterDownload(source.media!, {})) {
+      signal.throwIfAborted(); total += chunk.length;
+      if (total > MAX_IMAGE_BYTES) throw new Error("Invalid image");
+      chunks.push(Buffer.from(chunk));
+    }
+    if (!total) throw new Error("Invalid image");
+    return Buffer.concat(chunks, total);
   });
 }
 
@@ -59,7 +103,10 @@ async function sendQr(context: PluginContext, invocation: any, input: string): P
     if (!raw?.peerId) throw new Error("Missing peer");
     await client.sendFile(raw.peerId, {file: new CustomFile("qrcode.png", image.length, "", image),
       caption: "二维码生成完成", replyTo: invocation.message.replyToId ?? invocation.message.id});
-    if (typeof raw.delete === "function") await raw.delete({revoke: true});
+    if (typeof raw.delete === "function") {
+      try { await raw.delete({revoke: true}); }
+      catch { context.log.error("qr_command_cleanup_failed"); }
+    }
   });
 }
 
@@ -72,10 +119,13 @@ export default function createQr() {
         const source = (media(invocation.message.raw as Api.Message | undefined) ? invocation.message : reply)?.raw as Api.Message | undefined;
         if (media(source)) {
           await context.telegram.edit(invocation.message, "正在识别二维码…");
-          const image = await context.telegram.withClient(async client => client.downloadMedia(source!.media!, {outputFile: Buffer.alloc(0)}) as Promise<Buffer>);
+          const image = await download(context, source!);
           const values = await decode(context, image);
-          await context.telegram.edit(invocation.message, values.length ?
-            `<b>二维码内容</b>\n\n${values.map(value => `<code>${escape(value)}</code>`).join("\n\n")}` : "未在图片中识别到二维码", values.length ? {parseMode: "html"} : {});
+          if (!values.length) await context.telegram.edit(invocation.message, "未在图片中识别到二维码");
+          else for (const [index, page] of resultPages(values).entries()) {
+            if (index) await context.telegram.reply(invocation.message, page, {parseMode: "html"});
+            else await context.telegram.edit(invocation.message, page, {parseMode: "html"});
+          }
           return;
         }
         if (reply?.text) { await sendQr(context, invocation, reply.text); return; }

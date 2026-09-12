@@ -57,10 +57,17 @@ test('netease sends a direct media response returned by Music163bot', async t =>
   const sent = [], files = [];
   let deleted = 0;
   const media = {kind: 'audio'};
+  const history = [{id: 9, out: false, date: Math.floor(Date.now() / 1000), message: 'old response'}];
+  let nextId = 10;
   const client = {
     async invoke() { return {}; },
-    async sendMessage(peer, value) { sent.push({peer, value}); },
-    async getMessages() { return [{id: 9, out: false, date: Math.floor(Date.now() / 1000), media, message: 'Song via @Music163bot'}]; },
+    async sendMessage(peer, value) {
+      sent.push({peer, value});
+      const outgoing = {id: nextId++, out: true, date: Math.floor(Date.now() / 1000), message: value.message};
+      history.unshift({id: nextId++, out: false, date: Math.floor(Date.now() / 1000), media, message: 'Song via @Music163bot'});
+      return outgoing;
+    },
+    async getMessages() { return history; },
     async sendFile(peer, value) { files.push({peer, value}); },
   };
   const f = await fixture(t, 'netease', client, {raw: {peerId: {}, async delete() { deleted++; }}});

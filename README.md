@@ -34,7 +34,7 @@ Core 内置功能由 Core 维护；本仓库的 `exec` 保留历史身份和说�
 
 ## 插件源码目录
 - `aban` - 高级封禁管理  
-- `acron` - 定时发送/转发/复制/置顶/取消置顶/删除消息/执行命令  
+- `acron` - 定时发送/转发/复制/置顶/取消置顶/删除消息/发送命令文本
 - `admin_board` - 管理员排行榜 末位淘汰  
 - `aff` - 机场Aff信息管理  
 - `ai` - ai聚合  
@@ -107,14 +107,13 @@ Core 内置功能由 Core 维护；本仓库的 `exec` 保留历史身份和说�
 - `manage_admin` - 管理管理员  
 - `mode` - 自定义消息格式  
 - `moyu` - 摸鱼日报  
-- `music` - YouTube音乐  
+- `music` - 通过 yt-dlp 服务下载 YouTube 单曲 MP3
 - `music_bot` - 多音源音乐搜索  
 - `music_hub` - 多音源音乐搜索下载插件  
 - `netease` - 网易云音乐  
 - `news` - 每日新闻  
 - `nezha` - 哪吒监控  
 - `nodeseek` - NodeSeek 论坛每日签到，领取鸡腿  
-- `ntp` - NTP 时间同步  
 - `openlist` - openlist管理  
 - `oxost` - 回复聊天中的文件与媒体 得到一个临时的下载链接  
 - `pangu` - 消息自动pangu化  
@@ -139,10 +138,8 @@ Core 内置功能由 Core 维护；本仓库的 `exec` 保留历史身份和说�
 - `soutu` - soutu搜图  
 - `speedlink` - 对其他服务器测速  
 - `speedtest` - 网络速度测试  
-- `ssh` - ssh管理  
 - `sticker` - 偷表情  
 - `sticker_to_pic` - 表情转图片  
-- `sub` - substore简单管理  
 - `subinfo` - 订阅链接信息查询  
 - `sum` - 群消息总结  
 - `sure` - 代发用户、对话和消息白名单
@@ -153,12 +150,11 @@ Core 内置功能由 Core 维护；本仓库的 `exec` 保留历史身份和说�
 - `trace` - 全局追踪点赞  
 - `tts` - Azure文字转语音  
 - `uai` - 引用消息 AI 分析  
-- `warp` - warp管理  
 - `weather` - 天气查询  
 - `whois` - 域名查询  
 - `xmsl` - 全自动羡慕  
 - `yinglish` - 淫语翻译  
-- `yt-dlp` - YouTube 视频下载  
+- `yt-dlp` - YouTube 单曲 MP3 下载
 - `yvlu` - 语录贴纸：语音/文件/音频行、转发标签、管理员头衔、视频/GIF 角标；支持 webp/image/stories 输出  
 - `zhijiao` - 掷筊 强随机 使用 笅杯卦辞廿七句  
 - `zpr` - 二次元图片  

@@ -1,12 +1,8 @@
-let canvasModule: any;
-
 async function tryGetCanvas(): Promise<any> {
-  if (canvasModule !== undefined) return canvasModule;
   try {
     const moduleName = "canvas";
-    canvasModule = await import(moduleName);
-  } catch { canvasModule = null; }
-  return canvasModule;
+    return await import(moduleName);
+  } catch { return null; }
 }
 
 export async function generateImageCaptcha(
@@ -108,4 +104,3 @@ export async function generateImageCaptcha(
 
   return { buffer: canvas.toBuffer("image/png"), answer };
 }
-

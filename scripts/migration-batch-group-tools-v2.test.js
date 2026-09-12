@@ -86,7 +86,7 @@ test('atall sends escaped mentions and deletes the command receipt', async t => 
     async sendMessage(peer, value) { sent.push({peer, value}); },
   };
   const f = await fixture(t, 'atall', {client});
-  await f.run('.atall', {raw: {peerId: {}, async delete() { deleted++; }}});
+  await f.run('.atall', {chatType: 'supergroup', raw: {peerId: {}, async delete() { deleted++; }}});
   assert.equal(sent.length, 1);
   assert.match(sent[0].value.message, /A &lt; B/);
   assert.match(sent[0].value.message, /@public_user/);

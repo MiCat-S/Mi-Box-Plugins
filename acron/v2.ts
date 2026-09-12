@@ -63,23 +63,28 @@ export default function createAcron() {
     const target = invocation.args[6];
     if (!target) { await context.telegram.edit(invocation.message, "缺少目标对话", {}); return; }
     const [chat, replyTo] = target.split("|");
-    const state = await store.read(); const id = (BigInt(state.seq || "0") + 1n).toString(); let resolved = chat;
+    let resolved = chat;
     try { resolved = await context.telegram.withClient(async client => String((await client.getEntity(chat!)).id)); } catch {}
-    const task: Task = {id, type, cron, chat: chat!, chatId: resolved, createdAt: String(Date.now()), delivery: "pending", ...(replyTo ? {replyTo} : {})};
+    let task: Task = {id: "", type, cron, chat: chat!, chatId: resolved, createdAt: String(Date.now()), delivery: "pending", ...(replyTo ? {replyTo} : {})};
     const rest = [...invocation.args.slice(7)];
     if (["send", "copy", "forward", "cmd"].includes(type)) {
       const reply = await context.telegram.getReply(invocation.message);
       if (type === "send") { if (!reply?.text) { await context.telegram.edit(invocation.message, "请回复要定时发送的文本消息", {}); return; } task.message = reply.text; }
-      else if (type === "cmd") { task.message = invocation.message.text.split(/\r?\n/).slice(1).join("\n").trim(); if (!task.message) { await context.telegram.edit(invocation.message, "请换行填写要执行的命令", {}); return; } }
+      else if (type === "cmd") { task.message = invocation.message.text.split(/\r?\n/).slice(1).join("\n").trim(); if (!task.message) { await context.telegram.edit(invocation.message, "请换行填写要发送的命令文本", {}); return; } }
       else { if (!reply) { await context.telegram.edit(invocation.message, "请回复源消息", {}); return; } task.fromChatId = reply.chatId; task.fromMsgId = String(reply.id); }
       task.remark = rest.join(" ");
     } else if (type === "del") { task.msgId = rest.shift(); task.remark = rest.join(" "); if (!numeric(task.msgId)) { await context.telegram.edit(invocation.message, "无效的消息ID", {}); return; } }
     else if (type === "del_re") { task.limit = rest.shift(); task.regex = rest.shift(); task.remark = rest.join(" "); try {parseRegex(task.regex || "");} catch { await context.telegram.edit(invocation.message, "无效的正则表达式", {}); return; } }
     else if (type === "pin") { task.msgId = rest.shift(); task.notify = ["1", "true"].includes(rest.shift()?.toLowerCase() || ""); task.pmOneSide = ["1", "true"].includes(rest.shift()?.toLowerCase() || ""); task.remark = rest.join(" "); }
     else { task.msgId = rest.shift(); task.remark = rest.join(" "); }
-    await store.update(current => ({...current, schemaVersion: 1, seq: id, tasks: [...current.tasks, task]}));
-    try { await register(context, task); } catch { await store.update(current => ({...current, tasks: current.tasks.filter(item => item.id !== id), seq: state.seq})); await context.telegram.edit(invocation.message, "无效的 Cron 表达式", {}); return; }
-    await context.telegram.edit(invocation.message, `已添加定时任务 <code>${id}</code>`, {parseMode: "html"});
+    await store.update(current => {
+      const id = (BigInt(current.seq || "0") + 1n).toString();
+      task = {...task, id};
+      return {...current, schemaVersion: 1, seq: id, tasks: [...current.tasks, task]};
+    });
+    try { await register(context, task); }
+    catch { await store.update(current => ({...current, tasks: current.tasks.filter(item => item.id !== task.id)})); await context.telegram.edit(invocation.message, "无效的 Cron 表达式", {}); return; }
+    await context.telegram.edit(invocation.message, `已添加定时任务 <code>${task.id}</code>`, {parseMode: "html"});
   };
   const cronArgs = "CRON 对话 [备注]";
   const cronExample = {args: "send 0 0 2 * * * @target"};
@@ -93,7 +98,7 @@ export default function createAcron() {
       send: {description: "定时发送回复消息的文本", args: cronArgs, examples: [{args: "send 0 0 2 * * * @target 备注"}, {args: "send 0 0 2 * * * @target|回复消息ID 备注"}], handle: createTask("send")},
       copy: {description: "定时复制回复消息到目标对话", args: cronArgs, examples: [{args: "copy 0 0 2 * * * @target 备注"}, {args: "copy 0 0 2 * * * @target|话题ID 备注"}], handle: createTask("copy")},
       forward: {description: "定时转发回复消息到目标对话", args: cronArgs, examples: [{args: "forward 0 0 2 * * * @target 备注"}, {args: "forward 0 0 2 * * * @target|话题ID 备注"}], handle: createTask("forward")},
-      cmd: {description: "定时执行换行填写的命令", args: cronArgs, examples: [{args: "cmd 0 0 2 * * * me 备注", description: "首行为任务，后续行填写要执行的命令"}], handle: createTask("cmd")},
+      cmd: {description: "定时发送换行填写的命令文本", args: cronArgs, examples: [{args: "cmd 0 0 2 * * * me 备注", description: "首行为任务，后续行填写要发送的命令文本"}], handle: createTask("cmd")},
       del: {description: "定时删除指定消息", args: "CRON 对话 消息ID [备注]", examples: [{args: "del 0 0 2 * * * @target 123 [备注]"}], handle: createTask("del")},
       del_re: {description: "定时按正则删除最近消息", args: "CRON 对话 数量 正则 [备注]", examples: [{args: "del_re 0 0 2 * * * @target 100 /^test/i [备注]"}], handle: createTask("del_re")},
       pin: {description: "定时置顶指定消息", args: "CRON 对话 消息ID [通知] [仅自己] [备注]", examples: [{args: "pin 0 0 2 * * * @target 123 true false 备注"}], handle: createTask("pin")},
@@ -111,8 +116,8 @@ export default function createAcron() {
       {heading: "▎定时删除", body: "每天2点删除指定ID或@name的对话中的指定ID的消息。"},
       {heading: "▎定时正则删除", body: "每天2点删除指定ID或@name的对话中的最近的 100 条消息中 内容符合正则表达式的消息。"},
       {heading: "▎定时置顶/取消置顶", body: "每天2点在指定ID或@name的对话中置顶指定ID的消息, 是否发通知(true/1, false/0), 是否仅对自己置顶(true/1, false/0)。\n每天2点在指定ID或@name的对话中取消置顶指定ID的消息。"},
-      {heading: "▎定时执行命令", body: "每天2点在指定ID或@name的对话中执行命令 .a foo bar(可指定话题或回复消息)，注意要换行写。\n<pre>{prefix}acron cmd 0 0 2 * * * me 定时备份\n{prefix}bf</pre>\n<pre>{prefix}acron cmd 0 0 2 * * * me 定时状态查询\n{prefix}ping</pre>"},
-      {heading: "典型的使用场景:", body: "每天2点自动备份(调用 <code>{prefix}bf</code> 命令)；每天2点发送状态查询命令（调用 <code>{prefix}ping</code> 命令）。"},
+      {heading: "▎定时发送命令文本", body: "每天2点向指定ID或@name的对话发送命令文本（可指定话题或回复消息），注意要换行写。插件只确认 Telegram 消息已发送；当前 Core 没有向插件公开命令分发接口，因此不承诺该文本已被执行。\n<pre>{prefix}acron cmd 0 0 2 * * * me 定时备份\n{prefix}bf</pre>\n<pre>{prefix}acron cmd 0 0 2 * * * me 定时状态查询\n{prefix}ping</pre>"},
+      {heading: "典型的使用场景:", body: "每天2点发送 <code>{prefix}bf</code> 或 <code>{prefix}ping</code> 等命令文本；是否触发对应命令取决于宿主是否收到并路由该出站消息。"},
       {heading: "Cron 格式：", body: "使用六段表达式：<code>秒 分 时 日 月 星期</code>；时区为 <code>Asia/Shanghai</code>。"},
     ],
     async handle(invocation, context) {
@@ -121,7 +126,7 @@ export default function createAcron() {
   };
   void cronExample;
   return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "acron", description: "定时发送、复制、转发、删除及置顶消息",
-    renderHelp: prefix => renderCommandHelp("acron", acronCommand, {prefix, title: "定时发送/转发/复制/置顶/取消置顶/删除消息/执行命令"}),
+    renderHelp: prefix => renderCommandHelp("acron", acronCommand, {prefix, title: "定时发送/转发/复制/置顶/取消置顶/删除消息/发送命令文本"}),
     commands: {acron: acronCommand},
     async setup(context) { const state = await context.storage.json<State>("acron_config.json", defaults).update(current => ({...current, schemaVersion: 1, seq: String(current.seq || "0"), tasks: (current.tasks || []).map(task => ({...task, id: String(task.id), chatId: task.chatId === undefined ? undefined : String(task.chatId), delivery: task.delivery || "pending"}))})); for (const task of state.tasks) await register(context, task); },
     async cleanup() {await Promise.all([...disposers.values()].map(dispose => dispose())); disposers.clear();},

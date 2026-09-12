@@ -67,7 +67,8 @@ const atadminsCommand: CommandDefinition = {
           await client.sendMessage(raw.peerId, {message: output[index]!, parseMode: "html", replyTo: invocation.message.replyToId});
           if (index + 1 < output.length) await delay(800, undefined, {signal});
         }
-        if (typeof raw.delete === "function") await raw.delete({revoke: true});
+        if (typeof raw.delete === "function") { try { await raw.delete({revoke: true}); }
+          catch { if (!signal.aborted) context.log.info("atadmins_receipt_cleanup_failed"); } }
       });
     } catch {
       if (context.signal.aborted) return;

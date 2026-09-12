@@ -89,7 +89,8 @@ export default function createCodexImage() {
           await client.sendFile(raw.peerId, {file:new CustomFile(`ai-image-${Date.now()}.png`, image.length, "", image),
             caption:`<b>提示词：</b>\n<blockquote expandable>${esc(prompt)}</blockquote>${first?.revisedPrompt ? `\n<b>修订提示词：</b>\n<blockquote expandable>${esc(first.revisedPrompt)}</blockquote>` : ""}`,
             parseMode:"html", replyTo:ref?.reply.id ?? message.id});
-          if (typeof raw.delete === "function") await raw.delete({revoke:true});
+          if (typeof raw.delete === "function") { try { await raw.delete({revoke:true}); }
+            catch { if (!context.signal.aborted) context.log.info("codex_image_receipt_cleanup_failed"); } }
         });
       } catch {if (!context.signal.aborted) {context.log.error("codex_image_failed"); await context.telegram.edit(message, "图片生成失败，请检查 ai 配置、网络和服务状态");}}
     },

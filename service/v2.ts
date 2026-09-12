@@ -16,7 +16,7 @@ const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, chara
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#x27;"})[character]!);
 
 function serviceName(value: string): string | undefined {
-  return /^[A-Za-z0-9_.@\\-]+$/.test(value) && value.length <= 128 ? value : undefined;
+  return !value.startsWith("-") && /^[A-Za-z0-9_.@\\-]+$/.test(value) && value.length <= 128 ? value : undefined;
 }
 
 function translate(value: string): string {
@@ -50,9 +50,13 @@ async function detect(ctx: PluginContext): Promise<string> {
 }
 
 export default function createService() {
-  const command: CommandDefinition = {"args":"[服务名]","examples":[{"args":"","description":"自动检测当前进程对应的服务"},{"args":"ssh"},{"args":"mibot.service"}],"help":[{"heading":"输出与环境：","body":"显示运行状态、运行时间、进程、内存、CPU 和资源限制等状态字段。适用于提供 systemd 与 systemctl 的 Linux 环境。"}],description: "查看指定或当前 systemd 服务状态", async handle({message, args}, ctx) {
+  const command: CommandDefinition = {direction: "outgoing", "args":"[服务名]","examples":[{"args":"","description":"自动检测当前进程对应的服务"},{"args":"ssh"},{"args":"mibot.service"}],"help":[{"heading":"输出与环境：","body":"仅处理当前账号发出的命令。显示运行状态、运行时间、进程、内存、CPU 和资源限制等状态字段；只执行固定的只读 systemctl status 参数。适用于提供 systemd 与 systemctl 的 Linux 环境。"}],description: "查看指定或当前 systemd 服务状态", async handle({message, args}, ctx) {
       let name: string;
       let automatic = false;
+      if (args.length > 1) {
+        await ctx.telegram.edit(message, "❌ 用法：service [服务名]");
+        return;
+      }
       if (args[0]) {
         const checked = serviceName(args[0]);
         if (!checked) {
@@ -67,7 +71,7 @@ export default function createService() {
       }
       await ctx.telegram.edit(message, `🔍 正在检查 ${escape(name)} 服务状态...`);
       try {
-        const result = await run(ctx, "/usr/bin/systemctl", ["--no-pager", "status", name]);
+        const result = await run(ctx, "/usr/bin/systemctl", ["--no-pager", "status", "--", name]);
         const raw = `${result.stdout.toString("utf8")}\n${result.stderr.toString("utf8")}`;
         if (/could not be found|not be found|Loaded:\s+not-found/i.test(raw)) {
           await ctx.telegram.edit(message, `❌ 服务 '${name}' 未找到。`);

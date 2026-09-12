@@ -2,6 +2,7 @@ import {open, stat} from "node:fs/promises";
 import path from "node:path";
 import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
+import {writeAll} from "./v2/io";
 
 type Config = {schemaVersion: 1; key: string; region: string; voice: string; style: string; rate: string; format: string; [key: string]: unknown};
 type Voice = {ShortName: string; LocalName: string; Locale: string; Gender: string};
@@ -42,21 +43,42 @@ function endpoint(value: Config, route: string): {url: string; host: string} {
   return {url: `https://${host}/cognitiveservices/${route}`, host};
 }
 
-async function boundedJson(response: Response, signal: AbortSignal, maximum = 2 * 1024 * 1024): Promise<unknown> {
+export async function boundedJson(response: Response, signal: AbortSignal, maximum = 2 * 1024 * 1024): Promise<unknown> {
   if (!response.ok || !response.body) throw new Error("Azure request failed");
-  const reader = response.body.getReader(); const chunks: Buffer[] = []; let total = 0;
-  try { while (true) { signal.throwIfAborted(); const part = await reader.read(); if (part.done) break; total += part.value.byteLength;
+  const reader = response.body.getReader(); const chunks: Buffer[] = []; let total = 0, done = false;
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => cancellation ??= reader.cancel();
+  const abort = () => { void cancel().catch(() => undefined); };
+  signal.addEventListener("abort", abort, {once: true});
+  try { while (true) { signal.throwIfAborted(); const part = await reader.read(); signal.throwIfAborted();
+      if (part.done) { done = true; break; } total += part.value.byteLength;
       if (total > maximum) throw new Error("Azure response too large"); chunks.push(Buffer.from(part.value)); } }
-  finally { await reader.cancel().catch(() => undefined); }
+  finally {
+    signal.removeEventListener("abort", abort);
+    try { if (!done || cancellation) await cancel(); } finally { reader.releaseLock(); }
+  }
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new Error("Invalid Azure response"); }
 }
 
-async function streamAudio(response: Response, target: string, signal: AbortSignal): Promise<void> {
+export async function streamAudio(response: Response, target: string, signal: AbortSignal): Promise<void> {
   if (!response.ok || !response.body) throw new Error("Azure synthesis failed");
-  const handle = await open(target, "wx", 0o600); const reader = response.body.getReader(); let total = 0;
-  try { while (true) { signal.throwIfAborted(); const part = await reader.read(); if (part.done) break; total += part.value.byteLength;
-      if (total > MAX_AUDIO) throw new Error("Azure audio too large"); await handle.write(part.value); } }
-  finally { await reader.cancel().catch(() => undefined); await handle.close(); }
+  const reader = response.body.getReader(); let handle: Awaited<ReturnType<typeof open>> | undefined; let total = 0, done = false;
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => cancellation ??= reader.cancel();
+  const abort = () => { void cancel().catch(() => undefined); };
+  signal.addEventListener("abort", abort, {once: true});
+  try {
+    handle = await open(target, "wx", 0o600);
+    while (true) {
+      signal.throwIfAborted(); const part = await reader.read(); signal.throwIfAborted();
+      if (part.done) { done = true; break; } total += part.value.byteLength;
+      if (total > MAX_AUDIO) throw new Error("Azure audio too large"); await writeAll(handle, part.value);
+    }
+  } finally {
+    signal.removeEventListener("abort", abort);
+    try { if (!done || cancellation) await cancel(); }
+    finally { try { await handle?.close(); } finally { reader.releaseLock(); } }
+  }
   if (!total) throw new Error("Empty Azure audio");
 }
 

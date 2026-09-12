@@ -8,7 +8,9 @@ const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 const built = buildPlugin({id: 'tts', packageRoot: path.resolve(__dirname, '../tts'), entry: 'v2.ts'});
-const create = require(path.join(built.artifactDir, 'index.cjs')).default;
+const moduleExports = require(path.join(built.artifactDir, 'index.cjs'));
+const create = moduleExports.default;
+const {boundedJson, streamAudio} = moduleExports;
 
 async function fixture(t, responder) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-tts-v2-')));
@@ -65,4 +67,27 @@ test('tts loads, unloads and reloads through PluginHost without retained resourc
   assert.equal((await f.host.unload('tts', 1000)).completed, true);
   assert.equal(f.host.snapshot().plugins, 0);
   await f.host.load(create()); assert.equal(f.host.snapshot().plugins, 1);
+});
+
+test('tts releases owned response readers on normal, oversized and cancelled consumers', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-tts-reader-'));
+  t.after(() => fs.rm(root, {recursive: true, force: true}));
+
+  const json = Response.json({ok: true});
+  assert.deepEqual(await boundedJson(json, new AbortController().signal), {ok: true});
+  assert.equal(json.body.locked, false);
+
+  const oversized = new Response(Buffer.from('12345'));
+  await assert.rejects(boundedJson(oversized, new AbortController().signal, 4), /too large/i);
+  assert.equal(oversized.body.locked, false);
+
+  let cancelled = false;
+  const pending = new Response(new ReadableStream({pull() { return new Promise(() => {}); }, cancel() { cancelled = true; }}));
+  const controller = new AbortController();
+  const running = streamAudio(pending, path.join(root, 'cancel.mp3'), controller.signal);
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort(new DOMException('cancelled', 'AbortError'));
+  await assert.rejects(running, /cancel/i);
+  assert.equal(cancelled, true);
+  assert.equal(pending.body.locked, false);
 });

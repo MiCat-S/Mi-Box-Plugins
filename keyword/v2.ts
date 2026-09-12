@@ -1,5 +1,5 @@
 import {setTimeout as sleep} from "node:timers/promises";
-import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, requireSdkFeatures, renderCommandHelp, type CommandDefinition, type CommandInvocation, type SubcommandDefinition, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {SAFE_REGEXP_LIMITS, STRUCTURED_PLUGIN_API_VERSION, definePlugin, requireSdkFeatures, renderCommandHelp, ui, type CommandDefinition, type CommandInvocation, type SubcommandDefinition, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {returnBigInt} from "teleproto/Helpers";
 
 type Task = {id:number; chatId:string; key:string; response:string; include:boolean; regexp:boolean; exact:boolean; caseSensitive:boolean; ignoreForward:boolean; reply:boolean; deleteSource:boolean; banSeconds:number; restrictSeconds:number; deleteReplyAfter:number; deleteSourceAfter:number};
@@ -8,6 +8,8 @@ const defaults:State={schemaVersion:1,nextId:1,tasks:[],aliases:{},importedLegac
 const store=(ctx:PluginContext)=>ctx.storage.json<State>("config.json",defaults);
 const esc=(v:unknown)=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#x27;"})[c]!);
 const err=(e:unknown)=>e instanceof Error?e.message:String(e);
+const MAX_REGEXP_TASKS=32;
+const MAX_REGEXP_PATTERN=500;
 
 function normalizeTask(value:any):Task|undefined {
   const id=Number(value?.id??value?.task_id), chatId=value?.chatId??value?.cid;
@@ -39,11 +41,11 @@ function parseTask(text:string,id:number,chatId:string):Task{
   for(const action of (parts[3]??"").split(/\s+/).filter(Boolean)){if(action==="reply")task.reply=true;else if(action==="delete")task.deleteSource=true;else if(/^ban\d*$/.test(action))task.banSeconds=Number(action.slice(3))||0;else if(/^restrict\d*$/.test(action))task.restrictSeconds=Number(action.slice(8))||0;else throw new Error("任务格式无效");}
   task.deleteReplyAfter=Number(parts[4]??0);task.deleteSourceAfter=Number(parts[5]??0);
   if(![task.deleteReplyAfter,task.deleteSourceAfter,task.banSeconds,task.restrictSeconds].every(Number.isFinite)||[task.deleteReplyAfter,task.deleteSourceAfter,task.banSeconds,task.restrictSeconds].some(v=>v<0))throw new Error("时间参数不能为负数");
-  if(task.regexp)try{new RegExp(task.key,task.caseSensitive?"g":"gi");}catch{throw new Error("正则表达式无效");}
+  if(task.regexp){if(task.key.length>MAX_REGEXP_PATTERN)throw new Error(`正则表达式不能超过 ${MAX_REGEXP_PATTERN} 个字符`);try{new RegExp(task.key,task.caseSensitive?"":"i");}catch{throw new Error("正则表达式无效");}}
   return task;
 }
 
-function matches(task:Task,message:MessageEnvelope){if(!message.text||(task.ignoreForward&&message.forwarded))return false;let text=message.text,key=task.key;if(task.regexp)return new RegExp(key,task.caseSensitive?"g":"gi").test(text);if(!task.caseSensitive){text=text.toLowerCase();key=key.toLowerCase();}return task.exact?text===key:task.include&&text.includes(key);}
+async function matches(task:Task,message:MessageEnvelope,ctx:PluginContext){if(!message.text||(task.ignoreForward&&message.forwarded))return false;let text=message.text,key=task.key;if(task.regexp){if(key.length>MAX_REGEXP_PATTERN||text.length>SAFE_REGEXP_LIMITS.maxInputLength)return false;try{const result=await ctx.regexp.test(key,text,{flags:task.caseSensitive?"":"i"},ctx.signal);if(result.timedOut)ctx.log.error("keyword_regexp_timeout",{taskId:task.id});return result.matched;}catch(e){ctx.signal.throwIfAborted();ctx.log.error("keyword_regexp_failed",{taskId:task.id,error:err(e).slice(0,200)});return false;}}if(!task.caseSensitive){text=text.toLowerCase();key=key.toLowerCase();}return task.exact?text===key:task.include&&text.includes(key);}
 function response(task:Task,message:MessageEnvelope){const raw=message.raw as any;const sender=raw?.sender;const name=String(sender?.firstName??sender?.first_name??"User");const id=message.senderId??"";return task.response.replace("$mention",id?`<a href="tg://user?id=${esc(id)}">${esc(name)}</a>`:"").replace("$code_id",esc(id)).replace("$code_name",esc(name)).replace("$delay_delete",task.deleteReplyAfter?String(task.deleteReplyAfter):"");}
 async function delayedDelete(ctx:PluginContext,chatId:string,id:number,seconds:number,label:string){await ctx.tasks.run(label,async signal=>{if(seconds)await sleep(seconds*1000,undefined,{signal});await ctx.telegram.withClient(async client=>client.deleteMessages(returnBigInt(chatId),[id],{revoke:true}));});}
 async function moderate(ctx:PluginContext,message:MessageEnvelope,task:Task){if(!message.senderId||(!task.banSeconds&&!task.restrictSeconds))return;await ctx.telegram.withClient(async client=>{const {Api}=await import("teleproto");const raw=message.raw as any;const channel=await client.getInputEntity(raw?.peerId??returnBigInt(message.chatId));const user=await client.getInputEntity(returnBigInt(message.senderId!));const until=Math.floor(Date.now()/1000)+(task.banSeconds||task.restrictSeconds);await client.invoke(new Api.channels.EditBanned({channel,participant:user,bannedRights:new Api.ChatBannedRights(task.banSeconds?{viewMessages:true,untilDate:until}:{sendMessages:true,untilDate:until})}));});}
@@ -56,7 +58,7 @@ async function apply(ctx:PluginContext,message:MessageEnvelope,task:Task){
 }
 
 // Fails explicitly instead of silently ignoring the listener filter on an older host.
-requireSdkFeatures("messageFilter");
+requireSdkFeatures("messageFilter", "safeRegexp");
 
 const guarded = (operation: (invocation: CommandInvocation, ctx: PluginContext, state: State) => Promise<void>): CommandDefinition["handle"] => async (invocation, ctx) => {
   try { await operation(invocation, ctx, await store(ctx).read()); }
@@ -64,7 +66,10 @@ const guarded = (operation: (invocation: CommandInvocation, ctx: PluginContext, 
 };
 const list = (all: boolean): CommandDefinition["handle"] => guarded(async (invocation, ctx, state) => {
   const items = all ? state.tasks : state.tasks.filter(t => t.chatId === invocation.message.chatId);
-  await ctx.telegram.edit(invocation.message, items.length ? items.map(t => `<code>${t.id}</code> - <code>${esc(t.key)}</code>${all ? ` - <code>${esc(t.chatId)}</code>` : ""} - ${esc(t.response)}`).join("\n") : all ? "当前没有任何关键词任务" : "当前聊天没有任何关键词任务", {parseMode: "html"});
+  const text=items.length ? items.map(t => `<code>${t.id}</code> - <code>${esc(t.key)}</code>${all ? ` - <code>${esc(t.chatId)}</code>` : ""} - ${esc(t.response)}`).join("\n") : all ? "当前没有任何关键词任务" : "当前聊天没有任何关键词任务";
+  const pages=(await ui.renderRichText(text,ui.PAGE_LABEL_RESERVE)).map((page,index,allPages)=>page+ui.pageLabel(index,allPages.length));
+  const delivered=await ui.deliverPages(pages,ctx.signal,(page,index)=>index?ctx.telegram.reply(invocation.message,page,{parseMode:"html"}):ctx.telegram.edit(invocation.message,page,{parseMode:"html"}));
+  if(delivered.interrupted&&!delivered.published)throw delivered.error;
 });
 const removeAlias: SubcommandDefinition = {description: "删除当前聊天的继承设置", args: "", examples: [{args: "rm"}], handle: guarded(async (invocation, ctx) => {
   await store(ctx).update(value => { const aliases = {...value.aliases}; delete aliases[invocation.message.chatId]; return {...value, aliases}; });
@@ -174,16 +179,22 @@ reply delete ban3600</code>
 • 任务ID在删除后不会重复使用
 
 `}],
-  handle: guarded(async ({message, args, prefix}, ctx, state) => {
+  handle: guarded(async ({message, args, prefix}, ctx) => {
     const action = args[0]?.toLowerCase();
     if (!action || action === "h" || action === "help") { await ctx.telegram.edit(message, help(prefix), {parseMode: "html"}); return; }
     const raw = message.text.slice(message.text.indexOf(" ") + 1);
-    const task = parseTask(raw, state.nextId, message.chatId);
-    await store(ctx).update(value => ({...value, nextId: Math.max(value.nextId, task.id + 1), tasks: [...value.tasks, task]}));
-    await ctx.telegram.edit(message, `已添加关键词任务，ID 为 <code>${task.id}</code>。`, {parseMode: "html"});
+    let allocatedId = 0;
+    await store(ctx).update(value => {
+      const nextId = Math.max(Number(value.nextId) || 1, ...value.tasks.map(task => task.id + 1));
+      const task = parseTask(raw, nextId, message.chatId);
+      if(task.regexp&&value.tasks.filter(item=>item.regexp).length>=MAX_REGEXP_TASKS)throw new Error(`正则任务最多 ${MAX_REGEXP_TASKS} 条`);
+      allocatedId = task.id;
+      return {...value, nextId: task.id + 1, tasks: [...value.tasks, task]};
+    });
+    await ctx.telegram.edit(message, `已添加关键词任务，ID 为 <code>${allocatedId}</code>。`, {parseMode: "html"});
   }),
 };
 const help = (prefix: string) => renderCommandHelp("keyword", command, {prefix, title: "🔧 关键词回复插件"});
 const keywordPlugin = definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "keyword", description: "按聊天配置关键词回复、删除和成员处置", renderHelp: help, commands: {keyword: command},
-listeners:[{edited:false,ignoreCommands:false,direction:"incoming",async handle(message,ctx){if(!message.text)return;const state=await store(ctx).read();const inherited=state.aliases[message.chatId];const ordered=[...(inherited?state.tasks.filter(t=>t.chatId===inherited):[]),...state.tasks.filter(t=>t.chatId===message.chatId)];for(const task of ordered){ctx.signal.throwIfAborted();if(matches(task,message))await apply(ctx,message,task);}}}],async setup(ctx){await migrate(ctx);}});
+listeners:[{edited:false,ignoreCommands:false,direction:"incoming",async handle(message,ctx){if(!message.text)return;const state=await store(ctx).read();const inherited=state.aliases[message.chatId];const ordered=[...(inherited?state.tasks.filter(t=>t.chatId===inherited):[]),...state.tasks.filter(t=>t.chatId===message.chatId)];let regexpCount=0;for(const task of ordered){ctx.signal.throwIfAborted();if(task.regexp&&++regexpCount>MAX_REGEXP_TASKS)continue;if(await matches(task,message,ctx))await apply(ctx,message,task);}}}],async setup(ctx){await migrate(ctx);}});
 export default function createKeyword(){return keywordPlugin;}

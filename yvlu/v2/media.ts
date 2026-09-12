@@ -1,6 +1,9 @@
 import type {PluginContext} from "telebox/sdk";
 import {native, UserError} from "./runtime";
 
+export const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
+export const MAX_INPUT_PIXELS = 16_777_216;
+
 export function imageExt(buffer: Buffer): "webp" | "png" | "webm" {
   if (buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") return "webp";
   if (buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "png";
@@ -10,14 +13,25 @@ export function imageExt(buffer: Buffer): "webp" | "png" | "webm" {
 
 export async function downloadMediaBuffer(ctx: PluginContext, target: any): Promise<Buffer> {
   return ctx.files.withTemp(async (directory, signal) => {
-    const {readFile} = await import("node:fs/promises");
+    const {readFile, stat} = await import("node:fs/promises");
     const {join} = await import("node:path");
+    const declared = target?.document?.size ?? target?.media?.document?.size;
+    if (declared !== undefined && BigInt(String(declared)) > BigInt(MAX_MEDIA_BYTES)) throw new UserError("媒体超过 20 MiB");
     signal.throwIfAborted();
     const output = join(directory, "media");
-    const result = await native(ctx, client => client.downloadMedia(target, {outputFile: output}));
+    const result = await native(ctx, client => client.downloadMedia(target, {outputFile: output, signal,
+      progressCallback: (received: any) => {
+        signal.throwIfAborted();
+        if (BigInt(String(received)) > BigInt(MAX_MEDIA_BYTES)) throw new UserError("媒体超过 20 MiB");
+      }}));
     signal.throwIfAborted();
+    if (!Buffer.isBuffer(result)) {
+      const info = await stat(output);
+      if (!info.isFile() || info.size > MAX_MEDIA_BYTES) throw new UserError("媒体超过 20 MiB");
+    }
     const buffer = Buffer.isBuffer(result) ? result : await readFile(output);
     if (!buffer.length) throw new UserError("下载的媒体为空");
+    if (buffer.length > MAX_MEDIA_BYTES) throw new UserError("媒体超过 20 MiB");
     return buffer;
   });
 }
@@ -94,7 +108,8 @@ export async function avatar(ctx: PluginContext, entity: any): Promise<{url: str
   if (!buffer) return undefined;
   const sharp = (await import("sharp")).default;
   ctx.signal.throwIfAborted();
-  const png = await sharp(buffer).resize(256, 256, {fit: "cover", position: "centre"}).flatten({background: "#000000"}).png().toBuffer();
+  const png = await sharp(buffer, {limitInputPixels: MAX_INPUT_PIXELS}).resize(256, 256, {fit: "cover", position: "centre"})
+    .flatten({background: "#000000"}).png().toBuffer();
   ctx.signal.throwIfAborted();
   return {url: `data:image/png;base64,${png.toString("base64")}`};
 }
@@ -144,7 +159,7 @@ export async function sendQuote(ctx: PluginContext, peer: any, replyTo: number, 
     attributes.push(new Api.DocumentAttributeSticker({alt: "📝", stickerset: new Api.InputStickerSetEmpty()}));
     if (result.ext === "webp") {
       const sharp = (await import("sharp")).default;
-      const size = await sharp(result.buffer).metadata();
+      const size = await sharp(result.buffer, {limitInputPixels: MAX_INPUT_PIXELS}).metadata();
       ctx.signal.throwIfAborted();
       attributes.push(new Api.DocumentAttributeImageSize({w: size.width || 512, h: size.height || 768}));
     }

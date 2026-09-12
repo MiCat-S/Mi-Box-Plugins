@@ -63,7 +63,8 @@ export default function createBanana(){
           if (!out.length || out.length > MAX_LIMIT) throw new Error("invalid_image");
           await client.sendFile(raw.peerId, {file: new CustomFile(`banana-${Date.now()}-${i}.png`, out.length, "", out), caption: i === 0 ? `<b>提示：</b> ${esc(prompt)}${images[i].revisedPrompt ? `\n\n${esc(images[i].revisedPrompt)}` : ""}` : undefined, parseMode: i === 0 ? "html" : undefined, replyTo: input.reply.id});
         }
-        if (typeof raw.delete === "function") await raw.delete({revoke: true});
+        if (typeof raw.delete === "function") { try { await raw.delete({revoke: true}); }
+          catch { if (!c.signal.aborted) c.log.info("banana_receipt_cleanup_failed"); } }
       });
     } catch {
       if (!c.signal.aborted) { c.log.error("banana_failed"); await c.telegram.edit(invocation.message, "图片编辑失败，请检查图片、配置和服务状态"); }

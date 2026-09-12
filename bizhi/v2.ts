@@ -121,7 +121,8 @@ const bizhiCommand: CommandDefinition = {
         const file = new CustomFile(result.filename, result.data.length, "", result.data);
         await client.sendFile(raw.peerId, {file, replyTo: invocation.message.replyToId ?? invocation.message.id,
           caption: `${sendAsFile ? "源文件" : "壁纸来源"}：${result.source}`, forceDocument: sendAsFile});
-        if (typeof raw.delete === "function") await raw.delete({revoke: true});
+        if (typeof raw.delete === "function") { try { await raw.delete({revoke: true}); }
+          catch { if (!context.signal.aborted) context.log.info("bizhi_receipt_cleanup_failed"); } }
       });
     } catch {
       if (context.signal.aborted) return;

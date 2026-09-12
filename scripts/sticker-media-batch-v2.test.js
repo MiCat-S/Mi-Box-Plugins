@@ -74,7 +74,7 @@ test('pic_to_sticker preserves legacy settings and streams a valid image through
   const png=await sharp({create:{width:2,height:2,channels:4,background:{r:255,g:0,b:0,alpha:1}}}).png().toBuffer();
   const source={id:3,peerId:'peer',media:{},photo:{}};const files={async withTemp(fn){const dir=await fs.mkdtemp(path.join(root,'tmp-'));try{return await fn(dir,new AbortController().signal);}finally{await fs.rm(dir,{recursive:true,force:true});}}};
   const f=directContext({storage:{'config.json':{defaultEmoji:'🔥',quality:80,size:512,background:'transparent',autoDelete:false,compressionLevel:6}},reply:{raw:source},files,
-    client:{async downloadMedia(media,{outputFile}){await fs.writeFile(outputFile,png);return outputFile;},async sendFile(peer,value){assert.ok((await fs.stat(value.file)).size>0);}}});
+    client:{async *iterDownload(){yield png;},async sendFile(peer,value){assert.ok((await fs.stat(value.file)).size>0);}}});
   const plugin=plugins.pic_to_sticker.create();await plugin.commands.pts.handle({command:'pts',prefix:'.',args:[],message:{id:1,chatId:'1',text:'.pts',outgoing:true,replyToId:3,raw:{peerId:'peer'}}},f.context);
   assert.equal(f.storage.values['config.json'].schemaVersion,1);assert.equal(f.sent.length,1);assert.equal(f.sent[0].value.attributes[0].alt,'🔥');assert.match(f.edits.at(-1).text,/贴纸已发送/);
 });

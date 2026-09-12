@@ -1,4 +1,4 @@
-import {access, open, readFile, stat} from "node:fs/promises";
+import {access, open, readFile, stat, type FileHandle} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
 import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
@@ -14,6 +14,15 @@ const FFMPEG = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/f
 const PYTHON = ["/usr/bin/python3", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"] as const;
 const SYSTEM_PROMPT = `你的任务是对用户的内容（文字或图片）做出一句“羡慕 + 调侃式的称呼或短语”的回复。输出永远只有一句“羡慕XXX”；XXX 来自用户内容中可轻松调侃的点。使用口语、俚语和轻松风格，2～4 个字优先；不要解释、分析、提问或重复原句。`;
 const TGS_SCRIPT = `import sys\nfrom rlottie_python import LottieAnimation\nanim=LottieAnimation.from_tgs(sys.argv[1])\nanim.save_animation(sys.argv[2])\n`;
+
+async function writeAll(file: FileHandle, chunk: Uint8Array): Promise<void> {
+  let offset = 0;
+  while (offset < chunk.byteLength) {
+    const {bytesWritten} = await file.write(chunk, offset, chunk.byteLength - offset, null);
+    if (bytesWritten <= 0) throw new Error("media_write_failed");
+    offset += bytesWritten;
+  }
+}
 
 const escape = (value: unknown) => String(value ?? "").replace(/[&<>\"']/g, character => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#x27;"})[character]!);
 const store = (context: PluginContext) => context.storage.json<State>("config.json", DEFAULTS);
@@ -81,7 +90,7 @@ async function download(context: PluginContext, raw: any, target: string, thumb?
         signal.throwIfAborted();
         total += chunk.length;
         if (total > MAX_MEDIA) throw new Error("media_too_large");
-        await file.write(chunk);
+        await writeAll(file, chunk);
       }
       if (!total) throw new Error("empty_media");
     } finally { await file.close(); }

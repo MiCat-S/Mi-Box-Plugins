@@ -5,6 +5,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import type {PluginContext} from "telebox/sdk";
+import {writeAll} from "./io";
 
 export const SPEEDTEST_VERSION = "1.2.0";
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
@@ -256,23 +257,23 @@ async function downloadArchive(context: PluginContext, url: URL, destination: st
       throw new Error("download size rejected");
     }
     const reader = response.body.getReader();
-    const file = await open(destination, "wx", 0o600);
+    let file: Awaited<ReturnType<typeof open>> | undefined;
     let total = 0;
     try {
+      file = await open(destination, "wx", 0o600);
       for (;;) {
         signal.throwIfAborted();
         const chunk = await reader.read();
         if (chunk.done) break;
         total += chunk.value.byteLength;
         if (total > MAX_ARCHIVE_BYTES || expected !== undefined && total > expected) throw new Error("download size rejected");
-        await file.write(chunk.value);
+        await writeAll(file, chunk.value);
       }
       if (total === 0) throw new Error("empty download");
       if (expected !== undefined && total !== expected) throw new Error("truncated download");
     } finally {
-      await file.close();
-      await reader.cancel().catch(() => undefined);
-      reader.releaseLock();
+      try { await file?.close(); }
+      finally { try { await reader.cancel().catch(() => undefined); } finally { reader.releaseLock(); } }
     }
   }, {timeoutMs: 120_000, redirects: {allowedHosts: ["install.speedtest.net"], maxRedirects: 0}});
 }

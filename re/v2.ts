@@ -64,7 +64,10 @@ export default function createRe() {
             }
           }
           const command = invocation.message.raw as {delete?: () => Promise<unknown>};
-          if (typeof command.delete === "function") await command.delete();
+          if (typeof command.delete === "function") {
+            try { await command.delete(); }
+            catch { ctx.log.error("re_command_cleanup_failed"); }
+          }
         });
       } catch {
         if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, "复读失败，请稍后重试");

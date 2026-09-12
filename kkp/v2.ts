@@ -94,7 +94,8 @@ export default function createKkp() {
             formattingEntities: text ? [new Api.MessageEntitySpoiler({offset: 0, length: text.length})] : undefined,
             replyTo: invocation.message.replyToId});
           try { await client.markAsRead(BOT); } catch {}
-          if (typeof raw.delete === "function") await raw.delete({revoke: true});
+          if (typeof raw.delete === "function") { try { await raw.delete({revoke: true}); }
+            catch { if (!context.signal.aborted) context.log.info("kkp_receipt_cleanup_failed"); } }
         }));
       } catch {
         if (context.signal.aborted) return;

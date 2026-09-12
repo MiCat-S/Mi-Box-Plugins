@@ -5,7 +5,7 @@
   },
   "acron": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/acron/acron.ts",
-    "desc": "定时发送/转发/复制/置顶/取消置顶/删除消息/执行命令"
+    "desc": "定时发送/转发/复制/置顶/取消置顶/删除消息/发送命令文本"
   },
   "admin_board": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/admin_board/admin_board.ts",
@@ -297,7 +297,7 @@
   },
   "music": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/music/music.ts",
-    "desc": "YouTube音乐"
+    "desc": "通过 yt-dlp 服务下载 YouTube 单曲 MP3"
   },
   "music_bot": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/music_bot/music_bot.ts",
@@ -322,10 +322,6 @@
   "nodeseek": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/nodeseek/nodeseek.ts",
     "desc": "NodeSeek 论坛每日签到，领取鸡腿"
-  },
-  "ntp": {
-    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/ntp/ntp.ts",
-    "desc": "NTP 时间同步"
   },
   "openlist": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/openlist/openlist.ts",
@@ -423,10 +419,6 @@
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/speedtest/speedtest.ts",
     "desc": "网络速度测试"
   },
-  "ssh": {
-    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/ssh/ssh.ts",
-    "desc": "ssh管理"
-  },
   "sticker": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/sticker/sticker.ts",
     "desc": "偷表情"
@@ -434,10 +426,6 @@
   "sticker_to_pic": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/sticker_to_pic/sticker_to_pic.ts",
     "desc": "表情转图片"
-  },
-  "sub": {
-    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/sub/sub.ts",
-    "desc": "substore简单管理"
   },
   "subinfo": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/subinfo/subinfo.ts",
@@ -479,10 +467,6 @@
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/uai/uai.ts",
     "desc": "引用消息 AI 分析"
   },
-  "warp": {
-    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/warp/warp.ts",
-    "desc": "warp管理"
-  },
   "weather": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/weather/weather.ts",
     "desc": "天气查询"
@@ -501,7 +485,7 @@
   },
   "yt-dlp": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/yt-dlp/yt-dlp.ts",
-    "desc": "YouTube 视频下载"
+    "desc": "YouTube 单曲 MP3 下载"
   },
   "yvlu": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/yvlu/yvlu.ts",
