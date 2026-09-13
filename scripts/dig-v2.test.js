@@ -98,11 +98,12 @@ test('dig rejects empty or conflicting servers', async t => {
   assert.equal(f.calls.length, 0);
 });
 
-test('dig escapes process failures and does not report success', async t => {
+test('dig sanitizes process failures and does not report success', async t => {
   const f = await fixture(t, () => {throw new Error('failed <&>');});
   await f.run('.dig example.com');
   assert.equal(f.edits.length, 2);
-  assert.match(f.edits[1].text, /DNS 查询失败[\s\S]*failed &lt;&amp;&gt;/);
+  assert.match(f.edits[1].text, /DNS 查询失败[\s\S]*查询执行失败，请稍后重试/);
+  assert.doesNotMatch(JSON.stringify(f.edits), /failed|&lt;|&amp;/);
 });
 
 test('dig does not start after cancellation or send results after unload', async t => {
