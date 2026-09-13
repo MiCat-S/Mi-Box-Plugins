@@ -11,6 +11,49 @@ const schemeName = (value: unknown) => {
 };
 const types: Record<string, string> = {credit: "贷记", debit: "借记", charge: "签账", prepaid: "预付"};
 const yesNo = (value: unknown) => typeof value === "boolean" ? (value ? "是" : "否") : "未知";
+const normalizeBankName = (value: unknown) => {
+  if (typeof value !== "string" || !value) return "未知";
+  if (!/\b(?:COMPANY )?LIMITED\b/i.test(value)) return value;
+  return value.toUpperCase()
+    .replace(/\bCOMPANY LIMITED\b/g, "CO., LTD.")
+    .replace(/\bLIMITED\b/g, "LTD.")
+    .replace(/\)(\s*)LTD\./g, "), LTD.")
+    .replace(/,\s*,/g, ", ");
+};
+class BinlistStatusError extends Error {
+  constructor(readonly status: number) { super(`Binlist response status ${status}`); }
+}
+async function binlist(ctx: PluginContext, value: string) {
+  return ctx.http.withResponse(`https://lookup.binlist.net/${value}`,
+    {headers: {"Accept-Version": "3", accept: "application/json", "user-agent": "Mi Box"}},
+    async (response, signal) => {
+      if (!response.ok) return {__binlistStatus: response.status};
+      if (!response.body) return {};
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      const cancel = () => { void reader.cancel().catch(() => undefined); };
+      signal.addEventListener("abort", cancel, {once: true});
+      try {
+        while (true) {
+          signal.throwIfAborted();
+          const chunk = await reader.read();
+          signal.throwIfAborted();
+          if (chunk.done) break;
+          size += chunk.value.byteLength;
+          if (size > 256 * 1024) throw new Error("Binlist response is too large");
+          chunks.push(chunk.value);
+        }
+      } finally {
+        signal.removeEventListener("abort", cancel);
+        reader.releaseLock();
+      }
+      const bytes = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      return JSON.parse(new TextDecoder().decode(bytes)) as any;
+    }, {timeoutMs: 10000, redirects: {allowedHosts: ["lookup.binlist.net"], maxRedirects: 2}});
+}
 const currencyName = (code: string) => {
   if (!/^[A-Z]{3}$/.test(code)) return "未知";
   const name = new Intl.DisplayNames(["en"], {type: "currency"}).of(code) ?? code;
@@ -58,18 +101,25 @@ export default function createBin() {
   }
   return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "bin", description: "查询银行卡 BIN 信息", commands: {
     bin: {helpArgs: ["help","h"], helpOnEmpty: true, description: "查询银行卡 BIN 信息", async handle(invocation, ctx: PluginContext) {
-      const value = invocation.args[0] ?? "";
-      if (!value || value === "help" || value === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
-      if (!/^\d{6,8}$/.test(value)) { await ctx.telegram.edit(invocation.message, "请输入 6 至 8 位数字 BIN"); return; }
+      const input = invocation.args[0] ?? "";
+      if (!input || /^h(?:elp)?$/i.test(input) || invocation.args[1] && /^h(?:elp)?$/i.test(invocation.args[1])) {
+        await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return;
+      }
+      const value = input.replace(/\D/g, "");
+      if (value.length < 6 || value.length > 8) {
+        await ctx.telegram.edit(invocation.message, `❌ 无效BIN：<code>${esc(input)}</code>\n需6-8位数字`, {parseMode:"html"}); return;
+      }
       try {
         await ctx.telegram.edit(invocation.message, "正在查询 BIN…");
         const [data, checked, rates] = await Promise.all([
-          ctx.http.json<any>(`https://lookup.binlist.net/${value}`, {"headers": {"accept": "application/json", "user-agent": "Mi Box"}}, {timeoutMs: 10000, redirects:{allowedHosts:["lookup.binlist.net"],maxRedirects:2}}),
+          binlist(ctx, value),
           bincheck(ctx, value),
           exchange(ctx),
         ]);
+        if (typeof data?.__binlistStatus === "number") throw new BinlistStatusError(data.__binlistStatus);
         const brand = field(data?.brand);
         const countryName = (data?.country?.name || checked.country || "未知").replace(" (Province of China)", "").replace("Taiwan, Province of China", "Taiwan");
+        const countryDisplay = countryName === "Taiwan" ? "台湾" : countryName;
         const level = brand.toUpperCase().match(/WORLD ELITE|BUSINESS|CORPORATE|PLATINUM|GOLD|CLASSIC|SIGNATURE|INFINITE|WORLD|PREMIUM/)?.[0] ?? "未知";
         const countryCode = typeof data?.country?.alpha2 === "string" ? data.country.alpha2.toUpperCase() : "";
         const country = countries[countryCode];
@@ -90,10 +140,10 @@ export default function createBin() {
           `级别  ${esc(level)}`,
           ...(brand !== "未知" && brand.toUpperCase() !== level ? [`产品  ${esc(brand)}`] : []),
           `商业  ${yesNo(business)}    ·    预付  ${yesNo(data?.prepaid)}`,
-          `卡行  ${esc(checked.bank || field(data?.bank?.name))}`,
+          `卡行  ${esc(normalizeBankName(checked.bank || data?.bank?.name))}`,
           ``,
           `<b>🌍 发卡地区</b>`,
-          `国家  ${flag ? `${flag} ` : ""}${esc(countryName)}`,
+          `国家  ${flag ? `${flag} ` : ""}${esc(countryDisplay)}`,
           `代码  ${esc(countryCode || "未知")}    ·    区号  ${esc(country?.[0] ?? "未知")}`,
           `地区  ${esc(country ? continents[country[1]] ?? "未知" : "未知")}`,
           `货币  ${esc(currencyName(currency))}`,
@@ -111,7 +161,19 @@ export default function createBin() {
           ctx.signal.throwIfAborted();
           await ctx.telegram[index ? "reply" : "edit"](invocation.message, page, {parseMode:"html", linkPreview:false});
         }
-      } catch { if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, "BIN 查询失败，请稍后重试"); }
+      } catch (error: unknown) {
+        if (ctx.signal.aborted) return;
+        const details = error && typeof error === "object" ? error as {status?: unknown; code?: unknown; message?: unknown} : {};
+        if (details.status === 404) await ctx.telegram.edit(invocation.message, `❌ 未找到: <code>${value}</code>`, {parseMode:"html"});
+        else if (details.status === 429) await ctx.telegram.edit(invocation.message, "⏳ 频率受限，请稍后重试", {parseMode:"html"});
+        else if (details.code === "TIMEOUT" || typeof details.message === "string" && details.message.includes("timeout")) {
+          await ctx.telegram.edit(invocation.message, "❌ 请求超时，请稍后重试", {parseMode:"html"});
+        } else if (typeof details.message === "string" && details.message.includes("MESSAGE_TOO_LONG")) {
+          await ctx.telegram.edit(invocation.message, "❌ 消息过长，请缩短输出", {parseMode:"html"});
+        } else {
+          await ctx.telegram.edit(invocation.message, "BIN 查询失败，请稍后重试");
+        }
+      }
     }},
   }});
 }
