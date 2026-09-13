@@ -4,15 +4,39 @@ import {definePlugin} from "telebox/sdk";
 const MAX_EXPR_LENGTH = 120;
 const MAX_ABS_RESULT = Number.MAX_SAFE_INTEGER;
 
+type CalculationErrorMessage =
+  | "表达式为空"
+  | "表达式包含不支持的字符"
+  | "表达式格式错误"
+  | "计算结果超出安全范围"
+  | "除零错误"
+  | "计算结果无效"
+  | "括号不匹配"
+  | "数字格式错误"
+  | "数字超出范围";
+
+class CalculationError extends Error {
+  constructor(readonly publicMessage: CalculationErrorMessage) {
+    super(publicMessage);
+    this.name = "CalculationError";
+  }
+}
+
+const fail = (message: CalculationErrorMessage): never => {
+  throw new CalculationError(message);
+};
+
 class Parser {
   private index = 0;
   constructor(private readonly text: string) {}
 
   parse(): number {
+    if (!this.text.trim()) fail("表达式为空");
+    if (!/^[0-9+\-*/().\s]+$/.test(this.text)) fail("表达式包含不支持的字符");
     const value = this.additive();
     this.skipSpace();
-    if (this.index !== this.text.length) throw new Error("表达式格式错误");
-    if (!Number.isFinite(value) || Math.abs(value) > MAX_ABS_RESULT) throw new Error("计算结果超出安全范围");
+    if (this.index !== this.text.length) fail("表达式格式错误");
+    if (!Number.isFinite(value) || Math.abs(value) > MAX_ABS_RESULT) fail("计算结果超出安全范围");
     return value;
   }
 
@@ -36,9 +60,9 @@ class Parser {
       if (op !== "*" && op !== "/") return value;
       this.index++;
       const right = this.unary();
-      if (op === "/" && right === 0) throw new Error("除零错误");
+      if (op === "/" && right === 0) fail("除零错误");
       value = op === "*" ? value * right : value / right;
-      if (!Number.isFinite(value)) throw new Error("计算结果无效");
+      if (!Number.isFinite(value)) fail("计算结果无效");
     }
   }
 
@@ -59,16 +83,16 @@ class Parser {
       this.index++;
       const value = this.additive();
       this.skipSpace();
-      if (this.text[this.index] !== ")") throw new Error("括号不匹配");
+      if (this.text[this.index] !== ")") fail("括号不匹配");
       this.index++;
       return value;
     }
     const start = this.index;
     while (/[0-9.]/.test(this.text[this.index] ?? "")) this.index++;
     const token = this.text.slice(start, this.index);
-    if (!/^\d+(?:\.\d+)?$/.test(token)) throw new Error("数字格式错误");
+    if (!/^\d+(?:\.\d+)?$/.test(token)) fail("数字格式错误");
     const value = Number(token);
-    if (!Number.isFinite(value)) throw new Error("数字超出范围");
+    if (!Number.isFinite(value)) fail("数字超出范围");
     return value;
   }
 
@@ -78,34 +102,43 @@ class Parser {
 }
 
 function escape(value: string): string {
-  return value.replace(/[&<>\"]/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"})[char]!);
+  return value.replace(/[&<>\"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"})[char]!);
 }
 
 function format(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toPrecision(12).replace(/\.?(0+)(?:e|$)/, "").replace(/e\+/, "e");
+  if (Number.isInteger(value)) return String(value);
+  const rounded = Math.round(value * 1e12) / 1e12;
+  return rounded === 0 ? "0" : String(rounded);
 }
-
-const help = (prefix: string) => `<b>计算器</b>\n<code>${escape(prefix)}calc 2+2*5</code>\n<code>${escape(prefix)}calc (10-3)*4</code>\n支持括号、小数和负数。`;
 
 export default function createCalc() {
   return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "calc", description: "安全计算四则运算表达式",
-    commands: {calc: {helpArgs: ["help","h"], description: "计算四则运算表达式", async handle(invocation, ctx) {
+    commands: {calc: {helpArgs: ["help","h"], helpOnEmpty: true, description: "计算四则运算表达式", async handle(invocation, ctx) {
       const expression = invocation.args.join(" ").trim();
       if (!expression || expression.toLowerCase() === "help" || expression.toLowerCase() === "h") {
-        await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
+        await ctx.telegram.edit(invocation.message, renderPluginHelp(invocation.prefix), {parseMode: "html", linkPreview: false});
         return;
       }
       if (expression.length > MAX_EXPR_LENGTH) {
-        await ctx.telegram.edit(invocation.message, `<b>计算失败</b>\n表达式长度不能超过 <code>${MAX_EXPR_LENGTH}</code> 个字符`, {parseMode: "html"});
+        await ctx.telegram.edit(invocation.message,
+          `❌ <b>表达式过长</b><br/><br/>最大长度: ${MAX_EXPR_LENGTH} 字符<br/>当前长度: ${expression.length}`,
+          {parseMode: "html"});
         return;
       }
+      let result: number;
       try {
-        const result = new Parser(expression).parse();
-        await ctx.telegram.edit(invocation.message, `<b>计算结果</b>\n<code>${escape(expression)}</code> = <code>${format(result)}</code>`, {parseMode: "html"});
+        result = new Parser(expression).parse();
       } catch (error) {
-        const message = error instanceof Error ? error.message : "表达式无效";
-        await ctx.telegram.edit(invocation.message, `<b>计算失败</b>\n<code>${escape(expression)}</code>\n${escape(message)}`, {parseMode: "html"});
+        const message = error instanceof CalculationError ? error.publicMessage : "表达式无效";
+        if (!(error instanceof CalculationError)) ctx.log.error("calc_calculation_failed");
+        await ctx.telegram.edit(invocation.message,
+          `🚫 <b>计算失败</b><br/><br/>表达式: <code>${escape(expression)}</code><br/>错误: ${message}`,
+          {parseMode: "html"});
+        return;
       }
+      await ctx.telegram.edit(invocation.message,
+        `🧮 <b>计算结果</b><br/><br/><code>${escape(expression)}</code><br/>= <b>${format(result)}</b>`,
+        {parseMode: "html", linkPreview: false});
     }}},
   });
 }
