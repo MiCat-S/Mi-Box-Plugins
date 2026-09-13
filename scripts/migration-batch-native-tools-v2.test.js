@@ -108,5 +108,5 @@ test('restore_pin restores unique unpinned messages from the admin log', async t
   const f = await fixture(t, 'restore_pin', client, {raw: {peerId: {}}});
   await f.run('.restore_pin');
   assert.deepEqual(pinned, [55]);
-  assert.match(f.edits.at(-1).text, /成功 1 · 失败 0/);
+  assert.match(f.edits.at(-1).text, /成功恢复: 1 条[\s\S]*恢复失败: 0 条/);
 });

@@ -45,14 +45,17 @@ test('portball applies bounded mute rights to the replied user', async t => {
   const client = {
     async getEntity(value) { return String(value) === '20' ? target : chat; },
     async getMe() { return me; },
-    async invoke(request) { requests.push(request); return {}; },
+    async getInputEntity() { return new Api.InputPeerUser({userId: target.id, accessHash: 1}); },
+    async invoke(request) { requests.push(request); if(request instanceof Api.channels.GetParticipant)return {participant: request.participant instanceof Api.InputPeerSelf ? new Api.ChannelParticipantCreator({userId:me.id}) : new Api.ChannelParticipant({userId:target.id,date:0})}; return {}; },
     async sendMessage(peer, value) { sent.push({peer, value}); },
   };
   const f = await fixture(t, 'portball', {client, reply: {senderId: '20'}, message: {replyToId: 7, raw: {peerId: {}, async delete() { deleted++; }}}});
   await f.run('.portball 刷屏 5m');
-  assert.equal(requests[0] instanceof Api.channels.EditBanned, true);
-  assert.equal(requests[0].bannedRights.sendMessages, true);
-  assert.equal(requests[0].bannedRights.untilDate > Math.floor(Date.now() / 1000), true);
+  assert.equal(requests.filter(request => request instanceof Api.channels.GetParticipant).length, 2);
+  const ban=requests.find(request=>request instanceof Api.channels.EditBanned);
+  assert.ok(ban);
+  assert.equal(ban.bannedRights.sendMessages, true);
+  assert.equal(ban.bannedRights.untilDate > Math.floor(Date.now() / 1000), true);
   assert.match(sent[0].value.message, /刷屏/);
   assert.equal(deleted, 1);
 });

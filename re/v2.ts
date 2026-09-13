@@ -11,7 +11,7 @@ export default function createRe() {
       const reply=await ctx.telegram.getReply(invocation.message);
       const replied=reply?.raw as ApiTypes.Message|undefined;
       if(!reply){
-        await ctx.telegram.edit(invocation.message,"你必须回复一条消息才能够进行复读");
+        await ctx.telegram.edit(invocation.message,`你必须回复一条消息才能够进行复读；使用 ${invocation.prefix}re [数量] [次数]`);
         return;
       }
       if(!replied?.peerId){await ctx.telegram.reply(invocation.message,"无法获取被回复的消息，请重试。");return;}
