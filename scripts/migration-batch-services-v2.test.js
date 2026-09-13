@@ -49,6 +49,7 @@ test('botmzt serially retrieves a new bot response and sends spoiler media', asy
 
 test('botmzt validates help locally without Telegram bot traffic', async () => {
   const f = baseContext();
+  f.context.tasks = {async run() {}};
   await plugin('botmzt').commands.botmzt.handle(invocation('botmzt'), f.context);
   assert.match(f.edits[0].text, /妹子图片插件/);
 });
