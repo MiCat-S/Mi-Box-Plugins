@@ -33,13 +33,14 @@ export function renderHelp(prefix: string): string {
 
 ▎定时正则删除
 
-每天2点删除指定ID或@name的对话中的最近的 100 条消息中 内容符合正则表达式的消息
+每天2点删除指定ID或@name的对话中的最近的消息中内容符合正则表达式的消息，条数需为 1-1000 的正整数，正则必须显式提供。
+上限为 1000 条，超出范围的条数会被拒绝而不是静默截断。
 
 • <code>${p}acron del_re 0 0 2 * * * 对话ID/@name 100 /^test/i [备注]</code>
 
 ▎定时置顶/取消置顶
 
-每天2点在指定ID或@name的对话中置顶指定ID的消息, 是否发通知(true/1, false/0), 是否仅对自己置顶(true/1, false/0)
+每天2点在指定ID或@name的对话中置顶指定ID的消息, 是否发通知(1/true/yes/y 或 0/false/no/n), 是否仅对自己置顶(同前)
 
 • <code>${p}acron pin 0 0 2 * * * 对话ID/@name 消息ID 是否发通知 是否仅对自己置顶 [备注]</code>
 
@@ -49,8 +50,10 @@ export function renderHelp(prefix: string): string {
 
 ▎定时执行命令
 
-每天2点在指定ID或@name的对话中执行命令 <code>${p}a foo bar</code>(可指定话题或回复消息)
+每天2点向指定ID或@name的对话发送换行填写的命令文本，并由宿主按当前前缀/别名路由执行(可指定话题或回复消息)
 注意要换行写
+
+任务结果会区分“已执行命令”与“已发送命令（未执行: 原因）”，不会把未执行的文本冒充为已完成。
 
 <pre>${p}acron cmd 0 0 2 * * * 对话ID/@name [备注]
 ${p}a foo bar</pre>
