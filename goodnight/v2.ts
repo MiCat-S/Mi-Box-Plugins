@@ -1,5 +1,5 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type CommandInvocation, type PluginContext} from "telebox/sdk";
+import {definePlugin, ui, type CommandInvocation, type PluginContext} from "telebox/sdk";
 
 type Group = {
   enabled: boolean; timezone?: number; date: string;
@@ -8,10 +8,16 @@ type Group = {
 };
 type CurrentGroup = Group & {timezone: number; sleepUsers: string[]; wakeUsers: string[]};
 type Data = {groups: Record<string, Group>};
-const help = `<b>早晚安统计</b>\n<code>goodnight on/off</code> 开关统计\n<code>goodnight utc+8</code> 设置时区\n<code>goodnight</code> 查看状态`;
 const clock = (zone: number) => new Date(Date.now() + zone * 3600000).toISOString().slice(0, 19).replace("T", " ");
 const store = (ctx: PluginContext) => ctx.storage.json<Data>("data.json", {groups: {}});
-function normalize(source?: Group, zone = source?.timezone ?? 8): CurrentGroup {
+function stored(source?: Group): CurrentGroup {
+  const zone = source?.timezone ?? 8;
+  const {sleep, wake, ...rest} = source ?? {};
+  return {...rest, enabled: source?.enabled ?? false, timezone: zone, date: source?.date ?? clock(zone).slice(0, 10),
+    sleepUsers: [...(source?.sleepUsers ?? sleep ?? [])], wakeUsers: [...(source?.wakeUsers ?? wake ?? [])]};
+}
+function normalize(source?: Group): CurrentGroup {
+  const zone = source?.timezone ?? 8;
   const date = clock(zone).slice(0, 10);
   const sameDay = source?.date === date;
   const {sleep, wake, ...rest} = source ?? {};
@@ -26,30 +32,38 @@ export default function createGoodnight() {
   const handle = async (invocation: CommandInvocation, ctx: PluginContext) => {
     const arg = invocation.args[0]?.toLowerCase();
     if (arg === "help" || arg === "h") {
-      await ctx.telegram.edit(invocation.message, help, {parseMode: "html"}); return;
+      await ctx.telegram.edit(invocation.message, renderPluginHelp(invocation.prefix), {parseMode: "html"}); return;
     }
-    const match = arg?.match(/^(?:utc|gmt)?([+-]?\d{1,2})$/i);
-    const zone = match ? Number(match[1]) : undefined;
-    if (arg && arg !== "on" && arg !== "off" && (zone === undefined || zone < -12 || zone > 14)) {
-      await ctx.telegram.edit(invocation.message, help, {parseMode: "html"}); return;
+    const cleaned = arg?.replace(/^(utc|gmt)/i, "");
+    const parsed = cleaned === undefined ? NaN : Number.parseInt(cleaned, 10);
+    const zone = Number.isNaN(parsed) ? undefined : parsed;
+    if (zone !== undefined && (zone < -12 || zone > 14)) {
+      await ctx.telegram.edit(invocation.message, "❌ 时区必须在 UTC-12 到 UTC+14 之间", {parseMode: "html"}); return;
     }
     const db = store(ctx);
-    let current: CurrentGroup | undefined;
-    await db.update(data => {
-      current = normalize(data.groups[invocation.message.chatId], zone);
-      if (arg === "on" || arg === "off") current.enabled = arg === "on";
-      return {...data, groups: {...data.groups, [invocation.message.chatId]: current}};
-    });
-    const g = current!;
+    let g = stored((await db.read()).groups[invocation.message.chatId]);
     if (arg === "on" || arg === "off") {
-      await ctx.telegram.edit(invocation.message, g.enabled ? "早晚安统计已开启" : "早晚安统计已关闭"); return;
+      const enabled = arg === "on";
+      if (g.enabled === enabled) {
+        await ctx.telegram.edit(invocation.message, enabled ? "✅ 本群早晚安统计已经是<b>开启</b>状态" : "🚫 本群早晚安统计已经是<b>关闭</b>状态", {parseMode: "html"}); return;
+      }
+      await db.update(data => {
+        g = {...stored(data.groups[invocation.message.chatId]), enabled};
+        return {...data, groups: {...data.groups, [invocation.message.chatId]: g}};
+      });
+      await ctx.telegram.edit(invocation.message, enabled ? "✅ 本群早晚安统计已<b>开启</b>" : "🚫 本群早晚安统计已<b>关闭</b>", {parseMode: "html"}); return;
+    }
+    if (zone !== undefined) {
+      await db.update(data => {
+        g = {...stored(data.groups[invocation.message.chatId]), timezone: zone};
+        return {...data, groups: {...data.groups, [invocation.message.chatId]: g}};
+      });
+      await ctx.telegram.edit(invocation.message, `✅ 已将本群时区设置为 <b>UTC${zone >= 0 ? "+" : ""}${zone}</b>\n当前时间: ${clock(zone).slice(11)}`, {parseMode: "html"}); return;
     }
     const timezone = `UTC${g.timezone >= 0 ? "+" : ""}${g.timezone}`;
-    if (zone !== undefined) {
-      await ctx.telegram.edit(invocation.message, `时区已设置为 ${timezone}\n当前时间: ${clock(g.timezone)}`); return;
-    }
+    const prefix = ui.text(invocation.prefix);
     await ctx.telegram.edit(invocation.message,
-      `<b>早晚安统计</b>\n状态: ${g.enabled ? "开启" : "关闭"}\n时区: ${timezone}\n当前时间: ${clock(g.timezone)}\n日期: ${g.date}\n晚安: ${g.sleepUsers.length} 人\n早安: ${g.wakeUsers.length} 人`,
+      `🌙 <b>早晚安统计插件</b>\n\n当前状态: ${g.enabled ? "✅ 开启" : "🚫 关闭"}\n当前时区: ${timezone}\n当前时间: ${clock(g.timezone)}\n\n<b>指令:</b>\n• <code>${prefix}goodnight on/off</code> - 开启或关闭统计\n• <code>${prefix}goodnight utc+8</code> - 设置时区\n• <code>${prefix}goodnight</code> - 查看状态`,
       {parseMode: "html"});
   };
   return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "goodnight", description: "早晚安统计", listeners: [{
@@ -74,7 +88,7 @@ export default function createGoodnight() {
         return {...data, groups: {...data.groups, [message.chatId]: g}};
       });
       if (!rank) return;
-      ctx.signal.throwIfAborted();
+      if (ctx.signal.aborted) return;
       type Sender = {firstName?: string; username?: string};
       const raw = message.raw as {sender?: Sender; getSender?: () => Promise<Sender | undefined>} | undefined;
       let sender = raw?.sender;
@@ -85,16 +99,20 @@ export default function createGoodnight() {
             return raw.getSender!();
           });
         } catch {
-          ctx.signal.throwIfAborted();
+          if (ctx.signal.aborted) return;
           ctx.log.error("goodnight.sender_lookup_failed");
         }
       }
-      ctx.signal.throwIfAborted();
-      const name = (sender?.firstName || sender?.username || "群友").slice(0, 128);
+      if (ctx.signal.aborted) return;
+      const name = Array.from(sender?.firstName || sender?.username || "群友").slice(0, 128).join("");
       const sleeping = kind === "sleepUsers";
-      await ctx.telegram.reply(message,
-        `${sleeping ? "快睡觉喵" : "起床喵"}！ ${name}!\n现在是 ${time}, 你是本群今天第 ${rank} 个${sleeping ? "睡觉" : "起床"}的。`,
-        {linkPreview: false});
+      try {
+        await ctx.telegram.reply(message,
+          `${sleeping ? "快睡觉喵" : "起床喵"}！ ${name}!\n现在是 ${time}, 你是本群今天第 ${rank} 个${sleeping ? "睡觉" : "起床"}的。`,
+          {linkPreview: false});
+      } catch {
+        if (!ctx.signal.aborted) ctx.log.error("goodnight.reply_failed");
+      }
     },
   }], commands: {
     goodnight: {helpArgs: ["help","h"], description: "早晚安统计设置", handle},
