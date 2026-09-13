@@ -77,7 +77,9 @@ export function renderHelp(prefix: string): string {
   查看当前组件的显示顺序
 • <code>${p}acn order name,text,time,weather,emoji</code>
   自定义昵称中各组件的排列顺序
-  可用组件：name（昵称）、text（文案）、time（时间）、weather（天气）、emoji（时钟表情）、timezone（时区）</blockquote>
+  可用组件：name（昵称）、text（文案）、time（时间）、weather（天气）、emoji（时钟表情）、timezone（时区）
+• <code>${p}acn show</code>
+  查看组件开关；支持 time/text/weather on/off，以及 show reset 恢复模式默认组件</blockquote>
 <b>📝 文案管理：</b>
 <blockquote expandable>• <code>${p}acn text add 摸鱼中</code>
   添加一条循环文案。支持多行批量添加（每行一条）
