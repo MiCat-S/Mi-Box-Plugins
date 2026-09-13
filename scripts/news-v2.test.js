@@ -7,7 +7,7 @@ const os = require('node:os');
 const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
-const {artifactDir} = buildPlugin({id: 'news', packageRoot: path.resolve(__dirname, '../news'), entry: 'v2.ts'});
+const {artifactDir} = buildPlugin({id: 'news', packageRoot: process.env.NEWS_PACKAGE_ROOT || path.resolve(__dirname, '../news'), entry: 'v2.ts'});
 const create = require(path.join(artifactDir, 'index.cjs')).default;
 
 test('news parses bounded data and escapes rich text', async t => {
@@ -38,8 +38,9 @@ test('news retains all entries and poem across valid rich-text pages', async () 
   const send = async (_, text) => output.push(text);
   await create().commands.news.handle({args: [], message: {}, prefix: '.', command: 'news'}, {
     signal: new AbortController().signal,
+    log: {error() {}},
     telegram: {edit: send, reply: send},
-    http: {json: async () => ({data})},
+    http: {withResponse: async (_url,_init,consume)=>consume(Response.json({data}),new AbortController().signal)},
   });
   const pages = output.slice(1);
   assert.ok(pages.length > 1);
@@ -63,7 +64,20 @@ test('news rejects unknown arguments without requesting content', async () => {
   const output = [];
   await create().commands.news.handle({args: ['invalid'], message: {}}, {
     telegram: {edit: async (_, text) => output.push(text)},
-    http: {json: () => assert.fail('unexpected HTTP')},
+    http: {withResponse: () => assert.fail('unexpected HTTP')},
   });
   assert.match(output[0], /未知参数/);
 });
+
+test('news actively cancels a hung reader and waits for its cleanup', async () => {
+  const controller=new AbortController();let ready,release,cancelled=0,settled=false;const started=new Promise(r=>ready=r),gate=new Promise(r=>release=r),edits=[];
+  const context={signal:controller.signal,log:{error(){}},telegram:{edit:async(_m,text)=>edits.push(text),reply:async()=>{}},http:{withResponse:async(_u,_i,consume)=>consume(new Response(new ReadableStream({start(){ready();},cancel(){cancelled++;return gate;}})),controller.signal)}};
+  const running=create().commands.news.handle({args:[],message:{},prefix:'.',command:'news'},context).finally(()=>settled=true);await started;controller.abort();await new Promise(r=>setTimeout(r,0));assert.equal(cancelled,1);assert.equal(settled,false);release();await running;assert.deepEqual(edits,['📰 正在获取今日资讯…']);
+});
+
+test('news keeps its first page on later delivery failure and emits fixed events',async()=>{const data={poem:{title:'t',author:'a',content:['字<&😀'.repeat(1800)]}},controller=new AbortController(),edits=[],replies=[],logs=[];let failed=false;
+  await create().commands.news.handle({args:[],message:{},prefix:'.',command:'news'},{signal:controller.signal,log:{error(event,fields){logs.push({event,fields});}},http:{withResponse:async(_u,_i,consume)=>consume(Response.json({data}),controller.signal)},telegram:{edit:async(_m,text)=>edits.push(text),reply:async(_m,text)=>{if(!text.includes('已发送')&&!failed++)throw new Error('PRIVATE');replies.push(text);}}});
+  assert.equal(edits.length,2);assert.match(replies.at(-1),/已发送 1\/\d+ 页/);assert.deepEqual(logs,[{event:'news_result_delivery_failed',fields:undefined}]);assert.doesNotMatch(JSON.stringify(logs),/PRIVATE/);
+});
+
+test('news reports HTTP errors with fixed events and messages',async()=>{const edits=[],logs=[],secret='PRIVATE_SECRET';await create().commands.news.handle({args:[],message:{},prefix:'.',command:'news'},{signal:new AbortController().signal,log:{error(event,fields){logs.push({event,fields});}},http:{withResponse:async()=>{throw Object.assign(new Error(secret),{name:secret});}},telegram:{edit:async(_m,text)=>edits.push(text)}});assert.deepEqual(logs,[{event:'news_request_failed',fields:undefined}]);assert.match(edits.at(-1),/今日资讯获取失败/);assert.doesNotMatch(JSON.stringify({edits,logs}),new RegExp(secret));});
