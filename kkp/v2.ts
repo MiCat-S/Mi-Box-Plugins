@@ -38,12 +38,13 @@ function caption(message: any): string {
   return (output + text.slice(cursor)).trim();
 }
 
-async function waitVideo(client: TelegramClient, after: number, signal: AbortSignal): Promise<any | undefined> {
+async function waitVideo(client: TelegramClient, after: bigint, signal: AbortSignal): Promise<any | undefined> {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     signal.throwIfAborted();
     const messages = await client.getMessages(BOT, {limit: 8});
+    signal.throwIfAborted();
     const found = (Array.isArray(messages) ? messages : []).find((message: any) =>
-      !message?.out && Number(message?.id ?? 0) > after && video(message));
+      !message?.out && BigInt(String(message?.id ?? 0)) > after && video(message));
     if (found) return found;
     if (attempt < 29) await sleep(650, signal);
   }
@@ -65,21 +66,27 @@ export default function createKkp() {
         await context.telegram.edit(invocation.message,
           `<b>随机视频</b>\n<code>${escape(invocation.prefix)}kkp</code>`, {parseMode: "html"}); return;
       }
-      if (sub) { await context.telegram.edit(invocation.message, `未知参数：<code>${escape(sub)}</code>`, {parseMode: "html"}); return; }
+      if (sub) { await context.telegram.edit(invocation.message, `❌ <b>未知命令:</b> <code>${escape(sub)}</code>`, {parseMode: "html"}); return; }
       await context.telegram.edit(invocation.message, "正在获取随机视频…");
       try {
         await context.telegram.withClient(async (client, signal) => serialize(async () => {
           signal.throwIfAborted();
           const before = await client.getMessages(BOT, {limit: 1});
-          const cursor = Number(Array.isArray(before) ? before[0]?.id ?? 0 : 0);
+          signal.throwIfAborted();
+          const cursor = BigInt(String(Array.isArray(before) ? before[0]?.id ?? 0 : 0));
           if (!Array.isArray(before) || before.length === 0) {
             await client.sendMessage(BOT, {message: "/start"});
+            signal.throwIfAborted();
             await sleep(800, signal);
           }
+          signal.throwIfAborted();
           await client.sendMessage(BOT, {message: "随机色色"});
+          signal.throwIfAborted();
           const result = await waitVideo(client, cursor, signal);
+          signal.throwIfAborted();
           if (!result?.media) throw new Error("No video");
-          const {Api} = await import("teleproto");
+          const [{Api},{returnBigInt}]=await Promise.all([import("teleproto"),import("teleproto/Helpers.js")]);
+          signal.throwIfAborted();
           let file: any = result.media;
           if (result.media instanceof Api.MessageMediaDocument && result.media.document instanceof Api.Document) {
             const document = result.media.document;
@@ -87,13 +94,15 @@ export default function createKkp() {
               accessHash: document.accessHash, fileReference: document.fileReference}), spoiler: true});
           }
           const raw = invocation.message.raw as ApiTypes.Message | undefined;
-          if (!raw?.peerId) throw new Error("Missing peer");
+          const peer=raw?.peerId??returnBigInt(invocation.message.chatId);
           const text = caption(result);
-          await client.sendFile(raw.peerId, {file, caption: text, spoiler: true, forceDocument: false,
+          await client.sendFile(peer, {file, caption: text, spoiler: true, forceDocument: false,
             formattingEntities: text ? [new Api.MessageEntitySpoiler({offset: 0, length: text.length})] : undefined,
             replyTo: invocation.message.replyToId});
-          try { await client.markAsRead(BOT); } catch {}
-          if (typeof raw.delete === "function") await raw.delete({revoke: true});
+          signal.throwIfAborted();
+          try { await client.markAsRead(BOT); } catch {signal.throwIfAborted();}
+          signal.throwIfAborted();
+          if (typeof raw?.delete === "function") {try{await raw.delete({revoke:true});}catch{context.log.info("kkp_command_cleanup_failed");}}
         }));
       } catch {
         if (context.signal.aborted) return;
