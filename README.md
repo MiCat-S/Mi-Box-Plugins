@@ -100,6 +100,7 @@ Core 内置功能由 Core 维护；本仓库的 `exec` 保留历史身份和说�
 - `keyword` - 关键词自动回复  
 - `kkp` - 获取NSFW视频  
 - `komari` - Komari 服务器监控  
+- `koutu` - PicUP 图片、贴纸与头像一键抠图（需 API Key）
 - `leech` - 归档数据库统计与 Telegram 会话检查
 - `listusernames` - 列出属于自己的公开群组/频道  
 - `lottery` - 抽奖  
