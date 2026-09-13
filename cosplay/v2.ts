@@ -1,8 +1,9 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import path from "node:path";
-import {open, stat} from "node:fs/promises";
+import {open, stat, unlink, type FileHandle} from "node:fs/promises";
 import {load} from "cheerio";
 import {definePlugin, type PluginContext} from "telebox/sdk";
+import {returnBigInt} from "teleproto/Helpers";
 import type {Api as ApiTypes} from "teleproto";
 
 const HOST = "cosplaytele.com";
@@ -10,6 +11,49 @@ const MAX_IMAGES = 10;
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 const USER_AGENT = "MiBot-Cosplay/2.0";
 const EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+
+type ByteReader = ReadableStreamDefaultReader<Uint8Array>;
+
+function managedReader(reader: ByteReader, signal: AbortSignal) {
+  let done = false;
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => cancellation ??= Promise.resolve().then(() => reader.cancel());
+  const onAbort = () => { void cancel().catch(() => undefined); };
+  signal.addEventListener("abort", onAbort, {once: true});
+  return {
+    async read() {
+      signal.throwIfAborted();
+      const part = await reader.read();
+      signal.throwIfAborted();
+      if (part.done) done = true;
+      return part;
+    },
+    async close() {
+      signal.removeEventListener("abort", onAbort);
+      try { if (!done) await cancel(); }
+      catch { /* Core reports the request failure; reader details remain private. */ }
+      finally { try { reader.releaseLock(); } catch { /* The response owner will perform final cancellation. */ } }
+    },
+  };
+}
+
+async function closeDownload(reader: {close(): Promise<void>}, handle: Pick<FileHandle, "close">): Promise<void> {
+  try { await reader.close(); }
+  finally { await handle.close(); }
+}
+
+async function writeAll(handle: Pick<FileHandle, "write">, chunk: Uint8Array, signal: AbortSignal): Promise<void> {
+  let offset = 0;
+  while (offset < chunk.byteLength) {
+    signal.throwIfAborted();
+    const {bytesWritten} = await handle.write(chunk, offset, chunk.byteLength - offset, null);
+    signal.throwIfAborted();
+    if (!Number.isInteger(bytesWritten) || bytesWritten <= 0 || bytesWritten > chunk.byteLength - offset) {
+      throw new Error("Image write failed");
+    }
+    offset += bytesWritten;
+  }
+}
 
 function safeUrl(value: string, base: URL): URL | undefined {
   try {
@@ -25,13 +69,14 @@ async function page(context: PluginContext, url: URL): Promise<string> {
       if (response.status !== 200 || !response.body) throw new Error("Page unavailable");
       const type = response.headers.get("content-type") ?? "";
       if (type && !type.toLowerCase().includes("text/html")) throw new Error("Invalid page type");
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); const parts: string[] = []; let total = 0;
+      const reader = managedReader(response.body.getReader(), signal); const decoder = new TextDecoder(); const parts: string[] = []; let total = 0;
       try {
-        for (;;) { signal.throwIfAborted(); const part = await reader.read(); if (part.done) break;
-          total += part.value.byteLength; if (total > 2 * 1024 * 1024) throw new Error("Page too large"); parts.push(decoder.decode(part.value, {stream: true})); }
+        for (;;) { const part = await reader.read(); if (part.done) break;
+          total += part.value.byteLength; if (total > 2 * 1024 * 1024) throw new Error("Page too large");
+          if (part.value.byteLength) parts.push(decoder.decode(part.value, {stream: true})); }
         return parts.join("") + decoder.decode();
-      } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
-    }, {timeoutMs: 30_000, signal: context.signal, redirects: {allowedHosts: [HOST], maxRedirects: 3}});
+      } finally { await reader.close(); }
+    }, {timeoutMs: 30_000, signal: context.signal, redirects: {allowedHosts: [url.hostname], maxRedirects: 3}});
 }
 
 function sets(html: string, base: URL): URL[] {
@@ -66,27 +111,109 @@ async function download(context: PluginContext, url: URL, file: string): Promise
       if (response.status !== 200 || !response.body || !(response.headers.get("content-type") ?? "").toLowerCase().startsWith("image/")) throw new Error("Invalid image");
       const declared = Number(response.headers.get("content-length") ?? 0);
       if (declared > MAX_IMAGE_BYTES) throw new Error("Image too large");
-      const handle = await open(file, "wx", 0o600); const reader = response.body.getReader(); let total = 0;
+      const handle = await open(file, "wx", 0o600); const reader = managedReader(response.body.getReader(), signal); let total = 0;
       try {
-        for (;;) { signal.throwIfAborted(); const part = await reader.read(); if (part.done) break;
-          total += part.value.byteLength; if (total > MAX_IMAGE_BYTES) throw new Error("Image too large"); await handle.write(part.value); }
+        for (;;) { const part = await reader.read(); if (part.done) break;
+          total += part.value.byteLength; if (total > MAX_IMAGE_BYTES) throw new Error("Image too large"); await writeAll(handle, part.value, signal); }
         if (!total) throw new Error("Empty image");
-      } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); await handle.close(); }
-    }, {timeoutMs: 45_000, signal: context.signal, redirects: {allowedHosts: [HOST], maxRedirects: 3}});
+      } finally { await closeDownload(reader, handle); }
+    }, {timeoutMs: 45_000, signal: context.signal, redirects: {allowedHosts: [url.hostname], maxRedirects: 3}});
+}
+
+async function downloadWithRetry(context: PluginContext, url: URL, file: string): Promise<void> {
+  let failure: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    context.signal.throwIfAborted();
+    try { await download(context, url, file); return; }
+    catch (error) {
+      context.signal.throwIfAborted();
+      failure = error;
+      await unlink(file).catch(() => undefined);
+    }
+  }
+  throw failure;
 }
 
 async function find(context: PluginContext, count: number): Promise<{set: URL; title: string; images: URL[]}> {
   for (let attempt = 0; attempt < 6; attempt++) {
     context.signal.throwIfAborted();
-    const pageNumber = Math.floor(Math.random() * 455) + 1;
-    const listing = new URL(pageNumber === 1 ? `https://${HOST}/` : `https://${HOST}/page/${pageNumber}/`);
-    const candidates = sets(await page(context, listing), listing);
-    if (!candidates.length) continue;
-    const selected = candidates[Math.floor(Math.random() * candidates.length)]!;
-    const images = gallery(await page(context, selected), selected);
-    if (images.length >= count) return {set: selected, title: selected.pathname.split("/").filter(Boolean).at(-1)?.replace(/-/g, " ") || "Cosplay", images: pick(images, count)};
+    try {
+      const pageNumber = Math.floor(Math.random() * 455) + 1;
+      const listing = new URL(pageNumber === 1 ? `https://${HOST}/` : `https://${HOST}/page/${pageNumber}/`);
+      const candidates = sets(await page(context, listing), listing);
+      if (!candidates.length) continue;
+      const selected = candidates[Math.floor(Math.random() * candidates.length)]!;
+      const images = gallery(await page(context, selected), selected);
+      if (images.length >= count) return {set: selected, title: selected.pathname.split("/").filter(Boolean).at(-1)?.replace(/-/g, " ") || "Cosplay", images: pick(images, count)};
+    } catch { context.signal.throwIfAborted(); }
   }
   throw new Error("No photo set");
+}
+
+function target(invocation: any) {
+  const raw = invocation.message.raw as ApiTypes.Message | undefined;
+  return raw?.inputChat ?? raw?.peerId ?? returnBigInt(invocation.message.chatId);
+}
+
+async function sendSingle(client: any, peer: any, file: string, caption: string, replyTo: number | undefined,
+  signal: AbortSignal, CustomFile: any): Promise<void> {
+  signal.throwIfAborted();
+  const info = await stat(file);
+  signal.throwIfAborted();
+  await client.sendFile(peer, {file: new CustomFile(path.basename(file), info.size, file), spoiler: true, caption, replyTo});
+  signal.throwIfAborted();
+}
+
+async function sendAlbum(client: any, peer: any, files: readonly string[], caption: string,
+  replyTo: number | undefined, signal: AbortSignal, CustomFile: any): Promise<void> {
+  const {Api} = await import("teleproto");
+  const {getInputDocument, getInputPhoto} = await import("teleproto/Utils.js");
+  signal.throwIfAborted();
+  const media: InstanceType<typeof Api.InputSingleMedia>[] = [];
+  for (let index = 0; index < files.length; index++) {
+    signal.throwIfAborted();
+    const info = await stat(files[index]!);
+    signal.throwIfAborted();
+    const uploadedFile = await client.uploadFile({file: new CustomFile(path.basename(files[index]!), info.size, files[index]!), workers: 1});
+    signal.throwIfAborted();
+    const uploaded = await client.invoke(new Api.messages.UploadMedia({
+      peer,
+      media: new Api.InputMediaUploadedPhoto({file: uploadedFile}),
+    }));
+    signal.throwIfAborted();
+    let item: InstanceType<typeof Api.InputMediaPhoto> | InstanceType<typeof Api.InputMediaDocument>;
+    if (uploaded instanceof Api.MessageMediaPhoto) item = new Api.InputMediaPhoto({id: getInputPhoto(uploaded.photo), spoiler: true});
+    else if (uploaded instanceof Api.MessageMediaDocument) item = new Api.InputMediaDocument({id: getInputDocument(uploaded.document), spoiler: true});
+    else continue;
+    media.push(new Api.InputSingleMedia({media: item, message: index === 0 ? caption : "", entities: undefined}));
+  }
+  if (!media.length) throw new Error("No uploadable image");
+  signal.throwIfAborted();
+  await client.invoke(new Api.messages.SendMultiMedia({
+    peer,
+    multiMedia: media,
+    replyTo: replyTo === undefined ? undefined : new Api.InputReplyToMessage({replyToMsgId: replyTo}),
+  }));
+  signal.throwIfAborted();
+}
+
+async function sendImages(context: PluginContext, client: any, peer: any, files: readonly string[], set: URL,
+  replyTo: number | undefined, signal: AbortSignal): Promise<void> {
+  const {CustomFile} = await import("teleproto/client/uploads.js");
+  signal.throwIfAborted();
+  const caption = `套图链接: ${set.href}`;
+  if (files.length === 1) {
+    await sendSingle(client, peer, files[0]!, caption, replyTo, signal, CustomFile);
+    return;
+  }
+  try { await sendAlbum(client, peer, files, caption, replyTo, signal, CustomFile); }
+  catch {
+    signal.throwIfAborted();
+    context.log.error("cosplay_album_failed");
+    for (let index = 0; index < files.length; index++) {
+      await sendSingle(client, peer, files[index]!, caption, index === 0 ? replyTo : undefined, signal, CustomFile);
+    }
+  }
 }
 
 async function run(invocation: any, context: PluginContext): Promise<void> {
@@ -97,23 +224,36 @@ async function run(invocation: any, context: PluginContext): Promise<void> {
   await context.telegram.edit(invocation.message, `正在从随机套图中获取 ${parsed} 张图片…`);
   try {
     const result = await find(context, parsed);
+    context.signal.throwIfAborted();
+    await context.telegram.edit(invocation.message, `从套图"${result.title}"中找到 ${result.images.length} 张图片，正在下载…`);
     await context.files.withTemp(async (directory, signal) => {
       const files: string[] = [];
       let cursor = 0;
-      const worker = async () => { while (cursor < result.images.length) { const index = cursor++; const url = result.images[index]!;
-        const file = path.join(directory, `${index}${path.extname(url.pathname).toLowerCase() || ".jpg"}`); await download(context, url, file); files[index] = file; } };
-      await Promise.all(Array.from({length: Math.min(3, result.images.length)}, worker));
+      const worker = async () => { for (;;) {
+        signal.throwIfAborted();
+        const index = cursor++;
+        if (index >= result.images.length) return;
+        const url = result.images[index]!;
+        const file = path.join(directory, `${index}${path.extname(url.pathname).toLowerCase() || ".jpg"}`);
+        try { await downloadWithRetry(context, url, file); files[index] = file; }
+        catch { signal.throwIfAborted(); context.log.error("cosplay_download_failed"); }
+      } };
+      await Promise.allSettled(Array.from({length: Math.min(3, result.images.length)}, worker));
       signal.throwIfAborted();
-      await context.telegram.withClient(async client => {
-        const {CustomFile} = await import("teleproto/client/uploads.js");
+      const ready = files.filter((file): file is string => Boolean(file));
+      if (!ready.length) throw new Error("No downloaded image");
+      await context.telegram.edit(invocation.message, "下载完成，正在发送…");
+      signal.throwIfAborted();
+      await context.telegram.withClient(async (client, nativeSignal) => {
+        const active = AbortSignal.any([signal, nativeSignal]);
+        active.throwIfAborted();
         const raw = invocation.message.raw as ApiTypes.Message | undefined;
-        if (!raw?.peerId) throw new Error("Missing peer");
-        for (let index = 0; index < files.length; index++) {
-          signal.throwIfAborted(); const info = await stat(files[index]!);
-          await client.sendFile(raw.peerId, {file: new CustomFile(path.basename(files[index]!), info.size, files[index]!), spoiler: true,
-            caption: index === 0 ? `套图链接: ${result.set.href}` : "", replyTo: index === 0 ? invocation.message.replyToId : undefined});
+        await sendImages(context, client, target(invocation), ready, result.set, invocation.message.replyToId, active);
+        active.throwIfAborted();
+        if (typeof raw?.delete === "function") {
+          try { await raw.delete({revoke: true}); }
+          catch { if (!active.aborted) context.log.info("cosplay_receipt_cleanup_failed"); }
         }
-        if (typeof raw.delete === "function") await raw.delete({revoke: true});
       });
     });
   } catch {
