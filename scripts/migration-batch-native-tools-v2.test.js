@@ -80,6 +80,7 @@ test('clear_sticker deletes only sticker documents from history', async t => {
   })});
   const plain = new Api.Message({id: 3, peerId: new Api.PeerChannel({channelId: 1}), message: 'plain'});
   const client = {
+    async getInputEntity() { return new Api.InputPeerChannel({channelId: 1, accessHash: 2}); },
     async invoke() { return {messages: [sticker, plain]}; },
     async deleteMessages(peer, ids) { deleted.push(...ids); },
   };
