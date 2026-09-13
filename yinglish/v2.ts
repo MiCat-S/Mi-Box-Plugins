@@ -1,5 +1,5 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, ui} from "telebox/sdk";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
@@ -32,60 +32,58 @@ const ENGLISH: Readonly<Record<string, string>> = {
   ok: "oK", okay: "oK", thank: "tHank", sorry: "soRRy", please: "pLease", welcome: "weLcome",
   love: "loVe", like: "liKe", hate: "haTe", happy: "haPPy", sad: "saD", angry: "anGRy",
   good: "gooD", bad: "baD", beautiful: "beauTiful", ugly: "ugLy", big: "biG", small: "smaLL",
+  new: "neW", old: "olD", fast: "fasT", slow: "sloW", hot: "hoT", cold: "colD", long: "lonG",
+  short: "shorT", high: "hiGh", low: "loW", easy: "easY", hard: "harD", right: "righT",
+  wrong: "wronG", true: "truE", false: "falsE",
 };
 
-const WORD_ORDER = Object.keys(WORDS).sort((left, right) => right.length - left.length);
+const COMMON_WORDS = ["什么","怎么","为什么","可以","不是","没有","知道","时候","喜欢","讨厌","高兴","难过","生气","害怕","惊讶","感谢","对不起","没关系","再见","现在","以前","以后","今天","明天","昨天","虽然","然后","因为","所以","如果"];
 
-function segments(text: string): Array<{value: string; kind: "word" | "english" | "other"}> {
-  const result: Array<{value: string; kind: "word" | "english" | "other"}> = [];
+function segments(text: string): Array<{value: string; kind: "n" | "eng" | "m" | "x"}> {
+  const result: Array<{value: string; kind: "n" | "eng" | "m" | "x"}> = [];
   for (let index = 0; index < text.length;) {
-    const english = text.slice(index).match(/^[a-z]+/i);
-    if (english) { result.push({value: english[0], kind: "english"}); index += english[0].length; continue; }
-    const word = WORD_ORDER.find(value => text.startsWith(value, index));
-    if (word) { result.push({value: word, kind: "word"}); index += word.length; continue; }
-    const [value] = Array.from(text.slice(index));
-    result.push({value, kind: /[\p{L}\p{N}]/u.test(value) ? "word" : "other"});
-    index += value.length;
+    const character=text[index];
+    if(/[，。！？；：、"“”（）【】《》\[\]{}]/.test(character)){result.push({value:character,kind:"x"});index++;continue;}
+    if(/\d/.test(character)){let value=character;index++;while(index<text.length&&/\d/.test(text[index]))value+=text[index++];result.push({value,kind:"m"});continue;}
+    if(/[a-z]/i.test(character)){let value=character;index++;while(index<text.length&&/[a-z]/i.test(text[index]))value+=text[index++];result.push({value,kind:"eng"});continue;}
+    const word=COMMON_WORDS.find(value=>text.startsWith(value,index));if(word){result.push({value:word,kind:"n"});index+=word.length;continue;}
+    const [value]=Array.from(text.slice(index));result.push({value,kind:"n"});index+=value.length;
   }
   return result;
 }
 
-function transformPart(value: string, kind: "word" | "english" | "other"): string {
-  if (kind === "other") {
-    if (value === "，") return "…";
-    if (value === "。") return "❗";
-    if (value === "!" || value === "！") return "‼‼‼";
-    if (value === "[" || value === "]") return "";
-    return value;
-  }
+function transformPart(value: string, kind: "n" | "eng" | "m" | "x"): string {
   if (Math.random() > 0.8) return value;
-  if (kind === "english") return ENGLISH[value.toLowerCase()] ?? value.split("").map((char, index) => index % 2 ? char.toUpperCase() : char.toLowerCase()).join("");
-  const converted = WORDS[value] ?? Array.from(value, character => CHARACTERS[character] ?? character).join("");
-  if (value.length > 1 && Math.random() < 0.1) return `${value[0]}…${converted}`;
-  if (value.length > 1 && Math.random() < 0.4) return `${value[0]}♥${converted}`;
-  if (Math.random() < 0.2) return `……${"⭕".repeat(Array.from(value).length)}`;
+  const length=Array.from(value).length;
+  if(value==="["||value==="]")return"";if(value==="，")return"…";if(value==="!"||value==="！")return"‼‼‼";if(value==="。")return"❗";
+  if(length>1&&Math.random()<0.1)return `${Array.from(value)[0]}…${value}`;
+  if(length>1&&Math.random()<0.4)return `${Array.from(value)[0]}♥${value}`;
+  if(kind==="n"&&Math.random()<0.1)return `…${"⭕".repeat(length)}`;
+  if(value==="\\……n"||value==="\\♥n")return"\\n";if(value==="…………")return"……";
+  if(kind==="n"&&Math.random()<0.2)return `……${"⭕".repeat(length)}`;
+  if(WORDS[value])return WORDS[value];
+  if(kind==="eng"&&ENGLISH[value.toLowerCase()])return ENGLISH[value.toLowerCase()];
+  const converted = Array.from(value, character => CHARACTERS[character] ?? character).join("");
   return `……${converted}`;
 }
 
-function convert(text: string): string {
+export function convert(text: string): string {
   return segments(text).map(item => transformPart(item.value, item.kind)).join("");
 }
 
 export default function createYinglish() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "yinglish", description: "将文字转换为随机非主流风格",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "yinglish", description: "将文字转换为随机非主流风格",
     commands: {yinglish: {helpArgs: ["help","h"], description: "转换参数或回复消息中的文字", async handle(invocation, context) {
       let input = invocation.args.join(" ").trim();
-      if (!input && invocation.message.replyToId !== undefined) input = (await context.telegram.getReply(invocation.message))?.text.trim() ?? "";
+      if (!input && invocation.message.replyToId !== undefined) {context.signal.throwIfAborted();input = (await context.telegram.getReply(invocation.message))?.text.trim() ?? "";context.signal.throwIfAborted();}
       if (!input || ["help", "h"].includes(input.toLowerCase())) {
-        await context.telegram.edit(invocation.message,
-          `<b>文字风格转换</b>\n<code>${escape(invocation.prefix)}yinglish 文本</code>\n也可以回复文字消息后使用。`, {parseMode: "html"});
+        await context.telegram.edit(invocation.message,renderPluginHelp(invocation.prefix), {parseMode: "html"});
         return;
       }
-      if (input.length > 4000) {
-        await context.telegram.edit(invocation.message, "文本过长，最多 4000 个字符");
-        return;
-      }
-      await context.telegram.edit(invocation.message, escape(convert(input)), {parseMode: "html"});
+      await context.telegram.edit(invocation.message,"🔄 正在转换...",{parseMode:"html"});context.signal.throwIfAborted();
+      const pages=await ui.renderRichText(escape(convert(input)),ui.PAGE_LABEL_RESERVE);
+      const delivery=await ui.deliverPages(pages.map((page,index,all)=>page+ui.pageLabel(index,all.length)),context.signal,(page,index)=>index?context.telegram.reply(invocation.message,page,{parseMode:"html"}):context.telegram.edit(invocation.message,page,{parseMode:"html"}));
+      if(delivery.interrupted){context.log.error("yinglish_page_delivery_failed",{category:ui.deliveryErrorCategory(delivery.error),published:delivery.published,total:delivery.total});if(delivery.published)await context.telegram.reply(invocation.message,ui.interruptedNotice(delivery)).catch(()=>{});else await context.telegram.edit(invocation.message,"转换结果发送失败，请稍后重试");}
     }}},
   });
 }
