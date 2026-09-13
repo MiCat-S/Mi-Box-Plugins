@@ -13,7 +13,7 @@ export function renderHelp(prefix: string): string {
 
 <b>规则管理：</b>
 • <code>${p}autodelcmd add 命令 延迟秒数 [参数...] [-r] [-e]</code> — 添加规则
-• <code>${p}autodelcmd del 规则ID</code> — 按列表中的 ID 删除规则；del 也可写 remove
+• <code>${p}autodelcmd del 规则ID或命令名</code> — 按 ID 删除；输入命令名则列出其规则；del 也可写 remove
 • <code>${p}autodelcmd reset</code> — 恢复默认规则并关闭功能
 
 <b>参数与匹配：</b>
