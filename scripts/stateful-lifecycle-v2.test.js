@@ -29,6 +29,7 @@ function fixture(t, id, initial, client = {}) {
   const native = {
     async sendMessage(chat, options) { sent.push({chat: String(chat), text: options.message}); },
     async deleteMessages(chat, ids, options) { deleted.push({chat: String(chat), ids, options}); },
+    async getMe() { return {id: 1n}; },
     ...client,
   };
   const context = {
@@ -114,14 +115,14 @@ test('autodel releases the native message payload while waiting for its deletion
       signal: controller.signal,
       storage: {json() { return {async read() { return {settings: {'7': 30 * 86400}}; }}; }},
       tasks: {run(_label, fn) { task = fn(controller.signal); task.catch(() => {}); return task; }},
-      telegram: {async withClient() { throw Error('unexpected delete'); }},
+      telegram: {async withClient(operation) { return operation({getMe: async () => ({id: 1n})}); }},
       log: {error() {}},
     };
     (async () => {
       await (async () => {
         const raw = {payload: Buffer.alloc(1024 * 1024)};
         weak = new WeakRef(raw);
-        await plugin.listeners[0].handle({id: 1, chatId: '7', text: 'hello', outgoing: true, raw}, context);
+        await plugin.listeners[0].handle({id: 1, chatId: '7', senderId: '1', text: 'hello', outgoing: true, raw}, context);
       })();
       for (let attempt = 0; attempt < 8; attempt++) {
         await new Promise(setImmediate);

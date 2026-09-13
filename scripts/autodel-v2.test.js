@@ -14,7 +14,7 @@ function fixture(initial = {schemaVersion: 1, settings: {}, importedLegacy: true
   let state = structuredClone(initial); const edits = [], tasks = [];
   const json = {async read() {return structuredClone(state);}, async update(fn) {state = await fn(structuredClone(state)); return structuredClone(state);}};
   const context = {signal: new AbortController().signal, storage: {json() {return json;}, sqlite() {return {read() {throw Object.assign(new Error('missing'), {code: 'ENOENT'});}};}},
-    telegram: {async edit(_m, text) {edits.push(text);}, async withClient() {throw new Error('unexpected');}},
+    telegram: {async edit(_m, text) {edits.push(text);}, async withClient(operation) {return operation({async getMe() {return {id: 9n};}});}},
     tasks: {run(label, fn) {tasks.push({label, fn}); return Promise.resolve();}}, log: {info() {}, error() {}}};
   const plugin = create(), message = {id: 1, chatId: '-1009007199254740993', senderId: '9', outgoing: true, text: ''};
   return {plugin, context, edits, tasks, state: () => state,
@@ -45,7 +45,7 @@ test('only schedules outgoing non-command messages and ignores edits through hos
 test('compiled plugin loads, cancels delayed work and unloads through PluginHost', async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'autodel-v2-')));
   const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}}, telegram: {
-    async edit() {}, async reply() {}, async invoke() {}, async getReply() {}, async withClient(op, signal) {return op({deleteMessages: async () => {}}, signal);},
+    async edit() {}, async reply() {}, async invoke() {}, async getReply() {}, async withClient(op, signal) {return op({async getMe() {return {id: 1n};}, async deleteMessages() {}}, signal);},
   }});
   t.after(async () => {await host.shutdown(1000); await fs.rm(root, {recursive: true, force: true});});
   await host.load(create());
