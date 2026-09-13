@@ -1,5 +1,5 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {writeFile} from "node:fs/promises";
+import {readFile, writeFile} from "node:fs/promises";
 import {definePlugin} from "telebox/sdk";
 
 const help = renderPluginHelp;
@@ -14,8 +14,21 @@ export default function createKeepOnline() {
       keep_online: {
         description: "查看在线状态探针",
         async handle(invocation, context) {
-          const status = lastSuccess
-            ? `\n\n最近成功：<code>${new Date(lastSuccess).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"})}</code>`
+          let success = lastSuccess;
+          if (!success) {
+            try {
+              const stored = await readFile(context.files.dataPath("keep_online.txt"), "utf8");
+              if (/^\d+$/.test(stored)) {
+                const value = Number(stored) * 1000;
+                if (Number.isSafeInteger(value) && value > 0) success = value;
+              }
+            } catch (error) {
+              if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) context.log.error("keep_online_status_read_failed");
+            }
+          }
+          context.signal.throwIfAborted();
+          const status = success
+            ? `\n\n最近成功：<code>${new Date(success).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"})}</code>`
             : "\n\n最近成功：等待首次探测";
           await context.telegram.edit(invocation.message, `${help(invocation.prefix)}${status}`, {parseMode: "html"});
         },

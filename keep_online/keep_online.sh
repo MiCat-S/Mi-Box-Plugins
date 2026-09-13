@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
 
 # 如果是宿主机, 需要使用你映射的宿主机的路径
-file="/root/telebox/temp/keep_online/keep_online.txt"
+file="/root/telebox/assets/keep_online/keep_online.txt"
 
 # 超时(默认为 120 秒)
 timeout=120
@@ -41,4 +41,3 @@ if [ "$need_restart" = true ]; then
 else
     echo "距离上次时间 $time_diff 秒, 未超过 $timeout 秒，跳过重启"
 fi
-
