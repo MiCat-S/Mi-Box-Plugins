@@ -1,6 +1,7 @@
 import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {readFile} from "node:fs/promises";
 import type {Api} from "teleproto";
+import {returnBigInt} from "teleproto/Helpers.js";
 
 type State={schemaVersion:1;apiKey:string;maxBytes:number;importedLegacy:boolean;aiMigrated?:boolean;[key:string]:unknown};
 type ImageResult={data?:Uint8Array;mimeType?:string;revisedPrompt?:string};
@@ -11,6 +12,7 @@ const esc=(v:unknown)=>String(v??"").replace(/[&<>"']/g,x=>({"&":"&amp;","<":"&l
 const clamp=(v:unknown)=>Math.max(MIN_LIMIT,Math.min(MAX_LIMIT,Number.isFinite(Number(v))?Math.round(Number(v)):DEFAULT_LIMIT));
 const size=(raw:string)=>{const m=raw.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)(b|kb|mb)?$/);if(!m)return;return Math.round(Number(m[1])*(m[2]==="b"?1:m[2]==="kb"?1024:1048576));};
 const label=(n:number)=>n>=1048576?`${+(n/1048576).toFixed(1)}MB`:n>=1024?`${+(n/1024).toFixed(1)}KB`:`${n}B`;
+const extension=(mime:string|undefined)=>mime?.includes("jpeg")?"jpg":mime?.includes("webp")?"webp":mime?.includes("gif")?"gif":"png";
 async function migrate(c:PluginContext){
   let current=await store(c).read();
   if(!current.importedLegacy){let source:any=current;try{source={...JSON.parse(await readFile(c.files.dataPath("config.json"),"utf8")),...current};}catch{}
@@ -54,17 +56,26 @@ export default function createBanana(){
       await c.telegram.edit(invocation.message, "正在生成图片…");
       const images=await c.services.call<ImageResult[]>("ai","image",{prompt,input:{data:input.buffer,mimeType:input.mime}},c.signal);
       if(!images.length)throw new Error("empty_result");
-      await c.telegram.withClient(async client => {
+      let deleteFailed=false;
+      const caption=`<b>提示：</b> ${esc(prompt)}${images[0]?.revisedPrompt ? `\n\n${esc(images[0].revisedPrompt)}` : ""}`;
+      await c.telegram.withClient(async (client,signal) => {
         const {CustomFile} = await import("teleproto/client/uploads.js");
         const raw = invocation.message.raw as Api.Message;
-        if (!raw?.peerId) throw new Error("missing_peer");
+        const peer=raw?.peerId??returnBigInt(invocation.message.chatId);
+        let sent=false;
         for (let i = 0; i < images.length; i++) {
+          signal.throwIfAborted();
           const out = Buffer.from(images[i].data ?? []);
-          if (!out.length || out.length > MAX_LIMIT) throw new Error("invalid_image");
-          await client.sendFile(raw.peerId, {file: new CustomFile(`banana-${Date.now()}-${i}.png`, out.length, "", out), caption: i === 0 ? `<b>提示：</b> ${esc(prompt)}${images[i].revisedPrompt ? `\n\n${esc(images[i].revisedPrompt)}` : ""}` : undefined, parseMode: i === 0 ? "html" : undefined, replyTo: input.reply.id});
+          if (!out.length) continue;
+          await client.sendFile(peer, {file: new CustomFile(`banana-${Date.now()}-${i}.${extension(images[i].mimeType)}`, out.length, "", out), caption: !sent ? caption : undefined, parseMode: !sent ? "html" : undefined, replyTo: input.reply.id});
+          sent=true;
         }
-        if (typeof raw.delete === "function") await raw.delete({revoke: true});
+        if(!sent)throw new Error("empty_result");
+        signal.throwIfAborted();
+        try{await client.deleteMessages(peer,[invocation.message.id],{revoke:true});}
+        catch{deleteFailed=true;c.log.error("banana_command_delete_failed");}
       });
+      if(deleteFailed){try{await c.telegram.edit(invocation.message,caption,{parseMode:"html"});}catch{c.log.error("banana_command_fallback_edit_failed");}}
     } catch {
       if (!c.signal.aborted) { c.log.error("banana_failed"); await c.telegram.edit(invocation.message, "图片编辑失败，请检查图片、配置和服务状态"); }
     }
