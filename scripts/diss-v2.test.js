@@ -8,6 +8,8 @@ const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 const {definePlugin} = require(path.join(core, 'dist/v2/sdk.js'));
+const {Api} = require(path.join(core, 'node_modules/teleproto'));
+const {returnBigInt} = require(path.join(core, 'node_modules/teleproto/Helpers.js'));
 const {artifactDir} = buildPlugin({id: 'diss', packageRoot: path.resolve(__dirname, '../diss'), entry: 'v2.ts'});
 const create = require(path.join(artifactDir, 'index.cjs')).default;
 
@@ -23,18 +25,19 @@ async function waitFor(predicate, timeout = 2000) {
   throw new Error('timed out waiting for condition');
 }
 
-async function fixture(t, {ai, selection, fetch, entities = new Map([['@victim', {id: TARGET}]]), reply} = {}) {
+async function fixture(t, {ai, selection, fetch, entities = new Map([['@victim', {id: TARGET}]]), reply, me = ME} = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mi-box-diss-v2-')));
   const edits = [];
-  const replies = [];
+  const replies = [], deletes = [], errors = [];
   const client = {
-    async getMe() { return ME; },
+    async getMe() { return me; },
     async getEntity(target) {
       if (entities.has(target)) return entities.get(target);
       throw new Error('entity unavailable');
     },
+    async deleteMessages(peer, ids, options) { deletes.push({peer, ids, options}); },
   };
-  const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}}, ...(fetch ? {http: {fetch}} : {}), telegram: {
+  const host = new PluginHost({storageRoot: root, logger: {info() {}, error(...args) { errors.push(args); }}, ...(fetch ? {http: {fetch}} : {}), telegram: {
     async edit(message, text, options) { edits.push({message, text, options}); },
     async reply(message, text, options) { replies.push({message, text, options}); },
     async invoke() {},
@@ -47,7 +50,7 @@ async function fixture(t, {ai, selection, fetch, entities = new Map([['@victim',
   }}));
   await host.load(create());
   t.after(async () => { await host.shutdown(2000); await fs.rm(root, {recursive: true, force: true}); });
-  return {host, edits, replies, root,
+  return {host, edits, replies, deletes, errors, root,
     run: (text, extra = {}) => host.dispatchPrimary({id: 1, chatId: '1', senderId: String(ME.id), outgoing: true, text, ...extra}),
     listen: (extra = {}) => host.dispatchListeners({id: 2, chatId: '1', senderId: String(TARGET), outgoing: false, text: 'hello', ...extra}),
   };
@@ -59,6 +62,48 @@ test('diss help renders the full guide without network access', async t => {
   assert.match(f.edits.at(-1).text, /嘴臭对线机/);
   assert.match(f.edits.at(-1).text, /undiss/);
   assert.equal(f.edits.at(-1).options.parseMode, 'html');
+});
+
+test('incoming bot mention locks and unlocks a target and deletes the command without revoking', async t => {
+  const f = await fixture(t);
+  const entities = text => [
+    {className: 'MessageEntityMention', offset: 0, length: 6},
+    {className: 'MessageEntityMention', offset: text.indexOf('@victim'), length: 7},
+  ];
+  const lock = '@mibot diss @victim';
+  await f.listen({id: 8, chatId: '-1009007199254740993', senderId: '77', text: lock, raw: {message: lock, entities: entities(lock)}});
+  assert.match(f.replies.at(-1).text, /已锁定/);
+  assert.deepEqual(f.deletes.at(-1).ids, [8]);
+  assert.equal(f.deletes.at(-1).peer.toString(), '-1009007199254740993');
+  assert.equal(f.deletes.at(-1).options.revoke, false);
+  const unlock = '@mibot undiss @victim';
+  await f.listen({id: 9, chatId: '-1009007199254740993', senderId: '77', text: unlock, raw: {message: unlock, entities: entities(unlock)}});
+  assert.match(f.replies.at(-1).text, /已解锁/);
+});
+
+test('incoming TL mention-name recognizes a nameless bot after whitespace and keeps UTF-16 target offsets', async t => {
+  const f = await fixture(t, {me: {id: ME.id}});
+  const text = '  Mi Bot diss 😀 @victim';
+  const targetOffset = text.indexOf('@victim');
+  await f.listen({id: 10, chatId: '-1009007199254740993', senderId: '77', text, raw: {
+    message: text,
+    entities: [
+      new Api.MessageEntityMentionName({offset: 2, length: 6, userId: returnBigInt(ME.id)}),
+      new Api.MessageEntityMention({offset: targetOffset, length: 7}),
+    ],
+  }});
+  assert.equal(f.replies.length, 1, JSON.stringify({edits: f.edits, deletes: f.deletes, errors: f.errors}));
+  assert.match(f.replies.at(-1).text, /已锁定 <b>@victim<\/b>/);
+  assert.deepEqual(f.deletes.at(-1).ids, [10]);
+});
+
+test('dishelp uses bounded SDK page delivery and preserves the complete guide', async t => {
+  const f = await fixture(t);
+  await f.run('.dishelp');
+  const pages = [...f.edits, ...f.replies].map(entry => entry.text);
+  assert.ok(pages.every(page => page.length <= 3500));
+  const guide = pages.join('\n');
+  for (const command of ['diss', 'undiss', 'dislist', 'dissclear', 'dissai', 'dishelp']) assert.match(guide, new RegExp(command));
 });
 
 test('diss locks a replied target and rejects locking yourself', async t => {
