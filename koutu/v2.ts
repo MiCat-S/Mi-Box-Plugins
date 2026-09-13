@@ -42,9 +42,9 @@ export async function responseBytes(response: Response, signal: AbortSignal): Pr
   }
 }
 
-async function matting(ctx: PluginContext, apiKey: string, bytes: Buffer, mime: string) {
+async function matting(ctx: PluginContext, apiKey: string, bytes: Buffer, mime: string, filename: string) {
   const form = new FormData();
-  form.append("file", new Blob([new Uint8Array(bytes)], {type: mime}), mime === "image/png" ? "input.png" : "input.webp");
+  form.append("file", new Blob([new Uint8Array(bytes)], {type: mime}), filename);
   return ctx.http.withResponse(ENDPOINT, {method: "POST", credentials: "omit", body: form,
     headers: {apikey: apiKey, accept: "*/*", "user-agent": "ProKnockOut/7.83 (iPhone; iOS 26.3; Scale/3.00)"}},
   async (response, signal) => {
@@ -56,19 +56,26 @@ async function matting(ctx: PluginContext, apiKey: string, bytes: Buffer, mime: 
   }, {timeoutMs: 60_000, redirects: {allowedHosts: [HOST], maxRedirects: 0}});
 }
 
-async function input(ctx: PluginContext, message: MessageEnvelope, directory: string, signal: AbortSignal) {
+async function validateImage(bytes: Buffer): Promise<void> {
+  const sharp = (await import("sharp")).default;
+  const info = await sharp(bytes, {limitInputPixels: MAX_PIXELS, animated: false, pages: 1}).metadata();
+  if (!info.width || !info.height || info.width * info.height > MAX_PIXELS) throw new UserError("图片尺寸无效或超过 16777216 像素");
+}
+
+export async function selectInput(ctx: PluginContext, message: MessageEnvelope, directory: string, signal: AbortSignal) {
   const reply = await ctx.telegram.getReply(message);
   const source = reply?.raw as Api.Message | undefined;
   const doc = source?.document;
-  let mime = doc?.mimeType ?? (source?.photo ? "image/jpeg" : "");
-  if (mime === "application/octet-stream") {
-    const filename = doc?.attributes.find(value => "fileName" in value);
-    const extension = filename && "fileName" in filename ? path.extname(String(filename.fileName)).toLowerCase() : "";
+  const attribute = doc?.attributes.find(value => "fileName" in value);
+  let filename = attribute && "fileName" in attribute && attribute.fileName ? String(attribute.fileName) : "photo.jpg";
+  const extension = path.extname(filename).toLowerCase();
+  let mime = doc?.mimeType?.toLowerCase() ?? "";
+  if (!mime || mime === "application/octet-stream") {
     mime = ({".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
       ".gif": "image/gif", ".mp4": "video/mp4", ".webm": "video/webm", ".tgs": "application/x-tgsticker"} as Record<string, string>)[extension] ?? mime;
   }
-  if (mime === "application/x-tgsticker") throw new UserError("暂不支持 TGS 动态贴纸，请回复图片或视频贴纸");
-  let bytes: Buffer;
+  if (mime === "application/x-tgsticker" || extension === ".tgs") throw new UserError("暂不支持 TGS 动态贴纸，请回复图片或视频贴纸");
+  let bytes: Buffer = Buffer.alloc(0);
   const media = Boolean(source?.photo || doc);
   if (media) {
     if (!/^image\//.test(mime) && !["video/mp4", "video/webm"].includes(mime)) throw new UserError("请回复图片、GIF、MP4 或 WebM");
@@ -83,31 +90,38 @@ async function input(ctx: PluginContext, message: MessageEnvelope, directory: st
       }
       return Buffer.concat(chunks, total);
     });
-  } else {
+  }
+  if (!bytes.length) {
     bytes = await ctx.telegram.withClient(async client => {
       const {Api} = await import("teleproto");
-      const target = reply ? await (reply.raw as Api.Message | undefined)?.getInputSender() : new Api.InputPeerSelf();
+      const command = message.raw as Api.Message | undefined;
+      const target = source?.senderId ? await source.getInputSender()
+        : command?.fromId ? await client.getInputEntity(command.fromId) : new Api.InputPeerSelf();
       if (!target) throw new UserError("无法取得回复者头像");
       const result = await client.downloadProfilePhoto(target, {isBig: false});
       if (!Buffer.isBuffer(result) || !result.length) throw new UserError("该用户没有可用头像");
       return result;
     });
+    filename = "avatar.jpg";
+    mime = "image/jpeg";
   }
   signal.throwIfAborted();
   if (!bytes.length || bytes.length > MAX_BYTES) throw new UserError("图片为空或超过 20 MiB");
-  if (mime.startsWith("video/")) {
-    const sourcePath = path.join(directory, mime === "video/mp4" ? "input.mp4" : "input.webm");
+  const animation = ["gif", "mp4", "webm"].find(value => filename.toLowerCase().endsWith(`.${value}`))
+    ?? ({"image/gif": "gif", "video/mp4": "mp4", "video/webm": "webm"} as Record<string, string>)[mime];
+  if (animation) {
+    const sourcePath = path.join(directory, `input.${animation}`);
     const frame = path.join(directory, "frame.png");
     await writeFile(sourcePath, bytes, {flag: "wx", mode: 0o600, signal});
     await videoFrame(ctx, sourcePath, frame, directory, signal);
     if ((await stat(frame)).size > MAX_BYTES) throw new UserError("视频首帧超过 20 MiB");
     bytes = await readFile(frame, {signal});
+    filename = "frame.png";
+    mime = "image/png";
   }
-  const sharp = (await import("sharp")).default;
-  const normalized = await sharp(bytes, {limitInputPixels: MAX_PIXELS, animated: false, pages: 1}).webp({lossless: true}).toBuffer();
-  if (normalized.length > MAX_BYTES) throw new UserError("图片转换后超过 20 MiB");
+  await validateImage(bytes);
   signal.throwIfAborted();
-  return {bytes: normalized, reply};
+  return {bytes, filename, mime, reply};
 }
 
 export async function videoFrame(ctx: PluginContext, source: string, frame: string, directory: string, signal: AbortSignal) {
@@ -127,7 +141,7 @@ export async function videoFrame(ctx: PluginContext, source: string, frame: stri
         stream.width * stream.height > MAX_PIXELS) throw new UserError("视频尺寸无效或超过 16777216 像素");
     signal.throwIfAborted();
     await ctx.processes.run(path.join(bin, "ffmpeg"), ["-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file", "-i", source,
-      "-frames:v", "1", "-vf", "scale=2048:2048:force_original_aspect_ratio=decrease", "-fs", String(MAX_BYTES), frame],
+      "-frames:v", "1", "-fs", String(MAX_BYTES), frame],
     {cwd: directory, timeoutMs: 30000, maxOutputBytes: 65536});
     return;
   }
@@ -137,8 +151,8 @@ export async function videoFrame(ctx: PluginContext, source: string, frame: stri
 export default function createKoutu() {
   let busy = false;
   const command: CommandDefinition = {
-    description: "图片、贴纸或头像一键抠图", helpArgs: ["help", "h"], ignoreEdited: true,
-    subcommands: {set: {description: "配置抠图服务", subcommands: {key: {
+    description: "图片、贴纸或头像一键抠图", helpArgs: ["help", "h"], ignoreEdited: true, subcommandsCaseSensitive: false,
+    subcommands: {set: {description: "配置抠图服务", subcommandsCaseSensitive: false, subcommands: {key: {
       description: "仅在收藏夹设置 PicUP API Key", args: "<apikey>", async handle(i, ctx) {
         if (!i.message.saved) {await ctx.telegram.edit(i.message, "请仅在收藏夹中设置 API Key"); return;}
         if (i.args.length !== 1 || !i.args[0].trim()) {await ctx.telegram.edit(i.message, `用法：${i.prefix}koutu set key <apikey>`); return;}
@@ -146,8 +160,9 @@ export default function createKoutu() {
         await ctx.telegram.edit(i.message, "API Key 已保存");
       },
     }}, async handle(i, ctx) {await ctx.telegram.edit(i.message, `用法：${i.prefix}koutu set key <apikey>`);}}},
-    help: [{heading: "使用方式", body: "回复图片或静态贴纸执行 <code>{prefix}koutu</code>；GIF、MP4、WebM 取首帧。回复文字取发送者头像，不回复取自己头像；不支持 TGS。"},
-      {heading: "服务与限制", body: "图片会上传至 picupapi.tukeli.net，使用你配置的 API Key，可能消耗服务额度。输入和结果上限 20 MiB，图片解码上限 16777216 像素；视频需 FFmpeg。同一时间处理一个任务。兼容原 config.json 的 apiKey 及 PICUP_API_KEY 环境变量。"}],
+    help: [{heading: "使用方式", body: "回复图片或静态贴纸执行 <code>{prefix}koutu</code>，保留原图文件名、格式和内容上传；GIF、MP4、WebM 取原尺寸 PNG 首帧。回复文字取发送者头像，不回复取当前发送身份的头像；不支持 TGS。"},
+      {heading: "抠图流程", body: "接口报 5013 或文件类型不支持时，才将输入转换为 PNG 重试一次。成功结果原样发送，保留透明度，由 Telegram 自动选择媒体展示方式。"},
+      {heading: "服务与限制", body: "图片会上传至 picupapi.tukeli.net，使用你配置的 API Key，可能消耗服务额度。输入和结果上限 20 MiB，图片解码上限 16777216 像素；GIF、视频需 FFmpeg 和 FFprobe。同一时间处理一个任务。兼容原 config.json 的 apiKey 及 PICUP_API_KEY 环境变量。"}],
     async handle(i, ctx) {
       if (i.args.length) {await ctx.telegram.edit(i.message, renderCommandHelp("koutu", command, {prefix: i.prefix}), {parseMode: "html"}); return;}
       if (busy) {await ctx.telegram.edit(i.message, "已有抠图任务正在处理，请稍后重试"); return;}
@@ -157,25 +172,26 @@ export default function createKoutu() {
         if (!apiKey) {await ctx.telegram.edit(i.message, `请先在收藏夹执行 ${i.prefix}koutu set key <apikey>`); return;}
         await ctx.telegram.edit(i.message, "正在抠图…");
         await ctx.files.withTemp(async (directory, signal) => {
-          const selected = await input(ctx, i.message, directory, signal);
-          let result = await matting(ctx, apiKey, selected.bytes, "image/webp");
+          const selected = await selectInput(ctx, i.message, directory, signal);
+          let result = await matting(ctx, apiKey, selected.bytes, selected.mime, selected.filename);
           const sharp = (await import("sharp")).default;
           if (result.retry) {
             const png = await sharp(selected.bytes, {limitInputPixels: MAX_PIXELS}).png().toBuffer();
             if (png.length > MAX_BYTES) throw new UserError("PNG 图片超过 20 MiB");
             signal.throwIfAborted();
-            result = await matting(ctx, apiKey, png, "image/png");
+            result = await matting(ctx, apiKey, png, "image/png", "converted.png");
           }
           if (result.failed) throw new UserError("抠图服务请求失败，请检查 API Key、额度和图片格式");
-          const output = await sharp(result.data, {limitInputPixels: MAX_PIXELS, pages: 1}).webp({lossless: true}).toBuffer();
+          const output = result.data;
           if (!output.length || output.length > MAX_BYTES) throw new UserError("抠图结果为空或超过 20 MiB");
+          await validateImage(output);
           signal.throwIfAborted();
           await ctx.telegram.withClient(async (client, clientSignal) => {
             clientSignal.throwIfAborted();
             const {CustomFile} = await import("teleproto/client/uploads.js");
             const raw = i.message.raw as Api.Message;
             await client.sendFile(raw.peerId!, {file: new CustomFile("koutu.webp", output.length, "", output),
-              forceDocument: true, replyTo: selected.reply?.id, topMsgId: i.message.topicId});
+              replyTo: selected.reply?.id, topMsgId: i.message.topicId});
           });
         });
         try {await (i.message.raw as Api.Message).delete({revoke: true});}
