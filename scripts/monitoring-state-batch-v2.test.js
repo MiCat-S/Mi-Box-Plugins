@@ -39,8 +39,12 @@ test('keyword keeps string chat ids, preserves unknown state, and gives inherite
   assert.deepEqual(sent,['inherited','local']);assert.equal(f.json.value().future.kept,true);assert.equal(f.json.value().tasks[1].chatId,'-1009007199254740993');
 });
 
-test('im normalizes legacy chat ids and blocks command-media double processing',async()=>{
+test('im normalizes legacy chat ids and blocks command-media double processing',async t=>{
   const f=context({schemaVersion:0,enabled:true,monitoredChats:[-1001],bannedMD5s:{},defaultAction:'delete',future:'kept',importedLegacy:false});const plugin=createIm();
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'im-migration-fixture-'));
+  t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  f.ctx.files={dataPath:name=>path.join(directory,name)};
+  await fs.writeFile(path.join(directory,'config.json'),JSON.stringify(f.json.value()));
   await plugin.setup(f.ctx);const data=f.json.value();assert.deepEqual(data.monitoredChats,[{id:'-1001',name:'-1001'}]);assert.deepEqual(data.bannedStickerIds,{});assert.equal(data.future,'kept');assert.equal(plugin.listeners[0].ignoreCommands,true);assert.equal(plugin.listeners[0].edited,true);
 });
 

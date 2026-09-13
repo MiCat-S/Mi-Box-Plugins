@@ -60,7 +60,7 @@ test('listusernames renders escaped public chats and channel statistics', async 
   await f.run('.listusernames');
   assert.equal(f.invokes.length, 1);
   assert.match(f.edits.at(-1).text, /A &lt; B/);
-  assert.match(f.edits.at(-1).text, /频道 1 · 群组 1 · 总计 2/);
+  assert.match(f.edits.at(-1).text, /频道数量: 1[\s\S]*群组数量: 1[\s\S]*总计: 2/);
   assert.equal(f.edits.at(-1).options.parseMode, 'html');
 });
 
