@@ -4,9 +4,8 @@
 // and overlay badges for media (video play button, duration/GIF chips).
 // All sizes below are logical px — multiplied by `scale` at use.
 
-const fs = require('fs')
-const path = require('path')
-const { createCanvas, loadImage } = require('canvas')
+const { createCanvas, loadImage } = require('../canvas')
+const ICON_SVG = require('../icons')
 const sharp = require('sharp')
 const { drawLabel } = require('./canvas-utils')
 
@@ -14,25 +13,6 @@ const { drawLabel } = require('./canvas-utils')
 // @material-design-icons/svg into assets/icons/. Rasterized once at 256px
 // white via sharp and drawn scaled; the geometric fallbacks below only kick
 // in if SVG rasterization is unavailable.
-const ICON_FILES = {
-  play: 'play_arrow.svg',
-  file: 'insert_drive_file.svg',
-  note: 'music_note.svg'
-}
-const ICONS_DIR = (() => {
-  const candidates = [
-    path.resolve(__dirname, '../../assets/icons'), // plugin: quote/assets/icons
-    path.resolve(__dirname, '../../../assets/icons'), // monorepo fallback
-    path.resolve(process.cwd(), 'assets', 'quote', 'icons'),
-    path.resolve(process.cwd(), 'assets', 'icons')
-  ]
-  for (const c of candidates) {
-    try {
-      if (fs.existsSync(c)) return c
-    } catch (_) {}
-  }
-  return candidates[0]
-})()
 
 let icons = null
 let iconsLoading = null
@@ -44,8 +24,7 @@ async function loadIcons () {
   if (!iconsLoading) {
     iconsLoading = (async () => {
       const out = {}
-      for (const [key, file] of Object.entries(ICON_FILES)) {
-        const svg = await fs.promises.readFile(path.join(ICONS_DIR, file), 'utf8')
+      for (const [key, svg] of Object.entries(ICON_SVG)) {
         // The vendored icons carry no fill (default black) — paint them white.
         const white = svg.replace('<svg ', '<svg fill="#ffffff" ')
         out[key] = await loadImage(

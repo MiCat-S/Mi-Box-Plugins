@@ -5,7 +5,7 @@
 // uniform vertical gap; every spacing constant lives in SP. No element is
 // positioned with ad-hoc offsets — parents size themselves from children.
 
-const { createCanvas } = require('canvas')
+const { createCanvas } = require('../canvas')
 const { drawRoundRect, drawGradientRoundRect, roundImage, drawQuoteIcon, drawLabel, drawForwardLabel } = require('./canvas-utils')
 const { paintMediaBadges } = require('./attachments')
 const { leaf, box, measure, place, render } = require('./layout-box')

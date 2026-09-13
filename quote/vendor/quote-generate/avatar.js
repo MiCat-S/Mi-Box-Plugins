@@ -1,14 +1,15 @@
 // utils/quote-generate/avatar.js
 
-const { createCanvas, loadImage } = require('canvas')
-const LRU = require('lru-cache')
+const { createCanvas, loadImage } = require('../canvas')
+const lru = require('lru-cache')
+const LRU = lru.LRUCache || lru
 const runes = require('runes')
 const loadImageFromUrl = require('../image-load-url')
 const { AVATAR_COLORS } = require('./constants')
 
 const avatarCache = new LRU({
   max: 20,
-  maxAge: 1000 * 60 * 5
+  ttl: 1000 * 60 * 5
 })
 
 function avatarImageLetters (letters, color) {

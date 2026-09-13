@@ -12,7 +12,7 @@
 // special case is the 1×1 stub returned for empty text, which is dropped so
 // it doesn't occupy a slot in the flow.
 
-const { createCanvas } = require('canvas')
+const { createCanvas } = require('../canvas')
 
 const ZERO_PAD = { t: 0, r: 0, b: 0, l: 0 }
 

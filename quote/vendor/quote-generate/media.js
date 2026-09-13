@@ -1,6 +1,6 @@
 // utils/quote-generate/media.js
 
-const { loadImage } = require('canvas')
+const { loadImage } = require('../canvas')
 const sharp = require('sharp')
 const { Jimp, JimpMime } = require('jimp')
 const smartcrop = require('smartcrop-sharp')

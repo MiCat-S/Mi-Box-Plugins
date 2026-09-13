@@ -6,11 +6,11 @@
 // consistent with Telegram API and JS string indexing. Do not refactor
 // to Array.from(text) (codepoint split) without updating all offset logic.
 
-const { createCanvas, loadImage } = require('canvas')
+const { createCanvas, loadImage } = require('../canvas')
 const sharp = require('sharp')
 const loadImageFromUrl = require('../image-load-url')
 const emojiDb = require('../emoji-db')
-const { loadBrand } = require('../emoji-image')
+const { loadBrand, currentAssetRoot } = require('../emoji-image')
 const {
   BREAK_REGEX, SPACE_REGEX, CJK_REGEX,
   ENTITY_TYPES_MONOSPACE, ENTITY_TYPES_MENTION,
@@ -126,8 +126,12 @@ function mapEmojis (text, styledChars) {
 
 // Load emoji images (with module-level cache + in-flight dedup)
 const emojiLoadingPromises = new Map()
+const emojiCacheGenerations = new Map()
+const MAX_EMOJI_IMAGES = 512
 
 async function loadEmojiImages (emojis, emojiBrand) {
+  const assetRoot = currentAssetRoot() || ''
+  const generation = emojiCacheGenerations.get(assetRoot) || 0
   const emojiImageJson = loadBrand(emojiBrand || 'apple')
   let fallbackBrand = 'apple'
   if (emojiBrand === 'blob') fallbackBrand = 'google'
@@ -137,7 +141,7 @@ async function loadEmojiImages (emojis, emojiBrand) {
   const promises = []
 
   for (const emoji of emojis) {
-    const cacheKey = `${emojiBrand}:${emoji.found}`
+    const cacheKey = `${assetRoot}:${emojiBrand}:${emoji.found}`
 
     if (emojiImageCache.has(cacheKey)) {
       localMap.set(emoji.found, emojiImageCache.get(cacheKey))
@@ -161,19 +165,36 @@ async function loadEmojiImages (emojis, emojiBrand) {
           try { image = await loadImage(Buffer.from(fallbackJson[emoji.found], 'base64')) } catch (e) { /* skip */ }
         }
 
-        if (image) {
+        if (image && (emojiCacheGenerations.get(assetRoot) || 0) === generation) {
           emojiImageCache.set(cacheKey, image)
+          while (emojiImageCache.size > MAX_EMOJI_IMAGES) {
+            emojiImageCache.delete(emojiImageCache.keys().next().value)
+          }
           localMap.set(emoji.found, image)
         }
         return image
       })()
       emojiLoadingPromises.set(cacheKey, p)
-      promises.push(p.finally(() => emojiLoadingPromises.delete(cacheKey)))
+      promises.push(p.finally(() => {
+        if (emojiLoadingPromises.get(cacheKey) === p) emojiLoadingPromises.delete(cacheKey)
+      }))
     }
   }
 
   await Promise.all(promises)
   return localMap
+}
+
+function clearEmojiImages (root) {
+  const assetRoot = root || ''
+  emojiCacheGenerations.set(assetRoot, (emojiCacheGenerations.get(assetRoot) || 0) + 1)
+  const prefix = `${assetRoot}:`
+  for (const key of emojiImageCache.keys()) {
+    if (key.startsWith(prefix)) emojiImageCache.delete(key)
+  }
+  for (const key of emojiLoadingPromises.keys()) {
+    if (key.startsWith(prefix)) emojiLoadingPromises.delete(key)
+  }
 }
 
 // Load custom emoji stickers via pre-downloaded buffers OR Telegram API
@@ -198,7 +219,7 @@ async function loadCustomEmojis (customEmojiIds, telegram) {
           buf = Buffer.from(raw.data)
         }
         if (Buffer.isBuffer(buf) && buf.length > 0) {
-          const png = await sharp(buf).png({ lossless: true, force: true }).toBuffer()
+          const png = await sharp(buf, {pages: 1, limitInputPixels: 20_000_000}).png({ lossless: true, force: true }).toBuffer()
           result[key] = await loadImage(png).catch(() => null)
         } else if (raw && typeof raw.width === 'number') {
           // Already a canvas Image
@@ -223,7 +244,7 @@ async function loadCustomEmojis (customEmojiIds, telegram) {
     if (!fileLink) return
     const data = await loadImageFromUrl(fileLink).catch(() => null)
     if (!data) return
-    const png = await sharp(data).png({ lossless: true, force: true }).toBuffer()
+    const png = await sharp(data, {pages: 1, limitInputPixels: 20_000_000}).png({ lossless: true, force: true }).toBuffer()
     result[sticker.custom_emoji_id] = await loadImage(png).catch(() => null)
   })
 
@@ -564,4 +585,4 @@ async function prepareText (text, entities, fontSize, emojiBrand, telegram) {
   }
 }
 
-module.exports = { prepareText, graphemeSegmenter, getMeasureCtx, fontMetrics }
+module.exports = { prepareText, graphemeSegmenter, getMeasureCtx, fontMetrics, clearEmojiImages }

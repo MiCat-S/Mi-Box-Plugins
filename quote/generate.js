@@ -16,33 +16,55 @@
 
 const path = require("path");
 const { QuoteGenerate } = require("./vendor/index.js");
-const { createCanvas, loadImage } = require("canvas");
+const { createCanvas, loadImage } = require("./vendor/canvas");
 const sharp = require("sharp");
 const { parseBackgroundColor, colorLuminance, lightOrDark, hexToHsl, hslToHex } = require("./vendor/quote-generate/color");
-const { brands: emojiBrands } = require("./vendor/emoji-image");
+const { brands: emojiBrands, clearAssetRoot } = require("./vendor/emoji-image");
+const { clearEmojiImages } = require("./vendor/quote-generate/text-prepare");
 
 // ── TeleBox: register CJK fonts from assets/quote ─────────────────────
-let fontsLoaded = false;
-async function ensureFonts() {
-  if (fontsLoaded) return;
+const fontLoads = new Map();
+async function ensureFonts(assetRoot) {
+  const root = assetRoot || QUOTE_ASSETS_DIR;
+  let pending = fontLoads.get(root);
+  if (!pending) {
+    pending = Promise.resolve().then(() => QuoteGenerate.loadFonts(root));
+    fontLoads.set(root, pending);
+  }
   try {
-    await QuoteGenerate.loadFonts();
+    await pending;
   } catch (error) {
+    if (fontLoads.get(root) === pending) fontLoads.delete(root);
     console.warn("quote generate: loadFonts failed", error && error.message);
   }
-  fontsLoaded = true;
 }
 
 const ALLOWED_EMOJI_BRANDS = new Set(Object.keys(emojiBrands));
 
 const QUOTE_ASSETS_DIR = path.join(process.cwd(), "assets", "quote");
 
-let cachedPatternImage = null;
-async function getPatternImage() {
-  if (!cachedPatternImage) {
-    cachedPatternImage = await loadImage(path.join(QUOTE_ASSETS_DIR, "pattern_02.png"));
+const cachedPatternImages = new Map();
+async function getPatternImage(assetRoot) {
+  const root = assetRoot || QUOTE_ASSETS_DIR;
+  let pending = cachedPatternImages.get(root);
+  if (!pending) {
+    pending = loadImage(path.join(root, "pattern_02.png"));
+    cachedPatternImages.set(root, pending);
   }
-  return cachedPatternImage;
+  try {
+    return await pending;
+  } catch (error) {
+    if (cachedPatternImages.get(root) === pending) cachedPatternImages.delete(root);
+    throw error;
+  }
+}
+
+function clearResources(assetRoot) {
+  const root = assetRoot || QUOTE_ASSETS_DIR;
+  fontLoads.delete(root);
+  cachedPatternImages.delete(root);
+  clearAssetRoot(assetRoot);
+  clearEmojiImages(assetRoot);
 }
 
 // ── TeleBox: bridge avatarBuffer → avatarCanvas ───────────────────────
@@ -255,7 +277,7 @@ async function generateQuote(parm) {
   if (!parm) return { error: "query_empty" };
   if (!Array.isArray(parm.messages) || parm.messages.length < 1) return { error: "messages_empty" };
 
-  await ensureFonts();
+  await ensureFonts(parm.assetRoot);
 
   const botToken = parm.botToken || process.env.BOT_TOKEN;
   const quoteGenerate = new QuoteGenerate(botToken);
@@ -415,7 +437,7 @@ async function generateQuote(parm) {
     const canvasPic = createCanvas(canvasQuote.width + widthPadding, canvasQuote.height + heightPadding);
     const canvasPicCtx = canvasPic.getContext("2d");
 
-    const patternImage = await getPatternImage();
+    const patternImage = await getPatternImage(parm.assetRoot);
     const wp = wallpaperColors(background.colorOne);
     await drawPatternBackground(canvasPic, wp.center, wp.edge, patternImage, wp.patternAlpha);
 
@@ -442,7 +464,7 @@ async function generateQuote(parm) {
     const canvasPic = createCanvas(720, 1280);
     const canvasPicCtx = canvasPic.getContext("2d");
 
-    const patternImage = await getPatternImage();
+    const patternImage = await getPatternImage(parm.assetRoot);
     const storyWp = wallpaperColors(background.colorOne);
     await drawPatternBackground(canvasPic, storyWp.center, storyWp.edge, patternImage, storyWp.patternAlpha);
 
@@ -511,4 +533,4 @@ async function generateQuote(parm) {
   return { image: quoteImage, type, width, height, ext };
 }
 
-module.exports = { generateQuote, generate: generateQuote };
+module.exports = { generateQuote, generate: generateQuote, clearResources };

@@ -2,7 +2,7 @@
 
 const fs = require('fs')
 const path = require('path')
-const { registerFont, loadImage } = require('canvas')
+const { registerFont, loadImage } = require('../canvas')
 const { Telegram } = require('telegraf')
 const loadImageFromUrl = require('../image-load-url')
 const emojiDb = require('../emoji-db')
@@ -16,9 +16,9 @@ const { loadIcons, drawVoiceRow, drawDocumentRow, drawAudioRow, formatDuration }
 const { ColorContrast, lightOrDark, colorLuminance } = require('./color')
 const { NAME_COLORS_LIGHT, NAME_COLORS_DARK } = require('./constants')
 
-async function loadFonts () {
+async function loadFonts (assetRoot) {
   // TeleBox: CJK + fonts live under process.cwd()/assets/quote (downloaded by quote.ts)
-  const fontsDir = path.resolve(process.cwd(), 'assets', 'quote')
+  const fontsDir = assetRoot || path.resolve(process.cwd(), 'assets', 'quote')
 
   const explicitFonts = [
     { file: path.join(fontsDir, 'NotoSansCJK-Regular.ttc'), family: 'NotoSans' },

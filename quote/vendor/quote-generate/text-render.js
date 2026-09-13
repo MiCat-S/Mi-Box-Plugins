@@ -2,7 +2,7 @@
 // Render phase: draw laid-out text to a canvas.
 // Sync, no I/O. Takes a TextLayout + PreparedText and produces a canvas.
 
-const { createCanvas } = require('canvas')
+const { createCanvas } = require('../canvas')
 const { hexToRgb, normalizeColor } = require('./color')
 
 /**

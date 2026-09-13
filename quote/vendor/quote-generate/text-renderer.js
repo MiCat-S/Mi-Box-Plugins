@@ -26,7 +26,7 @@ async function drawMultilineText (text, entities, fontSize, fontColor, textX, te
   const prepared = await prepareText(text, entities, fontSize, emojiBrand, telegram)
 
   if (prepared.segments.length === 0) {
-    const { createCanvas } = require('canvas')
+    const { createCanvas } = require('../canvas')
     return createCanvas(1, 1)
   }
 

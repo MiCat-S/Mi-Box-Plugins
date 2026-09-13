@@ -1,4 +1,4 @@
-const { createCanvas } = require('canvas')
+const { createCanvas } = require('../canvas')
 
 // Draws the bubble path. When tailSize > 0, the bottom-left corner
 // becomes a tail: flat bottom extending left, rounded top curving up.

@@ -1,4 +1,4 @@
-const { createCanvas } = require('canvas')
+const { createCanvas } = require('../canvas')
 
 class ColorContrast {
   constructor () {
