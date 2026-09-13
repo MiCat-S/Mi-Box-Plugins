@@ -6,8 +6,9 @@ const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {artifactDir} = buildPlugin({id: 'yvlu', packageRoot: path.resolve(__dirname, '../yvlu'), entry: 'v2.ts'});
 const create = require(path.join(artifactDir, 'index.cjs')).default;
+const sharp = require(path.join(core, 'node_modules/sharp'));
 
-async function fixture(text, {deleteFails = false} = {}) {
+async function fixture(text, {deleteFails = false, rawText = text, aliases = false} = {}) {
   const payloads = [], sent = [], edits = [], logs = [];
   const controller = new AbortController();
   const parent = {id: 6, peerId: 'peer', message: 'parent text', entities: [], sender: {id: 3n, firstName: 'Parent'}};
@@ -31,14 +32,17 @@ async function fixture(text, {deleteFails = false} = {}) {
       },
       async withClient(operation) { return operation(client, controller.signal); },
     },
+    commands: aliases ? {parse(source) {return source.startsWith('.forge ') ? {prefix: '.', command: 'yvlu', args: ['f', source.slice(7)]} : undefined;}} : undefined,
     http: {async withResponse(_url, init, operation) {
       payloads.push(JSON.parse(init.body));
-      return operation(new Response(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      const png = await sharp({create: {width: 2, height: 2, channels: 4, background: '#000'}}).png().toBuffer();
+      return operation(new Response(png,
         {status: 200, headers: {'content-type': 'image/png'}}), controller.signal);
     }},
   };
   await create().commands.yvlu.handle({command: 'yvlu', prefix: '.', args: text.split(/\s+/).slice(1),
-    message: {id: 1, chatId: '1', outgoing: true, replyToId: 7, text, raw: {peerId: 'peer', entities: []}}}, context);
+    message: {id: 1, chatId: '1', outgoing: true, replyToId: 7, text, raw: {peerId: 'peer', message: rawText,
+      entities: rawText.includes('styled') ? [{className: 'MessageEntityBold', offset: rawText.indexOf('styled'), length: 6}] : []}}}, context);
   return {payload: payloads[0], sent, edits, logs};
 }
 
@@ -60,6 +64,12 @@ test('yvlu u/ur preserve the original text while replacing the sender with exact
   assert.equal(fake.payload.messages[0].text, 'original text');
   const withReply = await fixture('.yvlu ur @fake');
   assert.equal(withReply.payload.messages[0].replyMessage.text, 'partial parent');
+});
+
+test('yvlu fake text keeps raw alias content and rebases its entities', async () => {
+  const result = await fixture('.yvlu f styled text', {rawText: '.forge styled text', aliases: true});
+  assert.equal(result.payload.messages[0].text, 'styled text');
+  assert.deepEqual(result.payload.messages[0].entities[0], {offset: 0, length: 6, type: 'bold'});
 });
 
 test('yvlu keeps a successful fake quote when command cleanup fails', async () => {

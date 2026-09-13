@@ -30,7 +30,30 @@ function feedback(state: "working" | "success" | "error", title: string, detail?
   return ui.renderFeedback({state, title, ...(detail ? {detail} : {})});
 }
 
-export function parseQuote(invocation: CommandInvocation): QuoteOptions | undefined {
+function fakeMessage(invocation: CommandInvocation, context?: PluginContext): {text: string; entities: any[]} | undefined {
+  const raw = invocation.message.raw as any;
+  const source = typeof raw?.message === "string" ? raw.message : invocation.message.text;
+  const wanted = invocation.args.slice(1);
+  let offset: number | undefined;
+  if (context?.commands && wanted.length) {
+    const route = context.commands.parse(source);
+    if (route?.command === "yvlu") {
+      const body = source.slice(route.prefix.length);
+      const tokens = [...body.matchAll(/\S+/gu)];
+      const relative = tokens[tokens.length - wanted.length]?.index;
+      if (relative !== undefined) offset = route.prefix.length + relative;
+    }
+  }
+  if (offset === undefined) offset = invocation.message.text.match(/^\S+\s+fr?\s+/)?.[0].length;
+  if (offset === undefined) return;
+  const entities = (raw?.entities || []).filter((entity: any) => entity.offset + entity.length > offset)
+    .map((entity: any) => Object.assign(Object.create(Object.getPrototypeOf(entity)), entity, {
+      offset: Math.max(0, entity.offset - offset), length: entity.length - Math.max(0, offset - entity.offset),
+    }));
+  return {text: source.slice(offset), entities};
+}
+
+export function parseQuote(invocation: CommandInvocation, context?: PluginContext): QuoteOptions | undefined {
   const args = invocation.message.text.trim().split(/\s+/).slice(1);
   const sub = args[0];
   const result: QuoteOptions = {count: 1, includeReply: false, format: "webp"};
@@ -45,14 +68,8 @@ export function parseQuote(invocation: CommandInvocation): QuoteOptions | undefi
     result.includeReply = sub === "ur"; result.count = count(args[2]);
   } else if (["f", "fr"].includes(sub) && args[1]) {
     result.includeReply = sub === "fr";
-    const match = invocation.message.text.match(/^\S+\s+fr?\s+/);
-    if (!match) return undefined;
-    const offset = match[0].length;
-    const entities = ((invocation.message.raw as any)?.entities || []).filter((entity: any) => entity.offset + entity.length > offset)
-      .map((entity: any) => Object.assign(Object.create(Object.getPrototypeOf(entity)), entity, {
-        offset: Math.max(0, entity.offset - offset), length: entity.length - Math.max(0, offset - entity.offset),
-      }));
-    result.fakeText = {text: invocation.message.text.slice(offset), entities};
+    result.fakeText = fakeMessage(invocation, context);
+    if (!result.fakeText) return undefined;
   } else if (format(sub)) { result.format = (sub === "png" ? "image" : sub) as QuoteOptions["format"]; result.count = count(args[1]); }
   else return undefined;
   return result;
@@ -89,7 +106,7 @@ async function handle(invocation: CommandInvocation, ctx: PluginContext): Promis
       await edit(feedback("success", created ? "贴纸包已创建" : "贴纸已添加", `贴纸包：t.me/addstickers/${config.stickerSetShortName}`), true);
       return;
     }
-    const options = parseQuote(invocation);
+    const options = parseQuote(invocation, ctx);
     if (!options) { await edit(help(prefix), true); return; }
     if (["u", "ur"].includes(args[0])) {
       try {

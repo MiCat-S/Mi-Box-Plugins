@@ -1,6 +1,15 @@
 import type {PluginContext} from "telebox/sdk";
 import {native, UserError} from "./runtime";
 
+const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
+const MAX_IMAGE_PIXELS = 16 * 1024 * 1024;
+
+function bounded(buffer: Buffer): Buffer {
+  if (!buffer.length) throw new UserError("下载的媒体为空");
+  if (buffer.length > MAX_MEDIA_BYTES) throw new UserError("媒体超过 20 MiB 限制");
+  return buffer;
+}
+
 export function imageExt(buffer: Buffer): "webp" | "png" | "webm" {
   if (buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") return "webp";
   if (buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "png";
@@ -10,15 +19,23 @@ export function imageExt(buffer: Buffer): "webp" | "png" | "webm" {
 
 export async function downloadMediaBuffer(ctx: PluginContext, target: any): Promise<Buffer> {
   return ctx.files.withTemp(async (directory, signal) => {
-    const {readFile} = await import("node:fs/promises");
+    const {readFile, stat} = await import("node:fs/promises");
     const {join} = await import("node:path");
     signal.throwIfAborted();
     const output = join(directory, "media");
-    const result = await native(ctx, client => client.downloadMedia(target, {outputFile: output}));
+    const declared = target?.document?.size ?? target?.media?.document?.size;
+    if (declared !== undefined && BigInt(String(declared)) > BigInt(MAX_MEDIA_BYTES)) {
+      throw new UserError("媒体超过 20 MiB 限制");
+    }
+    const progressCallback = (downloaded: unknown) => {
+      signal.throwIfAborted();
+      if (BigInt(String(downloaded)) > BigInt(MAX_MEDIA_BYTES)) throw new UserError("媒体超过 20 MiB 限制");
+    };
+    const result = await native(ctx, client => client.downloadMedia(target, {outputFile: output, signal, progressCallback}));
     signal.throwIfAborted();
-    const buffer = Buffer.isBuffer(result) ? result : await readFile(output);
-    if (!buffer.length) throw new UserError("下载的媒体为空");
-    return buffer;
+    if (Buffer.isBuffer(result)) return bounded(result);
+    if ((await stat(output)).size > MAX_MEDIA_BYTES) throw new UserError("媒体超过 20 MiB 限制");
+    return bounded(await readFile(output, {signal}));
   });
 }
 
@@ -38,7 +55,7 @@ async function executable(ctx: PluginContext, name: string): Promise<string> {
 
 export async function convertVideo(ctx: PluginContext, buffer: Buffer, tgs: boolean): Promise<Buffer> {
   return ctx.files.withTemp(async (directory, signal) => {
-    const {writeFile, readFile} = await import("node:fs/promises");
+    const {writeFile, readFile, stat} = await import("node:fs/promises");
     const {join} = await import("node:path");
     const input = join(directory, tgs ? "input.tgs" : "input.video");
     const gif = join(directory, "input.gif"), output = join(directory, "output.webm");
@@ -55,11 +72,13 @@ export async function convertVideo(ctx: PluginContext, buffer: Buffer, tgs: bool
         throw new UserError("TGS 转换失败，请检查 python3 的 rlottie-python、Pillow 依赖和贴纸数据");
       }
     }
-    await ctx.processes.run(ffmpeg, ["-nostdin", "-v", "error", "-i", tgs ? gif : input,
-      "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "400k", "-auto-alt-ref", "0", "-an", "-y", output],
+    await ctx.processes.run(ffmpeg, ["-nostdin", "-v", "error", "-protocol_whitelist", "file", "-i", tgs ? gif : input,
+      "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "400k", "-auto-alt-ref", "0", "-an",
+      "-fs", String(MAX_MEDIA_BYTES), "-y", output],
     {signal, cwd: directory, env: {PATH: process.env.PATH}});
     signal.throwIfAborted();
-    return readFile(output);
+    if ((await stat(output)).size > MAX_MEDIA_BYTES) throw new UserError("媒体超过 20 MiB 限制");
+    return bounded(await readFile(output, {signal}));
   });
 }
 
@@ -78,23 +97,17 @@ export async function mediaData(ctx: PluginContext, message: any): Promise<{url:
 
 export async function avatar(ctx: PluginContext, entity: any): Promise<{url: string} | undefined> {
   if (!entity.photo || /PhotoEmpty/.test(entity.photo.className || "")) return undefined;
-  const {Api} = await import("teleproto");
-  const {returnBigInt} = await import("teleproto/Helpers.js");
-  const peer = await native(ctx, client => client.getInputEntity(entity));
   let buffer: Buffer | undefined;
   for (const big of [false, true]) {
     try {
-      const result: any = await native(ctx, client => client.invoke(new Api.upload.GetFile({
-        location: new Api.InputPeerPhotoFileLocation({peer: peer as any, photoId: entity.photo.photoId, big}),
-        offset: returnBigInt(0), limit: 512 * 1024, precise: true,
-      }), entity.photo.dcId));
-      if (Buffer.isBuffer(result?.bytes) && result.bytes.length) { buffer = result.bytes; break; }
+      const result = await native(ctx, client => client.downloadProfilePhoto(entity, {isBig: big, signal: ctx.signal}));
+      if (Buffer.isBuffer(result) && result.length) { buffer = bounded(result); break; }
     } catch { ctx.signal.throwIfAborted(); ctx.log.info("yvlu.avatar.download.failed", {big}); }
   }
   if (!buffer) return undefined;
   const sharp = (await import("sharp")).default;
   ctx.signal.throwIfAborted();
-  const png = await sharp(buffer).resize(256, 256, {fit: "cover", position: "centre"}).flatten({background: "#000000"}).png().toBuffer();
+  const png = await sharp(buffer, {limitInputPixels: MAX_IMAGE_PIXELS}).resize(256, 256, {fit: "cover", position: "centre"}).flatten({background: "#000000"}).png().toBuffer();
   ctx.signal.throwIfAborted();
   return {url: `data:image/png;base64,${png.toString("base64")}`};
 }
@@ -133,7 +146,16 @@ export async function generateQuote(ctx: PluginContext, data: unknown): Promise<
   }, {timeoutMs: 60000});
   if (result.status < 200 || result.status >= 300) throw new UserError(`quote-api HTTP ${result.status}`);
   if (!result.valid) throw new UserError("quote-api 返回类型异常");
-  return {buffer: result.buffer, ext: imageExt(result.buffer)};
+  const ext = imageExt(result.buffer);
+  if (ext !== "webm") {
+    const sharp = (await import("sharp")).default;
+    const metadata = await sharp(result.buffer, {limitInputPixels: MAX_IMAGE_PIXELS}).metadata();
+    if (!metadata.width || !metadata.height || metadata.width * metadata.height > MAX_IMAGE_PIXELS) {
+      throw new UserError("quote-api 图片尺寸异常");
+    }
+  }
+  ctx.signal.throwIfAborted();
+  return {buffer: result.buffer, ext};
 }
 
 export async function sendQuote(ctx: PluginContext, peer: any, replyTo: number, result: Awaited<ReturnType<typeof generateQuote>>): Promise<void> {
