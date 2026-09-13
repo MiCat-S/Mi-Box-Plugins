@@ -23,7 +23,9 @@ export function score(message:any,query:string){
 
 export async function channelVideos(client:TelegramClient,entity:any,linkedGroup:string|undefined,query:string,type:"search"|"kkp",
   isAd:(message:any)=>boolean,processedGroupIds:Set<string>,signal:AbortSignal):Promise<any[]>{
+  signal.throwIfAborted();
   const {Api}=await import("teleproto");
+  signal.throwIfAborted();
   const read=async(peer:any,options:any)=>{
     signal.throwIfAborted();
     const messages=await client.getMessages(peer,options);
@@ -38,7 +40,7 @@ export async function channelVideos(client:TelegramClient,entity:any,linkedGroup
   }
   if(linkedGroup){
     try{
-      const linked=await client.getEntity(linkedGroup);
+      signal.throwIfAborted();const linked=await client.getEntity(linkedGroup);signal.throwIfAborted();
       const groupMessages=await read(linked,{limit:100,search:query});
       const linkedVideos:any[]=[];
       for(const text of groupMessages){
