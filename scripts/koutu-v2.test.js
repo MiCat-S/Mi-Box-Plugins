@@ -18,13 +18,14 @@ async function fixture(t, options = {}) {
   const webp = await sharp(png).webp().toBuffer();
   const edits = [], sent = [], requests = [], logs = [], responses = [], targets = [];
   let downloads = 0;
+  let deletes = 0;
   const raw = {media: {}, photo: {}, id: 5};
   const reply = options.reply === false ? undefined : {id: 5, text: '', raw};
   const client = {
-    async *iterDownload() {downloads++; yield options.input ?? jpeg;},
-    async getInputEntity(target) {return target;},
+    async *iterDownload(_source, params) {downloads++; if (options.iterDownload) yield* options.iterDownload(params); else yield options.input ?? jpeg;},
+    async getInputEntity(target) {return options.getInputEntity ? options.getInputEntity(target) : target;},
     async downloadProfilePhoto(target) {targets.push(target); return jpeg;},
-    async sendFile(peer, value) {sent.push({peer, ...value});},
+    async sendFile(peer, value) {if (options.sendFile) await options.sendFile(peer, value); sent.push({peer, ...value});},
   };
   const host = new PluginHost({storageRoot: path.join(root, 'assets'), tempRoot: path.join(root, 'temp'),
     logger: {info(event) {logs.push(event);}, error(event) {logs.push(event);}},
@@ -39,9 +40,9 @@ async function fixture(t, options = {}) {
   await host.load(create());
   t.after(async () => {await host.shutdown(2000); await fs.rm(root, {recursive: true, force: true});});
   const run = (text, extra = {}) => host.dispatchPrimary({id: 1, text, chatId: '1', senderId: '1', outgoing: true,
-    raw: {peerId: 'peer', async delete() {if (options.cleanupFails) throw new Error('private failure');}}, topicId: 9, ...extra});
+    raw: {peerId: 'peer', async delete() {deletes++; if (options.cleanupFails) throw new Error('private failure');}}, topicId: 9, ...extra});
   const configure = () => run('.koutu set key test-key', {saved: true});
-  return {host, root, png, jpeg, webp, raw, reply, run, configure, edits, sent, requests, logs, responses, targets, get downloads() {return downloads;}};
+  return {host, root, png, jpeg, webp, raw, reply, run, configure, edits, sent, requests, logs, responses, targets, get downloads() {return downloads;}, get deletes() {return deletes;}};
 }
 
 test('koutu restricts key commands, masks settings and routes help without API calls', async t => {
@@ -207,4 +208,28 @@ test('koutu unload cancels HTTP, prevents late sends and drains the temporary di
   const report = await f.host.unload('koutu', 2000); await pending;
   assert.equal(report.completed, true); assert.equal(f.sent.length, 0);
   assert.deepEqual(await fs.readdir(path.join(f.root, 'temp', 'koutu')), []);
+});
+
+test('koutu unload aborts a hanging media download through its combined signal', async t => {
+  let started; const ready = new Promise(resolve => {started = resolve;});
+  const f = await fixture(t, {iterDownload: async function* (params) {started(); await new Promise((resolve, reject) => params.signal.addEventListener('abort', () => reject(params.signal.reason), {once: true}));}});
+  await f.configure(); const pending = f.run('.koutu'); await ready;
+  assert.equal((await f.host.unload('koutu', 2000)).completed, true); await pending;
+  assert.equal(f.requests.length, 0); assert.equal(f.sent.length, 0); assert.equal(f.deletes, 0);
+});
+
+test('koutu cancellation during avatar target resolution prevents profile download', async t => {
+  let started, release; const ready = new Promise(resolve => {started = resolve;}), gate = new Promise(resolve => {release = resolve;});
+  const f = await fixture(t, {reply: false, async getInputEntity() {started(); await gate; return 'late-target';}});
+  await f.configure(); const pending = f.run('.koutu', {raw: {peerId: 'peer', fromId: {className: 'PeerUser'}}});
+  await ready; const unloading = f.host.unload('koutu', 2000); release(); assert.equal((await unloading).completed, true); await pending;
+  assert.equal(f.targets.length, 0); assert.equal(f.requests.length, 0); assert.equal(f.deletes, 0);
+});
+
+test('koutu cancellation during upload prevents receipt deletion and late feedback', async t => {
+  let started, release; const ready = new Promise(resolve => {started = resolve;}), gate = new Promise(resolve => {release = resolve;});
+  const f = await fixture(t, {async sendFile() {started(); await gate;}}); await f.configure();
+  const pending = f.run('.koutu'); await ready; const before = f.edits.length, unloading = f.host.unload('koutu', 2000); release();
+  assert.equal((await unloading).completed, true); await pending;
+  assert.equal(f.deletes, 0); assert.equal(f.edits.length, before); assert.ok(!f.logs.includes('koutu_failed'));
 });

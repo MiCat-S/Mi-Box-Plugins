@@ -81,24 +81,30 @@ export async function selectInput(ctx: PluginContext, message: MessageEnvelope, 
     if (!/^image\//.test(mime) && !["video/mp4", "video/webm"].includes(mime)) throw new UserError("请回复图片、GIF、MP4 或 WebM");
     if (doc && BigInt(doc.size.toString()) > BigInt(MAX_BYTES)) throw new UserError("输入文件不能超过 20 MiB");
     bytes = await ctx.telegram.withClient(async (client, clientSignal) => {
+      const combined = AbortSignal.any([signal, clientSignal]);
       const chunks: Buffer[] = []; let total = 0;
-      for await (const chunk of client.iterDownload(source!, {})) {
-        signal.throwIfAborted(); clientSignal.throwIfAborted();
+      for await (const chunk of client.iterDownload(source!, {signal: combined})) {
+        combined.throwIfAborted();
         total += chunk.length;
         if (total > MAX_BYTES) throw new UserError("输入文件不能超过 20 MiB");
         chunks.push(Buffer.from(chunk));
       }
+      combined.throwIfAborted();
       return Buffer.concat(chunks, total);
     });
   }
   if (!bytes.length) {
-    bytes = await ctx.telegram.withClient(async client => {
+    bytes = await ctx.telegram.withClient(async (client, clientSignal) => {
+      const combined = AbortSignal.any([signal, clientSignal]);
       const {Api} = await import("teleproto");
+      combined.throwIfAborted();
       const command = message.raw as Api.Message | undefined;
       const target = source?.senderId ? await source.getInputSender()
         : command?.fromId ? await client.getInputEntity(command.fromId) : new Api.InputPeerSelf();
+      combined.throwIfAborted();
       if (!target) throw new UserError("无法取得回复者头像");
       const result = await client.downloadProfilePhoto(target, {isBig: false});
+      combined.throwIfAborted();
       if (!Buffer.isBuffer(result) || !result.length) throw new UserError("该用户没有可用头像");
       return result;
     });
@@ -187,13 +193,17 @@ export default function createKoutu() {
           await validateImage(output);
           signal.throwIfAborted();
           await ctx.telegram.withClient(async (client, clientSignal) => {
-            clientSignal.throwIfAborted();
+            const combined = AbortSignal.any([signal, clientSignal]);
+            combined.throwIfAborted();
             const {CustomFile} = await import("teleproto/client/uploads.js");
+            combined.throwIfAborted();
             const raw = i.message.raw as Api.Message;
             await client.sendFile(raw.peerId!, {file: new CustomFile("koutu.webp", output.length, "", output),
               replyTo: selected.reply?.id, topMsgId: i.message.topicId});
+            combined.throwIfAborted();
           });
         });
+        ctx.signal.throwIfAborted();
         try {await (i.message.raw as Api.Message).delete({revoke: true});}
         catch {ctx.log.info("koutu_receipt_cleanup_failed");}
       } catch (error) {
