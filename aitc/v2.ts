@@ -1,15 +1,30 @@
-import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type CommandInvocation, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, ui, type CommandDefinition, type CommandInvocation, type PluginContext} from "telebox/sdk";
+import {readFile, stat} from "node:fs/promises";
 
-type Config = {apiKey: string; apiUrl: string; model: string; prompt: string; prompts: Record<string, string>; temperature: number; aiMigrated?: boolean};
+type Config = {apiKey: string; apiUrl: string; model: string; prompt: string; prompts: Record<string, string>; temperature: number; aiMigrated?: boolean; sqliteMigrated?: boolean; providerMigrated?: boolean};
+
+/** Original plugin default (the V2 short default had replaced this). */
+const ORIGINAL_DEFAULT_PROMPT =
+  "You are an expert in Chinese-English translation, translating user input from Chinese to colloquial English. Users can send content that needs to be translated to the assistant, and the assistant will provide the corresponding translation results, ensuring that they conform to Chinese language conventions. You can adjust the tone and style, taking into account the cultural connotations and regional differences of certain words. As a translator, you need to translate the original text into a translation that meets the standards of accuracy and elegance. Only output the translated content!!!";
+const DEFAULT_API_URL = "https://api.openai.com";
+const DEFAULT_MODEL = "gpt-4o-mini";const DEFAULT_TEMPERATURE = 0.2;
+
 const defaults: Config = {
   apiKey: "",
   apiUrl: "",
   model: "",
-  prompt: "Translate the user's Chinese text into natural colloquial English. Preserve meaning and tone. Output only the translation.",
+  prompt: ORIGINAL_DEFAULT_PROMPT,
   prompts: {},
-  temperature: 0.2, aiMigrated: true,
+  temperature: DEFAULT_TEMPERATURE, aiMigrated: false, sqliteMigrated: false, providerMigrated: false,
 };
-const RESERVED = new Set(["apikey", "key", "api", "url", "model", "prompt", "temp", "temperature", "info", "spn"]);
+
+/** Original reserved aliases plus every declared subcommand name/alias, help/h and the command id. */
+const RESERVED = new Set([
+  "apikey", "key", "api", "url", "model", "prompt", "temp", "temperature", "info", "spn",
+  "_set_key", "_set_api", "_set_url", "_set_model", "_set_prompt", "_set_temperature", "_info",
+  "help", "h", "aitc",
+]);
+
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
 function store(context: PluginContext) { return context.storage.json<Config>("config.json", defaults); }
@@ -20,22 +35,191 @@ function endpoint(base: string): URL {
   value.search = ""; value.hash = "";
   return value;
 }
-async function migrateAi(context: PluginContext): Promise<void> {
-  const current = await store(context).read();
-  if (current.aiMigrated) return;
-  if (!current.apiKey) {
-    await store(context).update(value => ({...value, apiUrl: "", model: "", aiMigrated: true}));
-    return;
-  }
-  if (!context.services.available("ai", "import_provider")) return;
-  let target: URL;
-  try { target = endpoint(current.apiUrl); } catch { return; }
-  if (!current.model.trim()) return;
-  target.pathname = target.pathname.replace(/\/chat\/completions$/, "");
-  await context.services.call("ai", "import_provider", {tag: "aitc", url: target.toString(), key: current.apiKey,
-    type: "openai-compatible", models: {chat: current.model}, select: ["chat"]}, context.signal);
-  await store(context).update(value => ({...value, apiKey: "", apiUrl: "", model: "", aiMigrated: true}));
+function migrateBase(apiUrl: string): string {
+  const value = new URL(apiUrl);
+  if (!/^https?:$/.test(value.protocol) || value.username || value.password) throw new Error("Invalid API URL");
+  let pathname = value.pathname.replace(/\/+$/, "")
+    .replace(/\/v1\/chat\/completions$/, "").replace(/\/chat\/completions$/, "");
+  // Mirror the ai plugin's openai base normalization so a retry matches the stored provider.
+  if (pathname === "" || pathname === "/") pathname = "/v1";
+  value.pathname = pathname;
+  value.search = ""; value.hash = "";
+  return value.toString().replace(/\/+$/, "");
 }
+
+function decodeCodePoint(value: number): string | undefined {
+  // Reject non-integers, out-of-range values and lone surrogates; the caller keeps the literal.
+  if (!Number.isInteger(value) || value < 0 || value > 0x10FFFF) return undefined;
+  if (value >= 0xD800 && value <= 0xDFFF) return undefined;
+  return String.fromCodePoint(value);
+}
+
+const decodeHtmlEntities = (text: string): string =>
+  text
+    .replace(/&#(\d+);/g, (match, code) => decodeCodePoint(Number.parseInt(code, 10)) ?? match)
+    .replace(/&#x([0-9a-f]+);/gi, (match, code) => decodeCodePoint(Number.parseInt(code, 16)) ?? match)
+    .replace(/&(amp|lt|gt|quot|apos|nbsp);/gi, (match, entity) => {
+      switch (entity.toLowerCase()) {
+        case "amp": return "&";
+        case "lt": return "<";
+        case "gt": return ">";
+        case "quot": return "\"";
+        case "apos": return "'";
+        case "nbsp": return " ";
+        default: return match;
+      }
+    });
+
+/** Decode entities, strip control characters, normalize CRLF, never throw on invalid code points. */
+function sanitizePlainText(text: string): string {
+  return decodeHtmlEntities(String(text ?? ""))
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/\r\n/g, "\n");
+}
+
+/** Raw tail after `count` leading whitespace-separated tokens, preserving internal spacing/newlines. */
+function stripTokens(text: string, count: number): string {
+  let rest = String(text ?? "").trimStart();
+  for (let index = 0; index < count; index++) {
+    const match = /^\S+\s*/.exec(rest);
+    if (!match) return "";
+    rest = rest.slice(match[0].length);
+  }
+  return rest;
+}
+
+interface LegacyConfig {apiKey?: string; apiUrl?: string; model?: string; prompt?: string; prompts?: Record<string, string>; temperature?: number}
+
+/** Only a genuinely missing file means “no legacy DB”; corrupt/unreadable rows are retryable errors. */
+async function readLegacyConfig(context: PluginContext): Promise<LegacyConfig | undefined> {
+  let file: string;
+  try { file = context.files.dataPath("aitc_config.db"); } catch { throw new Error("LEGACY_PATH"); }
+  let info;
+  try { info = await stat(file); }
+  catch (error) { if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined; throw new Error("LEGACY_STAT"); }
+  if (!info.isFile()) throw new Error("LEGACY_NOT_FILE");
+  let rows: {key: string; value: string}[];
+  try {
+    rows = await context.storage.sqlite("aitc_config.db", {mustExist: true}).read(connection =>
+      connection.prepare("SELECT key, value FROM config").all() as {key: string; value: string}[]);
+  } catch (error) {
+    if (context.signal.aborted) throw error;
+    throw new Error("LEGACY_UNREADABLE");
+  }
+  const map = new Map(rows.filter(row => row && typeof row.key === "string" && typeof row.value === "string")
+    .map(row => [row.key, row.value] as const));
+  const result: LegacyConfig = {};
+  const key = map.get("aitc_api_key"); if (typeof key === "string" && key.length) result.apiKey = key;
+  const url = map.get("aitc_api_url"); if (typeof url === "string" && url.length) result.apiUrl = url;
+  const model = map.get("aitc_model"); if (typeof model === "string" && model.length) result.model = model;
+  const prompt = map.get("aitc_prompt"); if (typeof prompt === "string" && prompt.length) result.prompt = prompt;
+  const promptsRaw = map.get("aitc_prompts");
+  if (typeof promptsRaw === "string" && promptsRaw) {
+    try {
+      const parsed = JSON.parse(promptsRaw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const prompts: Record<string, string> = {};
+        for (const [name, value] of Object.entries(parsed)) if (typeof value === "string") prompts[name] = value;
+        result.prompts = prompts;
+      }
+    } catch { /* ignore malformed legacy prompt map */ }
+  }
+  const temperatureRaw = map.get("aitc_temperature");
+  if (typeof temperatureRaw === "string" && temperatureRaw.trim()) {
+    const value = Number(temperatureRaw.trim());
+    if (Number.isFinite(value) && value >= 0 && value <= 2) result.temperature = value;
+  }
+  return result;
+}
+
+/** Original JSON keys, so field presence (not value equality) decides whether the user set a field. */
+async function readRawJson(context: PluginContext): Promise<{present: Set<string>; values: Record<string, unknown>} | undefined> {
+  let file: string;
+  try { file = context.files.dataPath("config.json"); } catch { return undefined; }
+  try {
+    const parsed = JSON.parse(await readFile(file, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    return {present: new Set(Object.keys(parsed)), values: parsed as Record<string, unknown>};
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+    throw error; // corrupt JSON is retryable, never treated as “no config”
+  }
+}
+
+/** Removes only the legacy secret key; other rows, values and updated_at are preserved. */
+async function eraseLegacyKey(context: PluginContext): Promise<void> {
+  await context.storage.sqlite("aitc_config.db", {mustExist: true}).transaction(connection => {
+    connection.prepare("DELETE FROM config WHERE key = ?").run("aitc_api_key");
+  });
+}
+
+/**
+ * Legacy migration state machine.
+ * - `sqliteMigrated` guards the non-secret SQLite fields (once, snapshot-based).
+ * - `providerMigrated` guards the central import and the SQLite secret erase.
+ * The old `aiMigrated` flag never skips an unprocessed SQLite database.
+ */
+async function migrateLegacy(context: PluginContext): Promise<void> {
+  // Completion is checked first so a finished migration never touches the legacy DB again;
+  // a later corrupt/blocked DB cannot fail activation after the one-time migration.
+  const initial = await store(context).read();
+  if (initial.sqliteMigrated && initial.providerMigrated) return;
+  const legacy = await readLegacyConfig(context);
+  const raw = await readRawJson(context);
+  const present = raw?.present ?? new Set<string>();
+  const legacyKey = (legacy?.apiKey ?? "").trim();
+  const initialPrompt = initial.prompt;
+  const initialTemperature = initial.temperature;
+
+  // 1. Non-secret fields. Concurrent writers win: a field changed since our snapshot is preserved,
+  // and the JSON key presence captured before any write still decides the original priority.
+  await store(context).update(value => {
+    if (value.sqliteMigrated) return value;
+    const patch: Partial<Config> = {};
+    if (legacy) {
+      if (!present.has("prompt") && value.prompt === initialPrompt && legacy.prompt) patch.prompt = legacy.prompt;
+      if (legacy.prompts && Object.keys(legacy.prompts).length) patch.prompts = {...legacy.prompts, ...value.prompts};
+      if (!present.has("temperature") && value.temperature === initialTemperature && legacy.temperature !== undefined) patch.temperature = legacy.temperature;
+    }
+    return {...value, ...patch, sqliteMigrated: true};
+  });
+
+  // 2. Provider migration: import into central ai, erase the SQLite secret, then mark done.
+  const current = await store(context).read();
+  if (current.providerMigrated) return;
+  const jsonKey = typeof raw?.values.apiKey === "string" ? String(raw.values.apiKey).trim() : "";
+  const jsonSource = jsonKey ? {key: jsonKey, url: current.apiUrl || DEFAULT_API_URL, model: current.model || DEFAULT_MODEL} : undefined;
+  const legacySource = legacyKey ? {key: legacyKey, url: legacy?.apiUrl || DEFAULT_API_URL, model: legacy?.model || DEFAULT_MODEL} : undefined;
+  if (!jsonSource && !legacySource) { await store(context).update(value => value.providerMigrated ? value : ({...value, providerMigrated: true})); return; }
+  if (!context.services.available("ai", "import_provider")) return; // retry once ai is installed
+  const importProvider = async (source: {key: string; url: string; model: string}, tag: string, select: string[]): Promise<void> => {
+    const url = migrateBase(source.url);
+    const model = source.model.trim() || DEFAULT_MODEL;
+    await context.services.call("ai", "import_provider", {tag, url, key: source.key,
+      type: "openai-compatible", models: {chat: model}, select}, context.signal);
+  };
+  try {
+    if (jsonSource) await importProvider(jsonSource, "aitc", ["chat"]);
+    // A legacy-only DB is the primary provider; a differing legacy provider is preserved
+    // as its own central config instead of being silently dropped.
+    if (legacySource && !jsonSource) await importProvider(legacySource, "aitc", ["chat"]);
+    else if (legacySource && jsonSource && !sameProvider(jsonSource, legacySource)) await importProvider(legacySource, "aitc-legacy", []);
+  } catch (error) {
+    if (context.signal.aborted) throw error;
+    return; // keep the secret for a later retry
+  }
+  if (legacyKey) {
+    try { await eraseLegacyKey(context); }
+    catch (error) { if (context.signal.aborted) throw error; return; }
+  }
+  await store(context).update(value => ({...value, apiKey: "", apiUrl: "", model: "", providerMigrated: true}));
+}
+
+function sameProvider(a: {key: string; url: string; model: string}, b: {key: string; url: string; model: string}): boolean {
+  try { return a.key === b.key && (a.model.trim() || DEFAULT_MODEL) === (b.model.trim() || DEFAULT_MODEL) && migrateBase(a.url) === migrateBase(b.url); }
+  catch { return false; }
+}
+
 function validateConfig(current: Config, patch: Record<string, unknown>): Config {
   const next: Config = {...current, prompts: {...current.prompts}};
   if (patch.apiKey !== undefined) {
@@ -74,6 +258,14 @@ function validateConfig(current: Config, patch: Record<string, unknown>): Config
 export default function createAitc() {
   const edit = (context: PluginContext, invocation: CommandInvocation, text: string, html = true) =>
     context.telegram.edit(invocation.message, text, html ? {parseMode: "html", linkPreview: false} : {linkPreview: false});
+  const sendPaged = async (context: PluginContext, invocation: CommandInvocation, html: string): Promise<void> => {
+    const pages = await ui.renderRichText(html, ui.PAGE_LABEL_RESERVE);
+    const usable = pages.length ? pages : [html];
+    await context.telegram.edit(invocation.message, usable[0], {parseMode: "html", linkPreview: false});
+    for (let index = 1; index < usable.length; index++) {
+      await context.telegram.reply(invocation.message, `${ui.pageLabel(index, usable.length)}\n${usable[index]}`, {parseMode: "html", linkPreview: false});
+    }
+  };
   const guard = (run: (invocation: CommandInvocation, context: PluginContext) => Promise<void>) =>
     async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
       try { await run(invocation, context); }
@@ -84,27 +276,31 @@ export default function createAitc() {
       }
     };
   const setString = (field: "prompt", missing: string, success: string) => async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
-    const rest = invocation.args.join(" ").trim();
-    if (!rest) { await edit(context, invocation, missing, false); return; }
-    await store(context).update(current => validateConfig(current, {[field]: rest}));
+    const value = stripTokens(invocation.message.text ?? "", 2);
+    if (!value.trim()) { await edit(context, invocation, missing, false); return; }
+    await store(context).update(current => validateConfig(current, {[field]: value}));
     await edit(context, invocation, success, false);
   };
   const setTemperature = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
-    const rest = invocation.args.join(" ").trim();
-    const value = Number(rest);
-    if (!rest || !Number.isFinite(value) || value < 0 || value > 2) { await edit(context, invocation, "温度必须是 0 到 2 之间的数字", false); return; }
+    const raw = stripTokens(invocation.message.text ?? "", 2).trim();
+    if (!/^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(raw)) { await edit(context, invocation, "无效的温度值，请输入数字", false); return; }
+    const value = Number(raw);
+    if (value < 0 || value > 2) { await edit(context, invocation, "温度范围需在 0-2 之间", false); return; }
     await store(context).update(current => validateConfig(current, {temperature: value}));
     await edit(context, invocation, "温度已更新", false);
   };
   const setPreset = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
-    const name = invocation.args[0]?.toLowerCase() ?? "";
-    const value = invocation.args.slice(1).join(" ").trim();
+    const subcommandValue = stripTokens(invocation.message.text ?? "", 2);
+    const aliasMatch = /^\S+/.exec(subcommandValue.trimStart());
+    const aliasToken = aliasMatch?.[0] ?? "";
+    const value = subcommandValue.trimStart().slice(aliasToken.length).trim();
+    const name = aliasToken.toLowerCase();
     if (!/^[a-z0-9_-]{1,32}$/.test(name) || RESERVED.has(name) || !value) { await edit(context, invocation, "Prompt 预设需要有效名称和内容", false); return; }
     await store(context).update(current => validateConfig(current, {prompts: {...current.prompts, [name]: value}}));
-    await edit(context, invocation, `Prompt「${escape(name)}」已保存`);
+    await edit(context, invocation, `Prompt「${escape(aliasToken)}」已保存`);
   };
   const info = async (invocation: CommandInvocation, context: PluginContext): Promise<void> => {
-    await migrateAi(context);
+    await migrateLegacy(context);
     const config = await store(context).read();
     const names = Object.keys(config.prompts).sort();
     let selection = "请先安装并配置 ai 插件";
@@ -112,7 +308,7 @@ export default function createAitc() {
       const selected = await context.services.call<{chat?: {tag?: string; model?: string}}>("ai", "selection", null, context.signal);
       selection = selected.chat?.tag && selected.chat.model ? `${selected.chat.tag} / ${selected.chat.model}` : "请在 ai 插件中设置聊天模型";
     }
-    await edit(context, invocation, `<b>AITC 配置</b>\nAI：<code>${escape(selection)}</code>\n温度：<code>${config.temperature}</code>\n默认 Prompt：${escape(config.prompt)}\n预设：${names.length ? names.map(name => `<code>${escape(name)}</code>`).join(" · ") : "未保存"}`);
+    await sendPaged(context, invocation, `<b>AITC 配置</b>\nAI：<code>${escape(selection)}</code>\n温度：<code>${config.temperature}</code>\n默认 Prompt：${escape(config.prompt)}\n预设：${names.length ? names.map(name => `<code>${escape(name)}</code>`).join(" · ") : "未保存"}`);
   };
   const centralConfig = async (invocation: CommandInvocation, context: PluginContext): Promise<void> =>
     edit(context, invocation, `供应商与模型由 ai 插件统一管理，请使用 ${invocation.prefix}ai config 和 ${invocation.prefix}ai model chat。`, false);
@@ -137,26 +333,30 @@ export default function createAitc() {
       info: {aliases: ["_info"], description: "查看当前配置", args: "", examples: [{args: "info"}], handle: guard(info)},
     },
     async handle(invocation, context) {
-      const first = invocation.args[0]?.toLowerCase() ?? "";
-      const rest = invocation.args.slice(1).join(" ").trim();
-      if (first === "help" || first === "h" || (!first && invocation.message.replyToId === undefined)) {
+      const text = invocation.message.text ?? "";
+      const rest = stripTokens(text, 1);
+      const firstToken = (/^\S+/.exec(rest.trimStart())?.[0] ?? "").toLowerCase();
+      if (firstToken === "help" || firstToken === "h" || (!rest.trim() && invocation.message.replyToId === undefined)) {
         await edit(context, invocation, renderCommandHelp("aitc", aitc, {prefix: invocation.prefix}), true); return;
       }
       try {
-        if (first.startsWith("_")) { await edit(context, invocation, "未知配置命令", false); return; }
+        if (firstToken.startsWith("_")) { await edit(context, invocation, "未知配置命令", false); return; }
         const config = await store(context).read();
         let prompt = config.prompt;
-        let input = invocation.args.join(" ").trim();
-        if (config.prompts[first]) { prompt = config.prompts[first]!; input = rest; }
-        if (!input && invocation.message.replyToId !== undefined) input = (await context.telegram.getReply(invocation.message))?.text.trim() ?? "";
-        if (!input) { await edit(context, invocation, "请提供文本或回复一条文字消息", false); return; }
+        let input = rest;
+        if (config.prompts[firstToken]) {
+          prompt = config.prompts[firstToken]!;
+          input = rest.trimStart().slice((/^\S+/.exec(rest.trimStart())?.[0] ?? "").length);
+        }
+        if (!input.trim() && invocation.message.replyToId !== undefined) input = ((await context.telegram.getReply(invocation.message))?.text ?? "").trim();
+        if (!input.trim()) { await edit(context, invocation, "请提供文本或回复一条文字消息", false); return; }
         if (input.length > 50_000) { await edit(context, invocation, "输入文本过长", false); return; }
-        await migrateAi(context);
+        await migrateLegacy(context);
         if (!context.services.available("ai", "chat")) { await edit(context, invocation, "请先安装并配置 ai 插件", false); return; }
         await edit(context, invocation, "正在请求…", false);
         const content = await context.services.call<string>("ai", "chat", {text: input, systemPrompt: prompt, temperature: config.temperature}, context.signal);
         if (typeof content !== "string" || !content.trim()) throw new Error("Empty output");
-        await edit(context, invocation, content.trim(), false);
+        await sendPaged(context, invocation, ui.text(sanitizePlainText(content)));
       } catch {
         if (context.signal.aborted) return;
         context.log.error("aitc_failed");
@@ -174,9 +374,9 @@ export default function createAitc() {
         {key: "prompt", label: "默认 Prompt", type: "textarea", required: true},
         {key: "prompts", label: "Prompt 预设", type: "prompt-map"},
       ],
-      async getValues() { const value = await store(context).read(); return {temperature:value.temperature, prompt:value.prompt, prompts:value.prompts}; },
+      async getValues() { const value = await store(context).read(); return {temperature: value.temperature, prompt: value.prompt, prompts: value.prompts}; },
       setValues: async patch => { await store(context).update(current => validateConfig(current, patch)); },
     }),
-    setup: migrateAi,
+    setup: migrateLegacy,
   });
 }
