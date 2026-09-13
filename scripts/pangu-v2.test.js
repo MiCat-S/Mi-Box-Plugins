@@ -49,7 +49,8 @@ function listenerFixture(patch = {}) {
   let data = {chats: {}, globalMode: true, whitelist: [], blacklist: [],
     stats: {formattedMessages: 0, lastFormatted: 0}, ...patch};
   const edits = [];
-  const ctx = {telegram: {
+  const logs = [];
+  const ctx = {signal: new AbortController().signal, log: {error: event => logs.push(event)}, telegram: {
     async edit(message, text) {edits.push({message, text});},
     async reply() {assert.fail('automatic formatting must edit, never reply');},
   }, storage: {json: () => ({
@@ -57,7 +58,7 @@ function listenerFixture(patch = {}) {
     async update(fn) {data = fn(structuredClone(data)); return data;},
   })}};
   const listener = create().listeners[0];
-  return {edits, ctx, data: () => data, listener,
+  return {edits, logs, ctx, data: () => data, listener,
     run: extra => listener.handle({id: 1, chatId: '1', senderId: 'owner',
       text: '中文ABC', outgoing: true, ...extra}, ctx)};
 }
@@ -91,7 +92,8 @@ test('pangu explicit off overrides global and whitelist overrides other switches
 test('pangu failed edits do not increment formatting statistics', async () => {
   const f = listenerFixture();
   f.ctx.telegram.edit = async () => {throw new Error('edit failed');};
-  await assert.rejects(f.run({}), /edit failed/);
+  await f.run({});
+  assert.deepEqual(f.logs, ['pangu_listener_edit_failed']);
   assert.equal(f.data().stats.formattedMessages, 0);
 });
 
@@ -120,7 +122,7 @@ async function migrationFixture(t, legacy, current) {
   const storage = {json: (file, defaults) => root.json('pangu', file, defaults)};
   if (legacy) await storage.json('config.json', {}).update(() => legacy);
   if (current) await storage.json('data.json', {}).update(() => current);
-  return {ctx: {storage}, db: storage.json('data.json', {}), legacy: storage.json('config.json', {})};
+  return {ctx: {signal: new AbortController().signal, storage}, db: storage.json('data.json', {}), legacy: storage.json('config.json', {})};
 }
 
 test('pangu imports legacy switches, lists, nullable timestamp and metadata once', async t => {

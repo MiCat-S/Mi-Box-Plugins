@@ -1,6 +1,5 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext, type CommandInvocation, type MessageEnvelope} from "telebox/sdk";
-const help = `<b>盘古之白</b>\n<code>pangu</code> 当前状态\n<code>pangu 文本</code> 格式化中英文间距\n<code>pangu on/off</code> 当前会话开关\n<code>pangu reset</code> 当前会话恢复跟随全局\n<code>pangu global on/off</code> 全局开关\n<code>pangu whitelist add/remove/list</code> 白名单\n<code>pangu blacklist add/remove/list</code> 黑名单\n<code>pangu stats</code> 统计`;
+import {definePlugin, ui, type PluginContext, type CommandInvocation, type MessageEnvelope} from "telebox/sdk";
 type Data = {legacyImported?: boolean; chats: Record<string, boolean>; globalMode: boolean; whitelist: string[]; blacklist: string[]; stats: {formattedMessages: number; lastFormatted: number | null}};
 const normalize = (data: Partial<Data>): Data => ({
   chats: {}, globalMode: false, whitelist: [], blacklist: [], ...data,
@@ -39,6 +38,8 @@ function spacing(input: string): string {
     return part;
   }).join("");
 }
+const active=(data:Data,id:string)=>data.whitelist.length>0?data.whitelist.includes(id):!data.blacklist.includes(id)&&(data.chats[id]??data.globalMode);
+function source(i:CommandInvocation){const raw=i.message.raw as {message?:unknown}|undefined;const original=typeof raw?.message==="string"?raw.message:i.message.text;const body=original.slice(i.prefix.length).trimStart();for(let n=0;n<body.length;n++){if(n&& !/\s/u.test(body[n-1]!))continue;const tail=body.slice(n).trimStart(),normal=tail.replace(/\s+/gu," ").trim(),canonical=i.args.join(" ");if(normal&&(canonical===normal||canonical.endsWith(` ${normal}`))){const injected=canonical.slice(0,canonical.length-normal.length).trimEnd();return injected?`${injected} ${tail}`:tail;}}return i.args.join(" ");}
 export default function createPangu() {
   const command = async (invocation: CommandInvocation, ctx: PluginContext) => {
     const args = invocation.args;
@@ -46,9 +47,7 @@ export default function createPangu() {
     if (!sub) {
       const data = await store(ctx).read();
       const chat = data.chats[invocation.message.chatId];
-      const active = data.whitelist.length ? data.whitelist.includes(invocation.message.chatId) :
-        !data.blacklist.includes(invocation.message.chatId) && (chat ?? data.globalMode);
-      await ctx.telegram.edit(invocation.message, `盘古之白\n当前生效: ${active ? "开启" : "关闭"}\n会话设置: ${chat === undefined ? "跟随全局" : chat ? "开启" : "关闭"}\n全局模式: ${data.globalMode ? "开启" : "关闭"}\n已格式化: ${data.stats.formattedMessages}`); return;
+      await ctx.telegram.edit(invocation.message, `盘古之白\n当前生效: ${active(data,invocation.message.chatId) ? "开启" : "关闭"}\n会话设置: ${chat === undefined ? "跟随全局" : chat ? "开启" : "关闭"}\n全局模式: ${data.globalMode ? "开启" : "关闭"}\n已格式化: ${data.stats.formattedMessages}`); return;
     }
     if (sub === "reset") {
       await store(ctx).update(data => {
@@ -66,7 +65,7 @@ export default function createPangu() {
     if (sub === "global" || sub === "g") {
       const db = store(ctx);
       const value = args[1]?.toLowerCase();
-      if (value !== "on" && value !== "off") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
+      if (value !== "on" && value !== "off") { await ctx.telegram.edit(invocation.message, renderPluginHelp(invocation.prefix), {parseMode:"html"}); return; }
       await db.update(data => ({...data, globalMode: value === "on"}));
       await ctx.telegram.edit(invocation.message, `全局格式化已${value === "on" ? "开启" : "关闭"}`); return;
     }
@@ -79,8 +78,8 @@ export default function createPangu() {
       const db = store(ctx);
       const target = sub.startsWith("white") || sub === "wl" ? "whitelist" : "blacklist";
       const action = args[1]?.toLowerCase();
-      if (!["add", "remove", "list"].includes(action)) { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
-      if (action === "list") { const data = await db.read(); await ctx.telegram.edit(invocation.message, `${target}: ${(data[target] as string[]).join(", ") || "空"}`); return; }
+      if (!["add", "remove", "list"].includes(action)) { await ctx.telegram.edit(invocation.message, renderPluginHelp(invocation.prefix), {parseMode:"html"}); return; }
+      if (action === "list") { const data = await db.read(),items=data[target] as string[];const pages=await ui.renderDocument({title:target,sections:[ui.section(items.length?items.map((id,index)=>ui.text(`${index+1}. ${id}`)):[ui.text("空")])]});const delivery=await ui.deliverPages(pages,ctx.signal,(page,index)=>index?ctx.telegram.reply(invocation.message,page,{parseMode:"html"}):ctx.telegram.edit(invocation.message,page,{parseMode:"html"}));if(delivery.interrupted){ctx.log.error("pangu_list_delivery_failed");if(delivery.published)try{await ctx.telegram.reply(invocation.message,ui.interruptedNotice(delivery));}catch{ctx.log.error("pangu_interrupted_notice_failed");}}return; }
       const chatId = invocation.message.chatId;
       await db.update(data => {
         const list = [...data[target]];
@@ -91,8 +90,8 @@ export default function createPangu() {
       });
       await ctx.telegram.edit(invocation.message, `${target === "whitelist" ? "白名单" : "黑名单"}已更新`); return;
     }
-    const text = invocation.message.text?.replace(/^\S+\s*/, "") ?? args.join(" ");
-    if (!text || sub === "help" || sub === "h") { await ctx.telegram.edit(invocation.message, help, {parseMode:"html"}); return; }
+    const text = source(invocation);
+    if (!text || sub === "help" || sub === "h") { await ctx.telegram.edit(invocation.message, renderPluginHelp(invocation.prefix), {parseMode:"html"}); return; }
     await format(ctx, invocation.message, text);
   };
   return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "pangu", description: "格式化中英文间距",
@@ -114,15 +113,11 @@ export default function createPangu() {
     handle: async (message, ctx) => {
       if (!message.text.trim() || !(message.outgoing || message.saved)) return;
       const data = await store(ctx).read();
-      if (data.whitelist.length > 0) {
-        if (!data.whitelist.includes(message.chatId)) return;
-      } else {
-        if (data.blacklist.includes(message.chatId)) return;
-        if (!(data.chats[message.chatId] ?? data.globalMode)) return;
-      }
+      if (!active(data,message.chatId)) return;
       const changed = spacing(message.text);
       if (changed === message.text) return;
-      await ctx.telegram.edit(message, changed);
+      try{await ctx.telegram.edit(message, changed);}catch{if(!ctx.signal.aborted)ctx.log.error("pangu_listener_edit_failed");return;}
+      ctx.signal.throwIfAborted();
       await store(ctx).update(current => ({...current, stats: {...current.stats, formattedMessages: current.stats.formattedMessages + 1, lastFormatted: Date.now()}}));
     },
   }], commands: {
@@ -138,9 +133,6 @@ async function format(ctx: PluginContext, message: MessageEnvelope, text: string
     page += escaped;
   }
   if (page) pages.push(page);
-  for (const [index, content] of pages.entries()) {
-    ctx.signal.throwIfAborted();
-    if (index === 0) await ctx.telegram.edit(message, content, {parseMode:"html"});
-    else await ctx.telegram.reply(message, content, {parseMode:"html"});
-  }
+  const delivery=await ui.deliverPages(pages,ctx.signal,(content,index)=>index?ctx.telegram.reply(message,content,{parseMode:"html"}):ctx.telegram.edit(message,content,{parseMode:"html"}));
+  if(delivery.interrupted){ctx.log.error("pangu_result_delivery_failed");if(!delivery.published)throw delivery.error;try{await ctx.telegram.reply(message,ui.interruptedNotice(delivery));}catch{ctx.log.error("pangu_interrupted_notice_failed");}}
 }
