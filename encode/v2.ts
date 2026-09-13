@@ -2,7 +2,9 @@ import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 const MAX_INPUT = 16_384;
-const MAX_DISPLAY = 3_000;
+const MAX_HTML_LENGTH = 4_096;
+const PAGE_RESERVE = 32;
+const ORIGINAL_PREVIEW_LENGTH = 200;
 
 function escape(value: string): string {
   return value.replace(/[&<>\"]/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"})[char]!);
@@ -36,6 +38,30 @@ function transform(operation: string, input: string): string {
       try { return decodeURIComponent(input); } catch { throw new Error("无效的 URL 编码字符串"); }
     default: throw new Error("不支持的操作");
   }
+}
+
+function preview(value: string): string {
+  const characters = Array.from(value);
+  return characters.length > ORIGINAL_PREVIEW_LENGTH
+    ? characters.slice(0, ORIGINAL_PREVIEW_LENGTH).join("") + "..."
+    : value;
+}
+
+function splitEscaped(value: string, firstBudget: number, nextBudget: number): string[] {
+  const pages: string[] = [];
+  let page = "";
+  let budget = firstBudget;
+  for (const character of value) {
+    const encoded = escape(character);
+    if (page && page.length + encoded.length > budget) {
+      pages.push(page);
+      page = "";
+      budget = nextBudget;
+    }
+    page += encoded;
+  }
+  pages.push(page);
+  return pages;
 }
 
 async function inputText(ctx: PluginContext, message: MessageEnvelope, args: readonly string[]): Promise<string> {
@@ -86,6 +112,8 @@ async function handle(invocation: {message: MessageEnvelope; args: readonly stri
     await ctx.telegram.edit(invocation.message, `<b>处理失败</b>\n输入不能超过 <code>${MAX_INPUT}</code> 个字符`, {parseMode: "html"});
     return;
   }
+  const kind = operation.startsWith("b64") ? "🔐" : "🌐";
+  await ctx.telegram.edit(invocation.message, `🔄 <b>${label}中...</b>`, {parseMode: "html"});
   let output: string;
   try {
     output = transform(operation, input);
@@ -93,18 +121,21 @@ async function handle(invocation: {message: MessageEnvelope; args: readonly stri
     await ctx.telegram.edit(invocation.message, `<b>${label}失败</b>\n输入不是有效的${operation.startsWith("b64") ? " Base64 或 UTF-8 文本" : " URL 编码或文本"}`, {parseMode: "html"});
     return;
   }
-  // Split before escaping so neither Unicode code points nor HTML entities are cut.
-  const pages: string[] = [];
-  let page = "";
-  for (const character of output) {
-    const encoded = escape(character);
-    if (page.length + encoded.length > MAX_DISPLAY) { pages.push(page); page = ""; }
-    page += encoded;
-  }
-  pages.push(page);
+  const original = escape(preview(input));
+  const firstPrefix = `${kind} <b>${label}完成</b>\n\n<b>原文:</b>\n<code>${original}</code>\n\n<b>结果:</b>\n<code>`;
+  const nextPrefix = `${kind} <b>${label}完成</b>\n\n<b>结果:</b>\n<code>`;
+  const suffix = "</code>";
+  // Split source code points before escaping, leaving room for page numbers.
+  const pages = splitEscaped(
+    output,
+    MAX_HTML_LENGTH - firstPrefix.length - suffix.length - PAGE_RESERVE,
+    MAX_HTML_LENGTH - nextPrefix.length - suffix.length - PAGE_RESERVE,
+  );
   for (let index = 0; index < pages.length; index++) {
     ctx.signal.throwIfAborted();
-    const text = `<b>${label}完成</b>${pages.length > 1 ? ` (${index + 1}/${pages.length})` : ""}\n<code>${pages[index]}</code>`;
+    const prefix = index === 0 ? firstPrefix : nextPrefix;
+    const pageLabel = pages.length > 1 ? `\n${index + 1}/${pages.length} 页` : "";
+    const text = `${prefix}${pages[index]}${suffix}${pageLabel}`;
     if (index === 0) await ctx.telegram.edit(invocation.message, text, {parseMode: "html"});
     else await ctx.telegram.reply(invocation.message, text, {parseMode: "html"});
   }

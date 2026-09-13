@@ -38,6 +38,15 @@ test('encode exposes all commands and transforms text locally', async t => {
   assert.match(f.edits.at(-1).text, /%E4%BD%A0%E5%A5%BD%20world/);
 });
 
+test('successful operations retain the original status and result presentation', async t => {
+  const f = await fixture(t);
+  await f.run('.urlencode <原文>');
+  assert.match(f.edits[0].text, /URL 编码中/);
+  assert.match(f.edits.at(-1).text, /^🌐 <b>URL 编码完成<\/b>/);
+  assert.match(f.edits.at(-1).text, /<b>原文:<\/b>\n<code>&lt;原文&gt;<\/code>/);
+  assert.match(f.edits.at(-1).text, /<b>结果:<\/b>\n<code>%3C%E5%8E%9F%E6%96%87%3E<\/code>/);
+});
+
 test('unpadded Base64 and UTF-8 round trip while corrupt encodings fail', async t => {
   const f = await fixture(t);
   await f.run('.b64decode SGk');
@@ -51,11 +60,32 @@ test('unpadded Base64 and UTF-8 round trip while corrupt encodings fail', async 
 test('long results preserve every character with bounded rich-text pages', async t => {
   const f = await fixture(t, '<&😀>'.repeat(1000));
   await f.run('.urlencode');
-  const pages = [...f.edits, ...f.replies];
+  const pages = [...f.edits, ...f.replies].filter(page => /<b>结果:<\/b>/.test(page.text));
   assert.ok(pages.length > 1);
   assert.ok(pages.every(page => page.text.length < 4096));
-  const combined = pages.map(page => page.text.match(/<code>([\s\S]*)<\/code>/)[1]).join('');
+  const combined = pages.map(page => page.text.match(/<b>结果:<\/b>\n<code>([\s\S]*)<\/code>/)[1]).join('');
   assert.equal(combined, encodeURIComponent('<&😀>'.repeat(1000)));
+});
+
+test('decoded HTML and astral Unicode survive escaping and pagination intact', async t => {
+  const output = '<&😀>'.repeat(900);
+  const encoded = Buffer.from(output).toString('base64');
+  const f = await fixture(t);
+  await f.run('.b64decode ' + encoded);
+  const pages = [...f.edits, ...f.replies].filter(page => /<b>结果:<\/b>/.test(page.text));
+  assert.ok(pages.length > 1);
+  assert.ok(pages.every(page => page.text.length < 4096));
+  const combined = pages.map(page => page.text.match(/<b>结果:<\/b>\n<code>([\s\S]*)<\/code>/)[1]).join('');
+  assert.equal(combined, '&lt;&amp;😀&gt;'.repeat(900));
+});
+
+test('Unicode previews never split a surrogate pair at the compatibility limit', async t => {
+  const input = 'a'.repeat(199) + '😀' + 'tail';
+  const f = await fixture(t, input);
+  await f.run('.b64encode');
+  const original = f.edits.at(-1).text.match(/<b>原文:<\/b>\n<code>([\s\S]*?)<\/code>/)[1];
+  assert.equal(original, 'a'.repeat(199) + '😀...');
+  assert.doesNotMatch(original, /[\uD800-\uDFFF]/u);
 });
 
 test('missing text names the operation correctly', async t => {
