@@ -4,12 +4,13 @@ const test=require('node:test'),os=require('node:os');
 const root=os.tmpdir(),core=path.resolve(__dirname,'../../TeleBox-Core'),plugins=path.resolve(__dirname,'..');
 const {buildPlugin}=require(path.join(core,'scripts/build-v2-plugin.cjs'));
 const {PluginHost}=require(path.join(core,'dist/v2/host.js'));
+const {messageEnvelope}=require(path.join(core,'dist/v2/telegram.js'));
 const {prepareArtifact}=require(path.join(core,'dist/v2/artifacts.js'));
 const {buildSync}=require(path.join(core,'node_modules/esbuild'));
 const {Api,utils}=require(path.join(core,'node_modules/teleproto'));
 const {returnBigInt:integer}=require(path.join(core,'node_modules/teleproto/Helpers.js'));
 async function artifact(id){return prepareArtifact(buildPlugin({id,packageRoot:path.join(plugins,id),entry:'v2.ts'}).artifactDir);}
-async function fixture(id,native,prefixes=["."]){const a=await artifact(id),data=await fs.realpath(await fs.mkdtemp(path.join(root,'state-'))),edits=[];const fail=async()=>{throw new Error('unexpected external operation');};const host=new PluginHost({prefixes,storageRoot:path.join(data,'assets'),tempRoot:path.join(data,'temp'),logger:{info(){},error(){}},telegram:{edit:async(m,t)=>edits.push(t),reply:fail,invoke:fail,getReply:async()=>undefined,withClient:(fn,s)=>fn(native,s)}});await host.load(a.create());return{a,data,host,edits,close:async()=>{assert.equal((await host.shutdown(2000)).completed,true);a.release();await fs.rm(data,{recursive:true,force:true});}};}
+async function fixture(id,native,prefixes=["."],hostOptions={}){const a=await artifact(id),data=await fs.realpath(await fs.mkdtemp(path.join(root,'state-'))),edits=[];const fail=async()=>{throw new Error('unexpected external operation');};const host=new PluginHost({...hostOptions,prefixes,storageRoot:path.join(data,'assets'),tempRoot:path.join(data,'temp'),logger:{info(){},error(){}},telegram:{edit:async(m,t)=>edits.push(t),reply:fail,invoke:fail,getReply:async()=>undefined,withClient:(fn,s)=>fn(native,s)}});await host.load(a.create());return{a,data,host,edits,close:async()=>{assert.equal((await host.shutdown(2000)).completed,true);a.release();await fs.rm(data,{recursive:true,force:true});}};}
 test('acron creates distinct jobs concurrently and preserves marked channel targets',async()=>{
  const channel=new Api.Channel({id:integer(10),accessHash:integer(44),title:'Group',megagroup:true,photo:new Api.ChatPhotoEmpty(),date:0});
  let arrivals=0,release;const gate=new Promise(r=>release=r);
@@ -39,12 +40,12 @@ test('uai concurrent prompt mutations preserve independently updated entries',as
  }finally{await f.close();}
 });
 test('sure accepts marked chat IDs and uses the persisted whitelist for relay',async()=>{
- const sent=[],f=await fixture('sure',{getMe:async()=>({id:integer(1)}),sendMessage:async(peer,value)=>sent.push({peer,value})});try{
+ const sent=[],f=await fixture('sure',{getMe:async()=>({id:integer(1)}),sendMessage:async(peer,value)=>{sent.push({peer,value});return new Api.Message({id:30,peerId:peer==='-10010'?new Api.PeerChannel({channelId:integer(10)}):new Api.PeerChat({chatId:integer(22)}),fromId:new Api.PeerUser({userId:integer(1)}),out:true,date:1,message:value.message});}},['.'],{selfId:'1',envelope:message=>messageEnvelope(message,{selfId:'1'})});try{
   for(const text of ['.sure chat add -10010','.sure chat add -22','.sure user add 2','.sure msg add hello'])await f.host.dispatchPrimary({id:1,chatId:'1',senderId:'1',outgoing:true,text});
   const state=JSON.parse(await fs.readFile(path.join(f.data,'assets/sure/config.json')));assert.deepEqual(state.chats,['-10010','-22']);
   for(const chatId of ['-10010','-22','-99'])await f.host.dispatchListeners({id:2,chatId,senderId:'2',outgoing:false,text:'hello',raw:{peerId:chatId}});
   assert.deepEqual(sent.map(x=>x.peer),['-10010','-22']);
-  await f.host.dispatchPrimary({id:3,chatId:'1',senderId:'1',outgoing:true,text:'.sure user add -2'});assert.match(f.edits.at(-1),/用法/);
+  await f.host.dispatchPrimary({id:3,chatId:'1',senderId:'1',outgoing:true,text:'.sure user add -2'});assert.match(f.edits.at(-1),/无法获取用户信息/);assert.deepEqual(JSON.parse(await fs.readFile(path.join(f.data,'assets/sure/config.json'))).users,['2']);
  }finally{await f.close();}
 });
 test('re usage follows the configured command prefix',async()=>{

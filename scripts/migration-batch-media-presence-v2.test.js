@@ -89,7 +89,8 @@ test('yinglish transforms argument and reply text without exposing markup', asyn
   const f = await fixture(t, 'yinglish');
   await f.run('.yinglish 你好 <b>hello</b>！');
   assert.match(f.edits.at(-1).text, /伱/);
-  assert.match(f.edits.at(-1).text, /&lt;b&gt;/);
+  assert.match(f.edits.at(-1).text, /&lt;……b……&gt;/);
+  assert.match(f.edits.at(-1).text, /heLLo/);
   assert.doesNotMatch(f.edits.at(-1).text, /<b>hello<\/b>/);
 });
 
