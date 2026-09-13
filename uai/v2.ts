@@ -1,6 +1,6 @@
 import {readFile} from "node:fs/promises";
 import {
-  STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp,
+  STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, ui,
   type CommandDefinition, type CommandInvocation, type PluginContext,
 } from "telebox/sdk";
 
@@ -48,14 +48,47 @@ function normalize(raw: unknown): State {
     prompts, collapse: value.collapse !== false, legacyImported: value.legacyImported === true, aiMigrated: value.aiMigrated === true};
 }
 async function readState(context: PluginContext): Promise<State> {
-  let current = normalize(await store(context).read());
+  let explicit: Record<string, unknown> = {};
+  try {
+    const raw = JSON.parse(await context.tasks.run("uai:v2-read", signal =>
+      readFile(context.files.dataPath("v2-config.json"), {encoding: "utf8", signal})));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) explicit = raw as Record<string, unknown>;
+  } catch (error) {
+    context.signal.throwIfAborted();
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+  const initial = normalize(await store(context).read());
+  let current = initial;
   if (!current.legacyImported) {
+    let legacyRaw: unknown;
     try {
-      const legacy = normalize(JSON.parse(await context.tasks.run("uai:legacy-read", () => readFile(context.files.dataPath("config.json"), "utf8"))));
-      current = normalize({...current, ...legacy, providers: {...legacy.providers, ...current.providers}, prompts: {...legacy.prompts, ...current.prompts}});
-    } catch { /* an absent legacy file is expected */ }
-    current.legacyImported = true;
-    current = await store(context).update(() => current);
+      legacyRaw = JSON.parse(await context.tasks.run("uai:legacy-read", signal =>
+        readFile(context.files.dataPath("config.json"), {encoding: "utf8", signal})));
+    } catch (error) {
+      context.signal.throwIfAborted();
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+    if (legacyRaw !== undefined) {
+      const legacy = normalize(legacyRaw);
+      current = normalize({...legacy, ...current,
+        providers: {...legacy.providers, ...current.providers}, prompts: {...legacy.prompts, ...current.prompts},
+        collapse: Object.hasOwn(explicit, "collapse") ? current.collapse : legacy.collapse,
+        defaultProvider: Object.hasOwn(explicit, "defaultProvider") || Object.hasOwn(explicit, "default_provider")
+          ? current.defaultProvider : legacy.defaultProvider});
+    }
+    const imported = current;
+    current = await store(context).update(value => {
+      const latest = normalize(value);
+      const providers = {...imported.providers, ...latest.providers};
+      const prompts = {...imported.prompts, ...latest.prompts};
+      const collapseChanged = latest.collapse !== initial.collapse;
+      const defaultChanged = latest.defaultProvider !== initial.defaultProvider;
+      return normalize({...imported, ...latest, providers, prompts,
+        collapse: Object.hasOwn(explicit, "collapse") || collapseChanged ? latest.collapse : imported.collapse,
+        defaultProvider: Object.hasOwn(explicit, "defaultProvider") || Object.hasOwn(explicit, "default_provider") || defaultChanged
+          ? latest.defaultProvider : imported.defaultProvider,
+        legacyImported: true, aiMigrated: Object.keys(providers).length ? false : latest.aiMigrated});
+    });
   }
   return normalize(current);
 }
@@ -78,9 +111,11 @@ async function migrateAi(context: PluginContext): Promise<State> {
     await context.services.call("ai", "import_provider", {tag, url: providerUrl(item), key: item.apiKey,
       type: item.type === "gemini" ? "gemini" : "openai-compatible", models: {chat: item.model},
       select: name === current.defaultProvider ? ["chat"] : []}, context.signal);
+    context.signal.throwIfAborted();
   }
-  try {await context.storage.json<Record<string,unknown>>("config.json", {}).update(value =>
-    ({...value, providers:{}, default_provider:null, defaultProvider:null}), context.signal);} catch {}
+  await context.storage.json<Record<string,unknown>>("config.json", {}).update(value =>
+    ({...value, providers:{}, default_provider:null, defaultProvider:null}), context.signal);
+  context.signal.throwIfAborted();
   return store(context).update(value => ({...normalize(value), providers: {}, defaultProvider: null, aiMigrated: true}));
 }
 
@@ -96,7 +131,13 @@ async function collect(context: PluginContext, peer: any, sender: string | null,
     const now = Math.floor(Date.now() / 1000);
     const start = rule.kind === "today" ? new Date().setHours(0, 0, 0, 0) / 1000 : rule.kind === "time" ? now - rule.value : 0;
     const maximum = rule.kind === "count" ? rule.value : 500; const options: any = {limit: sender ? Math.min(maximum * 20, 3000) : maximum};
-    if (sender) try { options.fromUser = await client.getEntity(sender); } catch { /* compare IDs while iterating */ }
+    if (sender) try {
+      options.fromUser = await client.getEntity(sender);
+      context.signal.throwIfAborted();
+    } catch (error) {
+      context.signal.throwIfAborted();
+    }
+    context.signal.throwIfAborted();
     const output: string[] = []; let characters = 0;
     for await (const value of client.iterMessages(peer, options)) {
       context.signal.throwIfAborted(); const message: any = value;
@@ -120,6 +161,19 @@ const guarded = (operation: (invocation: CommandInvocation, context: PluginConte
     await operation(invocation, context, await migrateAi(context), edit);
   } catch { if (!context.signal.aborted) { context.log.error("uai_failed"); await edit("UAI 执行失败，请检查引用消息、ai 配置和网络"); } }
 };
+async function deliverAnalysis(invocation: CommandInvocation, context: PluginContext, html: string): Promise<void> {
+  const pages = await ui.renderRichText(html, ui.PAGE_LABEL_RESERVE);
+  const delivery = await ui.deliverPages(pages, context.signal, (page, index) => {
+    const labelled = page + ui.pageLabel(index, pages.length);
+    return index ? context.telegram.reply(invocation.message, labelled, {parseMode: "html", linkPreview: false})
+      : context.telegram.edit(invocation.message, labelled, {parseMode: "html", linkPreview: false});
+  });
+  if (!delivery.interrupted) return;
+  context.log.error("uai_delivery_failed", {kind: ui.deliveryErrorCategory(delivery.error), published: delivery.published, total: delivery.total});
+  if (!delivery.published) throw new Error("uai delivery failed");
+  try { await context.telegram.reply(invocation.message, ui.interruptedNotice(delivery)); }
+  catch (error) { context.signal.throwIfAborted(); context.log.error("uai_delivery_notice_failed", {kind: ui.deliveryErrorCategory(error)}); }
+}
 const analyze = (selectedPrompt?: string): CommandDefinition["handle"] => guarded(async (invocation, context, state, edit) => {
   const reply = await context.telegram.getReply(invocation.message); if (!reply) throw new Error("请引用一条消息");
   const raw: any = invocation.message.raw, replyRaw: any = reply.raw; if (!raw?.peerId || !replyRaw) throw new Error("消息上下文不可用");
@@ -134,8 +188,8 @@ const analyze = (selectedPrompt?: string): CommandDefinition["handle"] => guarde
   await edit("正在分析消息…");
   const result = await context.services.call<string>("ai", "chat", {text: `${name}\n\n${messages.join("\n")}`,
     systemPrompt: state.prompts[promptKey] ?? BUILTIN[promptKey] ?? BUILTIN.zj, maxOutputTokens: 4096}, context.signal);
-  const points = Array.from(result), content = esc(points.length > 3000 ? `${points.slice(0, 3000).join("")}\n…（输出已截断）` : result);
-  await edit(`📊 <b>${promptKey === "fx" ? "分析" : "总结"}结果</b>（${esc(name)}，${messages.length} 条）\n\n${state.collapse ? `<blockquote expandable>${content}</blockquote>` : content}`, true);
+  const content = esc(result);
+  await deliverAnalysis(invocation, context, `📊 <b>${promptKey === "fx" ? "分析" : "总结"}结果</b>（${esc(name)}，${messages.length} 条）\n\n${state.collapse ? `<blockquote expandable>${content}</blockquote>` : content}`);
 });
 const promptChange = (adding: boolean): CommandDefinition["handle"] => guarded(async (invocation, context, _state, edit) => {
   const [name, ...words] = invocation.args;
@@ -176,7 +230,7 @@ const command: CommandDefinition = {
   },
   help: [
     {heading:"引用与范围：", body:"先引用用户消息，再用 zj 总结或 fx 分析；默认取服务器本地当天消息，支持 50 等数量或 2h/30m 等时间参数；最多 500 条、7 天和 100000 输入字符。"},
-    {heading:"AI 配置：", body:"供应商、密钥、聊天模型和超时由 ai 插件统一管理；UAI 仅保留提示词与折叠设置。结果超过 3000 个 Unicode 字符时截断并说明。"},
+    {heading:"AI 配置：", body:"供应商、密钥、聊天模型和超时由 ai 插件统一管理；UAI 仅保留提示词与折叠设置。长结果会完整分页发送。"},
   ],
   handle: analyze(),
 };
