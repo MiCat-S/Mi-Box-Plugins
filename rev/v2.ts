@@ -210,7 +210,7 @@ export default function createRev() {
               const layout = reverseLayout(reply.text);
               options.caption = layout.text;
               const entities = reversedEntities(layout, reply.text, ((source as any).entities ?? []));
-              if (entities.length) options.entities = entities;
+              if (entities.length) options.formattingEntities = entities;
             }
             if (info.webm || info.webp) {
               const {Api} = await import("teleproto");
