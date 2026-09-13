@@ -1,7 +1,7 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import {isIP} from "node:net";
 import {domainToASCII} from "node:url";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {definePlugin, ui, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 const help = `📍 <b>IP查询插件</b>
 
@@ -31,6 +31,9 @@ const maxResponseBytes = 64 * 1024;
 const escape = (text: string): string => text.replace(/[&<>"']/g, character => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;",
 })[character]!);
+class OutputDeliveryError extends Error {
+  constructor() { super("IP_OUTPUT_DELIVERY_FAILED"); }
+}
 
 function target(query: string): string | undefined {
   if (query.length > 254 || /[\s@/\\?#%\[\]]/.test(query)) return;
@@ -87,7 +90,6 @@ async function consume(response: Response, signal: AbortSignal): Promise<ApiResu
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
-  let done = false;
   let cancellation: Promise<void> | undefined;
   const cancel = () => cancellation ??= reader.cancel();
   const onAbort = () => { void cancel().catch(() => undefined); };
@@ -97,7 +99,7 @@ async function consume(response: Response, signal: AbortSignal): Promise<ApiResu
       signal.throwIfAborted();
       const chunk = await reader.read();
       signal.throwIfAborted();
-      if (chunk.done) { done = true; break; }
+      if (chunk.done) break;
       total += chunk.value.byteLength;
       if (total > maxResponseBytes) return {kind: "invalid"};
       if (chunk.value.byteLength) chunks.push(chunk.value);
@@ -109,7 +111,7 @@ async function consume(response: Response, signal: AbortSignal): Promise<ApiResu
     }
   } finally {
     signal.removeEventListener("abort", onAbort);
-    try { if (!done) await cancel(); } finally { reader.releaseLock(); }
+    try { await cancel(); } finally { reader.releaseLock(); }
   }
 }
 
@@ -123,8 +125,7 @@ function format(query: string, result: ApiResult): {text: string; linkPreview?: 
   if (record.status === "fail") {
     if (record.message != null && typeof record.message !== "string") return invalid();
     const message = record.message || "查询失败，请检查IP地址或域名是否正确";
-    const output = failure(query, message as string);
-    return output.length <= 4000 ? {text: output} : invalid();
+    return {text: failure(query, message as string)};
   }
   if (record.status !== "success") return invalid();
   const textFields = ["country", "regionName", "city", "isp", "org", "as", "query", "timezone"] as const;
@@ -147,7 +148,7 @@ function format(query: string, result: ApiResult): {text: string; linkPreview?: 
   if (record.timezone) output += `\n<b>⏰ 时区:</b> ${escape(value("timezone"))}`;
   const asNumber = value("as").match(/^AS(\d+)/)?.[1];
   if (asNumber) output += `\n\nhttps://bgp.he.net/AS${asNumber}`;
-  return output.length <= 4000 ? {text: output, linkPreview: true} : invalid();
+  return {text: output, linkPreview: true};
 }
 
 async function edit(context: PluginContext, message: MessageEnvelope, text: string, linkPreview?: boolean): Promise<void> {
@@ -196,8 +197,19 @@ export default function createIp() {
           }
           context.signal.throwIfAborted();
           const output = format(query, result);
-          await edit(context, message, output.text, output.linkPreview);
-        } catch {
+          const rendered = output.text.length <= ui.MAX_HTML_LENGTH
+            ? [output.text]
+            : (await ui.renderRichText(output.text, ui.PAGE_LABEL_RESERVE)).map((page, index, all) => page + ui.pageLabel(index, all.length));
+          const delivery = await ui.deliverPages(rendered, context.signal, (page, index) => index
+            ? context.telegram.reply(message, page, {parseMode: "html", ...(output.linkPreview === undefined ? {} : {linkPreview: output.linkPreview})})
+            : context.telegram.edit(message, page, {parseMode: "html", ...(output.linkPreview === undefined ? {} : {linkPreview: output.linkPreview})}));
+          if (delivery.interrupted) {
+            context.log.info("ip.delivery.interrupted", {published: delivery.published, total: delivery.total, category: ui.deliveryErrorCategory(delivery.error)});
+            if (!delivery.published) throw new OutputDeliveryError();
+            try { await context.telegram.reply(message, ui.interruptedNotice(delivery), {parseMode: "html"}); } catch {}
+          }
+        } catch (error) {
+          if (error instanceof OutputDeliveryError) throw error;
           if (context.signal.aborted) return;
           context.log.error("ip.command.failed");
           try {

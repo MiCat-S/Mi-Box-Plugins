@@ -38,9 +38,9 @@ test.after(async () => {
   test.mock.restoreAll();
 });
 
-async function fixture(t, {fetch: fetcher = async () => Response.json(success), reply, edit, hostOptions = {}} = {}) {
+async function fixture(t, {fetch: fetcher = async () => Response.json(success), reply, edit, sendReply, hostOptions = {}} = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'telebox-ip-v2-')));
-  const edits = [], requests = [], replyReads = [], logs = [];
+  const edits = [], replies = [], requests = [], replyReads = [], logs = [];
   const host = new PluginHost({
     storageRoot: root,
     logger: {info(event, data) { logs.push({event, data}); }, error(event, data) { logs.push({event, data}); }},
@@ -67,7 +67,11 @@ async function fixture(t, {fetch: fetcher = async () => Response.json(success), 
         edits.push({message, text, options, signal});
         if (edit) await edit(message, text, options, signal);
       },
-      async reply() { assert.fail('IP output should edit the command message'); },
+      async reply(message, text, options, signal) {
+        assert.equal(signal.aborted, false, 'no reply may be submitted after cancellation');
+        replies.push({message, text, options, signal});
+        if (sendReply) await sendReply(replies.length, text);
+      },
       async getReply(message, signal) {
         replyReads.push({message, signal});
         const text = typeof reply === 'function' ? await reply(message, signal) : reply;
@@ -84,7 +88,7 @@ async function fixture(t, {fetch: fetcher = async () => Response.json(success), 
     assert.deepEqual(await fs.readdir(root), [], 'IP has no persistent configuration or cache');
     await fs.rm(root, {recursive: true, force: true});
   });
-  return {host, root, edits, requests, replyReads, logs, run: text => host.dispatchPrimary({...envelope, text})};
+  return {host, root, edits, replies, requests, replyReads, logs, run: text => host.dispatchPrimary({...envelope, text})};
 }
 
 test('ip candidate exports a pure factory and imports only the SDK and native input validators', async t => {
@@ -287,12 +291,37 @@ test('response and rendered output limits reject oversized data and cancel body 
   await run('.ip 8.8.8.8');
   assert.match(edits.at(-1).text, /数据解析失败/);
   assert.equal(canceled, 1);
-  for (const body of [{...success, org: '<'.repeat(1000)}, {status: 'fail', message: 'x'.repeat(5000)}]) {
-    const bounded = await fixture(t, {fetch: async () => Response.json(body)});
-    await bounded.run('.ip 8.8.8.8');
-    assert.match(bounded.edits.at(-1).text, /数据解析失败/);
-    assert.ok(bounded.edits.at(-1).text.length < 4000);
-  }
+});
+
+test('valid long provider results are delivered completely across bounded HTML pages', async t => {
+  const value = '<&😀'.repeat(1800);
+  const f = await fixture(t, {fetch: async () => Response.json({...success, org: value})});
+  await f.run('.ip 8.8.8.8');
+  const pages = [f.edits.at(-1).text, ...f.replies.map(item => item.text)];
+  assert.ok(pages.length > 1);
+  assert.ok(pages.every(page => page.length <= 3500));
+  const combined = pages.join('\n');
+  assert.equal(combined.split('&lt;').length - 1, 1800);
+  assert.equal(combined.split('&amp;').length - 1, 1800);
+  assert.equal(combined.split('😀').length - 1, 1800);
+  assert.doesNotMatch(combined, /数据解析失败/);
+  assert.equal(f.requests.length, 1);
+});
+
+test('later-page delivery failure preserves published lookup data and does not repeat HTTP', async t => {
+  const secret = 'private telegram token';
+  const value = 'organization-data-'.repeat(1000);
+  const f = await fixture(t, {
+    fetch: async () => Response.json({...success, org: value}),
+    sendReply(count) { if (count === 1) throw new Error(secret); },
+  });
+  await f.run('.ip 8.8.8.8');
+  assert.equal(f.requests.length, 1);
+  assert.match(f.edits.at(-1).text, /IP\/域名查询结果/);
+  assert.doesNotMatch(f.edits.at(-1).text, /IP查询失败|数据解析失败/);
+  assert.ok(f.logs.some(item => item.event === 'ip.delivery.interrupted' && item.data.published === 1));
+  assert.match(f.replies.at(-1).text, /已发送 1\//);
+  assert.equal(JSON.stringify({edits: f.edits, replies: f.replies, logs: f.logs}).includes(secret), false);
 });
 
 test('native DNS and connection-refused errors preserve localized messages without leaking details', async t => {
