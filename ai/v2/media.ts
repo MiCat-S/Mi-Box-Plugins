@@ -152,20 +152,187 @@ function imageResults(payload: any): MediaResult[] {
   return result;
 }
 
+const MAX_INPUT_BYTES = 20 * 1024 * 1024;
+const MAX_INPUT_PIXELS = 40_000_000;
+let sharpFactory: any;
+function getSharp(): any | undefined {
+  if (sharpFactory !== undefined) return sharpFactory;
+  try { sharpFactory = require("sharp"); } catch { sharpFactory = null; }
+  return sharpFactory ?? undefined;
+}
+
+/** TL `document.size` is a long; compare with BigInt so >2^53 sizes are exact.
+ * When a thumbnail is selected, bound by that thumbnail's declared size instead of
+ * the whole document (a large video may carry a small thumb). */
+function declaredBytes(raw: any, thumb?: any): bigint | undefined {
+  const source = thumb !== undefined
+    ? (thumb?.size ?? thumb?.sizes?.at?.(-1))
+    : (raw?.media?.document?.size ?? raw?.media?.photo?.sizes?.at(-1)?.size);
+  if (source === undefined || source === null) return undefined;
+  try { return BigInt(String(source)); } catch { return undefined; }
+}
+function cumulativeBytes(value: unknown): bigint {
+  if (typeof value === "bigint") return value;
+  try { return BigInt(String(value ?? 0)); } catch { return 0n; }
+}
+
+/** Single-frame PNG decode with a hard pixel budget; never an unbounded multi-frame decode. */
+async function sharpFirstFrame(buffer: Buffer): Promise<Buffer | undefined> {
+  const sharp = getSharp();
+  if (!sharp) return undefined;
+  try { return await sharp(buffer, {pages: 1, limitInputPixels: MAX_INPUT_PIXELS}).png().toBuffer(); } catch { return undefined; }
+}
+
+function checkDownloadProgress(value: unknown, signal: AbortSignal): void {
+  signal.throwIfAborted();
+  if (cumulativeBytes(value) > BigInt(MAX_INPUT_BYTES)) throw new ProviderError("INPUT");
+}
+
 export async function messageMedia(ctx: PluginContext, message?: MessageEnvelope): Promise<MediaInput | undefined> {
   const rawMessage: any = message?.raw;
   if (!rawMessage?.media) return undefined;
+  const declared = declaredBytes(rawMessage);
+  if (declared !== undefined && declared > BigInt(MAX_INPUT_BYTES)) throw new ProviderError("INPUT");
   return ctx.files.withTemp(async (directory, signal) => {
     const output = join(directory, "input-media");
     const result = await ctx.telegram.withClient(async (client, active) => {
       const combined = AbortSignal.any([signal, active]); combined.throwIfAborted();
-      const value = await client.downloadMedia(rawMessage, {outputFile: output}); combined.throwIfAborted(); return value;
+      const value = await client.downloadMedia(rawMessage, {outputFile: output, progressCallback: (downloaded: unknown) => checkDownloadProgress(downloaded, combined)});
+      combined.throwIfAborted(); return value;
     });
-    if (!Buffer.isBuffer(result) && (await stat(output)).size > 20 * 1024 * 1024) throw new ProviderError("INPUT");
-    const data = Buffer.isBuffer(result) ? result : await readFile(output, {signal});
-    if (!data.length || data.length > 20 * 1024 * 1024) throw new ProviderError("INPUT");
+    if (Buffer.isBuffer(result)) {
+      if (!result.length || result.length > MAX_INPUT_BYTES) throw new ProviderError("INPUT");
+      return {data: result, mimeType: rawMessage.media.document?.mimeType || "image/jpeg"};
+    }
+    const info = await stat(output);
+    if (info.size > MAX_INPUT_BYTES) throw new ProviderError("INPUT");
+    const data = await readFile(output, {signal});
+    if (!data.length || data.length > MAX_INPUT_BYTES) throw new ProviderError("INPUT");
     return {data, mimeType: rawMessage.media.document?.mimeType || "image/jpeg"};
   });
+}
+
+function isAnimatedDocument(doc: any): boolean {
+  const mime = doc?.mimeType || "";
+  return mime === "image/gif" || mime === "video/webm" || mime === "application/x-tgsticker" ||
+    mime === "application/x-tg-sticker" || (doc?.attributes ?? []).some((attr: any) => attr?.className === "DocumentAttributeAnimated");
+}
+
+async function fetchMedia(ctx: PluginContext, raw: any, options: Record<string, unknown>, signal: AbortSignal): Promise<Buffer | undefined> {
+  return ctx.files.withTemp(async (directory, tempSignal) => {
+    const output = join(directory, `ai-part-${Math.random().toString(36).slice(2)}`);
+    const declared = declaredBytes(raw, options.thumb);
+    if (declared !== undefined && declared > BigInt(MAX_INPUT_BYTES)) return undefined;
+    const value = await ctx.telegram.withClient(async (client, active) => {
+      const combined = AbortSignal.any([signal, tempSignal, active]); combined.throwIfAborted();
+      const downloaded = await client.downloadMedia(raw, {outputFile: output, ...options,
+        progressCallback: (progress: unknown) => checkDownloadProgress(progress, combined)});
+      combined.throwIfAborted(); return downloaded;
+    });
+    if (Buffer.isBuffer(value)) return value.length && value.length <= MAX_INPUT_BYTES ? value : undefined;
+    // Check the on-disk size before reading; never read an oversized file into memory.
+    const info = await stat(output);
+    if (info.size > MAX_INPUT_BYTES) return undefined;
+    const written = await readFile(output, {signal});
+    return written.length && written.length <= MAX_INPUT_BYTES ? written : undefined;
+  });
+}
+
+async function imagePartFromMessage(ctx: PluginContext, raw: any, signal: AbortSignal): Promise<MediaInput | undefined> {
+  const media = raw?.media;
+  if (!media) return undefined;
+  if (media.className === "MessageMediaPhoto") {
+    const buffer = await fetchMedia(ctx, raw, {}, signal);
+    return buffer ? {data: buffer, mimeType: "image/jpeg"} : undefined;
+  }
+  if (media.className !== "MessageMediaDocument" || media.document?.className !== "Document") return undefined;
+  const doc = media.document;
+  const mime = doc.mimeType || "";
+  if (!isAnimatedDocument(doc) && /^image\/(?:jpeg|png|gif|webp)$/i.test(mime)) {
+    const buffer = await fetchMedia(ctx, raw, {}, signal);
+    return buffer ? {data: buffer, mimeType: mime} : undefined;
+  }
+  // Animated content: the static thumb is the reliable reference. A raw GIF can
+  // yield its first frame through sharp; video/TGS containers cannot be decoded by
+  // sharp and are only usable through a thumb (no silent fake image).
+  const thumb = (doc.thumbs ?? []).at(-1);
+  if (thumb) {
+    const buffer = await fetchMedia(ctx, raw, {thumb}, signal);
+    if (buffer) {
+      const png = await sharpFirstFrame(buffer);
+      if (png) return {data: png, mimeType: "image/png"};
+    }
+  }
+  if (/^image\/gif$/i.test(mime)) {
+    const full = await fetchMedia(ctx, raw, {}, signal);
+    if (full) {
+      const png = await sharpFirstFrame(full);
+      if (png) return {data: png, mimeType: "image/png"};
+    }
+  }
+  return undefined;
+}
+
+export interface CollectedMedia { images: MediaInput[]; dropped: boolean }
+
+/**
+ * Collects reply/own image inputs. Albums keep original order (groupedId, iterMessages 50)
+ * and every part shares the bounded managed download path. Parts beyond the total
+ * byte budget are dropped explicitly instead of silently truncating history.
+ */
+export async function collectMessageImages(ctx: PluginContext, message: MessageEnvelope | undefined, signal: AbortSignal): Promise<CollectedMedia> {
+  const raw: any = message?.raw;
+  if (!raw?.media) return {images: [], dropped: false};
+  const groupedId = raw.groupedId ? String(raw.groupedId) : undefined;
+  const raws: any[] = [];
+  let dropped = false;
+  if (!groupedId) raws.push(raw);
+  else {
+    const peer = raw.chatId ?? raw.peerId;
+    const group: any[] = [];
+    await ctx.telegram.withClient(async (client: any, active: AbortSignal) => {
+      const combined = AbortSignal.any([signal, active]);
+      let index = 0;
+      for await (const candidate of client.iterMessages(peer, {limit: 50})) {
+        combined.throwIfAborted();
+        if (++index > 50) break;
+        if (candidate && candidate.groupedId && String(candidate.groupedId) === groupedId) group.push(candidate);
+      }
+    });
+    group.sort((a, b) => Number(a.id) - Number(b.id));
+    // Disclose (and do not download) album members beyond the 4-image cap.
+    if (group.length > 4) dropped = true;
+    for (const candidate of group.slice(0, 4)) raws.push(candidate);
+  }
+  const images: MediaInput[] = [];
+  let total = 0;
+  for (const candidate of raws) {
+    signal.throwIfAborted();
+    const part = await imagePartFromMessage(ctx, candidate, signal);
+    if (!part) continue;
+    if (total + part.data.byteLength > MAX_INPUT_BYTES || images.length >= 4) { dropped = true; continue; }
+    total += part.data.byteLength;
+    images.push(part);
+  }
+  return {images, dropped};
+}
+
+/**
+ * Merges reply→own image sets under one budget (total ≤4 images, total ≤20MiB),
+ * so the union cannot silently drop the 5th image when each side was under 4.
+ */
+export function mergeMessageImages(sets: readonly CollectedMedia[]): CollectedMedia {
+  let dropped = sets.some(set => set.dropped);
+  const images: MediaInput[] = [];
+  let total = 0;
+  for (const set of sets) {
+    for (const image of set.images) {
+      if (images.length >= 4 || total + image.data.byteLength > MAX_INPUT_BYTES) { dropped = true; continue; }
+      total += image.data.byteLength;
+      images.push(image);
+    }
+  }
+  return {images, dropped};
 }
 
 export async function generateImages(ctx: PluginContext, cfg: Config, prompt: string, input: MediaInput | undefined, signal: AbortSignal): Promise<MediaResult[]> {
@@ -209,10 +376,146 @@ export async function generateImages(ctx: PluginContext, cfg: Config, prompt: st
   return imageResults(await json(ctx, provider, endpoint(base, relative), body, signal, cfg.timeout));
 }
 
-export async function generateVideos(ctx: PluginContext, cfg: Config, prompt: string, inputs: readonly MediaInput[], signal: AbortSignal): Promise<MediaResult[]> {
+async function getJson(ctx: PluginContext, provider: ProviderConfig, url: string, signal: AbortSignal, timeout: number): Promise<any> {
+  const request = auth(provider, url, {"Content-Type": "application/json", "User-Agent": CODEX_USER_AGENT});
+  const result = await ctx.http.withResponse(request.url, {method: "GET", headers: request.headers}, async (response, active) => {
+    if (!response.ok) return {error: new ProviderError("HTTP_STATUS", response.status)};
+    try { return {text: await readBody(response, active, 32 * 1024 * 1024)}; }
+    catch (error) { return {error: error instanceof ProviderError ? error : new ProviderError("FAILED")}; }
+  }, {signal, timeoutMs: timeout * 1000});
+  if (result.error) throw result.error;
+  try { return JSON.parse(result.text!); } catch { throw new ProviderError("INVALID_RESPONSE"); }
+}
+
+function geminiVideoApiUrl(baseUrl: string, model: string, key: string): string {
+  const url = new URL(baseUrl);
+  url.pathname = `/v1beta/models/${model || "veo-2.0-generate-001"}:generateVideos`;
+  url.searchParams.set("key", key);
+  return url.toString();
+}
+
+function geminiOperationUrl(baseOrigin: string, name: string, key: string): string {
+  const url = new URL(baseOrigin);
+  const clean = name.replace(/^\/+/, "");
+  url.pathname = `/${clean.startsWith("v1beta/") ? clean : `v1beta/${clean}`}`;
+  url.searchParams.set("key", key);
+  return url.toString();
+}
+
+function extractGeminiVideoResult(data: any): {uri?: string; bytes?: string} | null {
+  const response = data?.response ?? data?.data?.response ?? data;
+  const uri = response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri ||
+    response?.generate_video_response?.generated_samples?.[0]?.video?.uri;
+  if (uri) return {uri};
+  const bytes = response?.generatedVideos?.[0]?.video?.videoBytes ||
+    response?.generated_videos?.[0]?.video?.video_bytes ||
+    response?.generatedVideos?.[0]?.video?.video_bytes ||
+    response?.generated_videos?.[0]?.video?.videoBytes;
+  if (bytes) return {bytes};
+  return null;
+}
+
+function geminiOperationError(data: any): string {
+  const err = data?.error ?? data?.data?.error;
+  if (!err) return "视频生成失败";
+  if (typeof err === "string") return err;
+  if (typeof err.message === "string") return err.message;
+  if (typeof err.status === "string") return err.status;
+  return "视频生成失败";
+}
+
+function doubaoVideoUrl(data: any): string | null {
+  return data?.data?.result?.video_url || data?.data?.output?.video_url || data?.data?.video_url ||
+    data?.video_url || data?.content?.video_url || data?.data?.content?.video_url || null;
+}
+
+function doubaoContent(prompt: string, inputs: readonly MediaInput[], mode: VideoImageMode): Array<Record<string, unknown>> {
+  const content: Array<Record<string, unknown>> = [];
+  if (prompt.trim()) content.push({type: "text", text: prompt.trim()});
+  inputs.slice(0, 4).forEach((input, index) => {
+    const item: Record<string, unknown> = {type: "image_url", image_url: {url: `data:${input.mimeType};base64,${input.data.toString("base64")}`}};
+    if (mode === "first") item.role = "first_frame";
+    else if (mode === "firstlast") item.role = index === 0 ? "first_frame" : "last_frame";
+    else if (mode === "reference") item.role = "reference_image";
+    else if (inputs.length === 2) item.role = index === 0 ? "first_frame" : "last_frame";
+    else if (inputs.length > 2) item.role = "reference_image";
+    content.push(item);
+  });
+  return content;
+}
+
+async function poll<T>(fetchJob: (signal: AbortSignal) => Promise<any>,
+  parse: (data: any) => {status: "pending" | "succeeded" | "failed"; result?: T; error?: string},
+  signal: AbortSignal, attempts = 303, intervalMs = 2000): Promise<T> {
+  for (let index = 0; index < attempts; index++) {
+    signal.throwIfAborted();
+    const data = await fetchJob(signal);
+    signal.throwIfAborted();
+    const result = parse(data);
+    if (result.status === "failed") throw new ProviderError("PROVIDER");
+    if (result.status === "succeeded") {
+      if (result.result === undefined) throw new ProviderError("EMPTY_OUTPUT");
+      return result.result;
+    }
+    await delay(intervalMs, signal);
+  }
+  throw new ProviderError("TIMEOUT");
+}
+
+export type VideoImageMode = "auto" | "reference" | "first" | "firstlast";
+
+async function generateGeminiVideo(ctx: PluginContext, cfg: Config, provider: ProviderConfig, model: string,
+  prompt: string, inputs: readonly MediaInput[], signal: AbortSignal): Promise<MediaResult[]> {
+  const base = geminiBase(provider.url);
+  const apiUrl = geminiVideoApiUrl(base, model, provider.key);
+  const parts: Array<Record<string, unknown>> = [];
+  if (prompt.trim()) parts.push({text: prompt.trim()});
+  for (const input of inputs.slice(0, 4)) parts.push({inlineData: {data: input.data.toString("base64"), mimeType: input.mimeType}});
+  const response = await json(ctx, provider, apiUrl, {contents: [{parts}],
+    videoGenerationConfig: {numberOfVideos: 1, durationSeconds: cfg.videoDuration, enableAudio: cfg.videoAudio}}, signal, cfg.timeout);
+  const direct = extractGeminiVideoResult(response);
+  if (direct?.bytes) return [{data: Buffer.from(direct.bytes, "base64"), mimeType: "video/mp4"}];
+  if (direct?.uri) return [{url: direct.uri, mimeType: "video/mp4"}];
+  const operationName = response?.name;
+  if (typeof operationName !== "string" || !operationName) throw new ProviderError("INVALID_RESPONSE");
+  const baseOrigin = geminiBase(provider.url);
+  const operation = await poll<any>(
+    (active) => getJson(ctx, provider, geminiOperationUrl(baseOrigin, operationName, provider.key), active, cfg.timeout),
+    (data) => data?.done === true ? (data?.error ? {status: "failed", error: geminiOperationError(data)} : {status: "succeeded", result: data}) : {status: "pending"},
+    signal);
+  const final = extractGeminiVideoResult(operation);
+  if (final?.bytes) return [{data: Buffer.from(final.bytes, "base64"), mimeType: "video/mp4"}];
+  if (final?.uri) return [{url: final.uri, mimeType: "video/mp4"}];
+  throw new ProviderError("EMPTY_OUTPUT");
+}
+
+async function generateDoubaoVideo(ctx: PluginContext, cfg: Config, provider: ProviderConfig, model: string,
+  prompt: string, inputs: readonly MediaInput[], mode: VideoImageMode, signal: AbortSignal): Promise<MediaResult[]> {
+  const base = new URL(provider.url).origin;
+  const endpointPath = "api/v3/contents/generations/tasks";
+  const response = await json(ctx, provider, endpoint(base, endpointPath), {model, content: doubaoContent(prompt, inputs, mode),
+    generateAudio: cfg.videoAudio, duration: cfg.videoDuration}, signal, cfg.timeout);
+  const taskId = response?.task_id || response?.data?.task_id || response?.data?.id || response?.id;
+  if (!taskId) throw new ProviderError("INVALID_RESPONSE");
+  const url = await poll<string>(
+    (active) => getJson(ctx, provider, endpoint(base, `${endpointPath}/${taskId}`), active, cfg.timeout),
+    (data) => {
+      if (data?.status === "failed" || data?.data?.status === "failed") return {status: "failed", error: "视频生成失败"};
+      const video = doubaoVideoUrl(data);
+      return video ? {status: "succeeded", result: video} : {status: "pending"};
+    },
+    signal);
+  return [{url, mimeType: "video/mp4"}];
+}
+
+export async function generateVideos(ctx: PluginContext, cfg: Config, prompt: string, inputs: readonly MediaInput[], signal: AbortSignal, mode: VideoImageMode = "auto"): Promise<MediaResult[]> {
   const {provider, model} = selected(cfg, "Video");
   const type = resolveProviderType(provider);
-  requireInput(type === "openai" || type === "openai-compatible" || type === "local-cliproxy", "当前提供商暂不支持 V2 视频生成");
+  if (type === "gemini" || (type === "local-cliproxy" && model.toLowerCase().includes("veo"))) {
+    return generateGeminiVideo(ctx, cfg, provider, model, prompt, inputs, signal);
+  }
+  if (type === "doubao") return generateDoubaoVideo(ctx, cfg, provider, model, prompt, inputs, mode, signal);
+  requireInput(type === "openai" || type === "openai-compatible" || type === "local-cliproxy", "当前提供商暂不支持视频生成");
   const content: any[] = [];
   if (prompt.trim()) content.push({type: "text", text: prompt.trim()});
   for (const input of inputs.slice(0, 4)) content.push({type: "image_url", image_url: {url: `data:${input.mimeType};base64,${input.data.toString("base64")}`}});

@@ -33,7 +33,10 @@ const provider = compile(fs.readFileSync(path.join(root, 'ai/v2/provider.ts'), '
 const lifecycle = compile(fs.readFileSync(path.join(core, 'src/v2/lifecycle.ts'), 'utf8'), {
   'node:async_hooks': require('node:async_hooks'), 'node:perf_hooks': require('node:perf_hooks'),
 });
-const {ScopedHttp} = compile(fs.readFileSync(path.join(core, 'src/v2/http.ts'), 'utf8'), {'./lifecycle': lifecycle});
+const {ScopedHttp} = compile(fs.readFileSync(path.join(core, 'src/v2/http.ts'), 'utf8'), {
+  './lifecycle': lifecycle, 'node:dns': require('node:dns'), 'node:net': require('node:net'),
+  'undici': require(require.resolve('undici', {paths: [core]})),
+});
 const {ResourceScope} = lifecycle;
 
 // Extract original source methods as in gt-translation.test.js; no singleton/config/assets.

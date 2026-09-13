@@ -1,6 +1,7 @@
 import type { PluginContext, MessageEnvelope } from "telebox/sdk";
-import {buildChatRequest, parseChatText, readBody, resolveProviderType, ProviderError} from "./provider";
+import {buildChatRequest, parseChatText, readBody, resolveProviderType, ProviderError, type ChatImage} from "./provider";
 import {type Config, record, requireInput, updateConfig} from "./config";
+import {telegraphNodes} from "./telegraph-format";
 
 export interface Source {url: string; title?: string}
 export const escape = (text: string): string => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -17,7 +18,7 @@ export async function request(ctx: PluginContext, url: string, init: RequestInit
   return result.text!;
 }
 
-export async function searchText(cfg: Config, ctx: PluginContext, text: string, signal: AbortSignal): Promise<{text: string; sources: Source[]}> {
+export async function searchText(cfg: Config, ctx: PluginContext, text: string, signal: AbortSignal, images?: readonly ChatImage[]): Promise<{text: string; sources: Source[]}> {
   let selected = {...cfg, currentChatTag: cfg.currentSearchTag, currentChatModel: cfg.currentSearchModel,
     currentChatReasoningEffort: cfg.currentSearchReasoningEffort, currentChatServiceTier: cfg.currentSearchServiceTier};
   const provider = selected.configs[selected.currentChatTag];
@@ -30,7 +31,7 @@ export async function searchText(cfg: Config, ctx: PluginContext, text: string, 
     url.search = ""; url.hash = "";
     selected = {...selected, configs: {...selected.configs, [selected.currentChatTag]: {...provider, type: "gemini", url: url.toString()}}};
   }
-  const req = buildChatRequest(selected, text);
+  const req = buildChatRequest(selected, text, selected.prompt, images?.length ? {images} : {});
   const body = JSON.parse(String(req.init.body));
   if (req.format === "gemini") body.tools = [{googleSearch: {}}];
   else if (provider.responses) { body.tools = [{type: "web_search"}]; body.include = ["web_search_call.action.sources"]; }
@@ -101,7 +102,7 @@ export async function sendText(ctx: PluginContext, message: MessageEnvelope, tex
   }
 }
 
-export async function publish(ctx: PluginContext, cfg: Config, question: string, answer: string, signal: AbortSignal): Promise<string> {
+export async function publish(ctx: PluginContext, cfg: Config, question: string, answer: string, signal: AbortSignal, sources: readonly Source[] = []): Promise<string> {
   const post = async (method: string, body: unknown): Promise<Record<string, unknown>> => {
     const response = JSON.parse(await request(ctx, `https://api.telegra.ph/${method}`, {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
@@ -118,8 +119,9 @@ export async function publish(ctx: PluginContext, cfg: Config, question: string,
   }
   const compact = question.replace(/\s+/g, " ").trim();
   const title = compact.length > 24 ? compact.slice(0, 24) + "…" : compact || `Telegraph - ${new Date().toISOString()}`;
-  const content = [{tag: "h3", children: ["Q"]}, {tag: "p", children: [question]}, {tag: "h3", children: ["A"]},
-    ...answer.split("\n").map(line => ({tag: "p", children: [line]}))];
+  const markdown = `**Q:**\n${question}\n\n**A:**\n${answer}\n` +
+    (sources.length ? `\n**Sources:**\n${sources.slice(0, 20).map((source, index) => `${index + 1}. ${source.title || source.url}\n${source.url}`).join("\n")}\n` : "");
+  const content = telegraphNodes(markdown);
   const page = await post("createPage", {access_token: token, title, content, return_content: false});
   if (typeof page.url !== "string" || !/^https:\/\/telegra\.ph\//.test(page.url)) throw new ProviderError("INVALID_RESPONSE");
   const item = {url: page.url, title, createdAt: new Date().toISOString()};

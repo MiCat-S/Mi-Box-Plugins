@@ -1,4 +1,4 @@
-import {STRUCTURED_PLUGIN_API_VERSION, ui, definePlugin, renderCommandHelp, type CommandDefinition, type CommandInvocation, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, ui, definePlugin, renderCommandHelp, type CommandDefinition, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {
   InputError, modes, providerTypes, readConfig, reasoningValues, record, requireInput, settings,
   tierValues, updateConfig, type Config,
@@ -7,10 +7,21 @@ import {
   assertAllowedModel, chatText, listProviderModels, ProviderError, translateText,
   type ChatImage, type ProviderMode, type ProviderType, type ReasoningEffort,
 } from "./v2/provider";
-import {escape, publish, searchText, sendText} from "./v2/text";
-import {generateImages, generateVideos, materializeMedia, messageMedia, sendMedia, type MediaInput} from "./v2/media";
+import {escape, publish, searchText} from "./v2/text";
+import {deliverAnswer, deliverTelegraphAnswer, sourcesHtml} from "./v2/answer";
+import {markdownToHtml} from "./v2/markdown";
+import {generateImages, generateVideos, materializeMedia, collectMessageImages, mergeMessageImages, sendMedia, type MediaInput, type VideoImageMode} from "./v2/media";
 
 const htmlOptions = {parseMode: "html", linkPreview: false} as const;
+/** Long read-only output goes through SDK safe pagination instead of a single oversized edit. */
+async function sendPaged(ctx: PluginContext, message: MessageEnvelope, html: string): Promise<void> {
+  const pages = await ui.renderRichText(html, ui.PAGE_LABEL_RESERVE);
+  const usable = pages.length ? pages : [html];
+  await ctx.telegram.edit(message, usable[0], htmlOptions);
+  for (let index = 1; index < usable.length; index++) {
+    await ctx.telegram.reply(message, `${ui.pageLabel(index, usable.length)}\n${usable[index]}`, htmlOptions);
+  }
+}
 function feedback(state: "working" | "success" | "error", title: string, detail?: string, nextStep?: string): ui.Html {
   return ui.renderFeedback({state, title, ...(detail ? {detail} : {}), ...(nextStep ? {nextStep} : {})});
 }
@@ -41,12 +52,35 @@ function visibleConfig(cfg: Config): ui.Html {
     ui.field("超时", `${cfg.timeout}s · 折叠=${cfg.collapse ? "on" : "off"}`),
   );
 }
-async function sourceText(invocation: CommandInvocation, ctx: PluginContext): Promise<string> {
-  const own = invocation.args.join(" ").trim();
-  if (own) return own;
-  return (await ctx.telegram.getReply(invocation.message))?.text.trim() ?? "";
+
+function telegraphStatus(cfg: Config): string {
+  let status = `📰 <b>Telegraph 状态:</b>\n\n🌐 当前状态: ${cfg.telegraph.enabled ? "开启" : "关闭"}\n📊 限制数量: <code>${cfg.telegraph.limit}</code>\n📈 记录数量: <code>${cfg.telegraph.list.length}/${cfg.telegraph.limit}</code>`;
+  if (cfg.telegraph.list.length) {
+    status += "\n\n" + cfg.telegraph.list.slice(0, 100)
+      .map((item, index) => `${index + 1}. <a href="${escape(item.url)}">🔗 ${escape(item.title)}</a>`).join("\n");
+  }
+  return status;
 }
 async function setModel(invocation: CommandInvocation, ctx: PluginContext): Promise<void> {
+  if (!invocation.args.length) {
+    const cfg = await readConfig(ctx);
+    await sendPaged(ctx, invocation.message, [
+      "🤖 <b>当前 AI 配置:</b>", "",
+      `💬 chat 配置: <code>${escape(cfg.currentChatTag || "未设置")}</code>`,
+      `🧠 chat 模型: <code>${escape(cfg.currentChatModel || "未设置")}</code>`,
+      `💭 chat 思考强度: <code>${escape(cfg.currentChatReasoningEffort)}</code>`,
+      `⚡ chat 服务等级: <code>${escape(cfg.currentChatServiceTier)}</code>`,
+      `🔎 search 配置: <code>${escape(cfg.currentSearchTag || "未设置")}</code>`,
+      `📚 search 模型: <code>${escape(cfg.currentSearchModel || "未设置")}</code>`,
+      `💭 search 思考强度: <code>${escape(cfg.currentSearchReasoningEffort)}</code>`,
+      `⚡ search 服务等级: <code>${escape(cfg.currentSearchServiceTier)}</code>`,
+      `🖼️ image 配置: <code>${escape(cfg.currentImageTag || "未设置")}</code>`,
+      `🎨 image 模型: <code>${escape(cfg.currentImageModel || "未设置")}</code>`,
+      `🎬 video 配置: <code>${escape(cfg.currentVideoTag || "未设置")}</code>`,
+      `📹 video 模型: <code>${escape(cfg.currentVideoModel || "未设置")}</code>`,
+    ].join("\n"));
+    return;
+  }
   const [mode = "", tag = "", model = ""] = invocation.args;
   requireInput(["chat", "search", "image", "video"].includes(mode) && tag && model, "用法：ai model chat|search|image|video tag model");
   assertAllowedModel(model);
@@ -58,6 +92,14 @@ async function setModel(invocation: CommandInvocation, ctx: PluginContext): Prom
   await ctx.telegram.edit(invocation.message, feedback("success", `${mode} 模型已设置`), htmlOptions);
 }
 async function setEnum(invocation: CommandInvocation, ctx: PluginContext, kind: "reasoning" | "service"): Promise<void> {
+  if (!invocation.args.length) {
+    const cfg = await readConfig(ctx);
+    const label = kind === "reasoning" ? "思考强度" : "服务等级";
+    const chat = kind === "reasoning" ? cfg.currentChatReasoningEffort : cfg.currentChatServiceTier;
+    const search = kind === "reasoning" ? cfg.currentSearchReasoningEffort : cfg.currentSearchServiceTier;
+    await sendPaged(ctx, invocation.message, `💭 <b>当前${label}:</b>\n\nchat: <code>${escape(chat)}</code>\nsearch: <code>${escape(search)}</code>`);
+    return;
+  }
   const [mode = "", value = ""] = invocation.args;
   requireInput(["chat", "search"].includes(mode), `用法：ai ${kind} chat|search value`);
   const values = kind === "reasoning" ? reasoningValues : tierValues;
@@ -65,49 +107,92 @@ async function setEnum(invocation: CommandInvocation, ctx: PluginContext, kind: 
   await updateConfig(ctx, raw => { raw[modeKey(mode, kind === "reasoning" ? "ReasoningEffort" : "ServiceTier")] = value; });
   await ctx.telegram.edit(invocation.message, feedback("success", `${kind} 已设置为 ${value}`), htmlOptions);
 }
+async function askImages(ctx: PluginContext, replied: MessageEnvelope | undefined, own: MessageEnvelope): Promise<{images: ChatImage[]; dropped: boolean}> {
+  const merged = mergeMessageImages([
+    await collectMessageImages(ctx, replied, ctx.signal),
+    await collectMessageImages(ctx, own, ctx.signal),
+  ]);
+  return {images: merged.images.map(item => ({data: item.data, mimeType: item.mimeType.toLowerCase()})), dropped: merged.dropped};
+}
+
+/** Original VideoFeature mode normalization: firstlast<2 falls back to first/auto, auto+images becomes reference. */
+function normalizeVideoMode(requested: VideoImageMode, images: readonly MediaInput[], hasPrompt: boolean): {mode: VideoImageMode; images: MediaInput[]} {
+  let mode = requested;
+  let parts = [...images];
+  if (mode === "firstlast" && parts.length < 2) {
+    if (parts.length === 1) mode = "first";
+    else if (hasPrompt) { mode = "auto"; parts = []; }
+  }
+  if (mode === "first" && parts.length < 1) {
+    if (hasPrompt) { mode = "auto"; parts = []; }
+  }
+  if (mode === "first") parts = parts.slice(0, 1);
+  else if (mode === "firstlast") parts = parts.slice(0, 2);
+  else if (parts.length > 0) { mode = "reference"; parts = parts.slice(0, 4); }
+  return {mode, images: parts};
+}
+
 async function ask(invocation: CommandInvocation, ctx: PluginContext, search: boolean): Promise<void> {
-  const question = await sourceText(invocation, ctx);
-  requireInput(question, search ? "请输入搜索问题或回复一条文字消息" : "请输入问题或回复一条文字消息");
+  const own = invocation.args.join(" ").trim();
+  const replied = await ctx.telegram.getReply(invocation.message);
+  const replyText = replied?.text.trim() ?? "";
+  const question = own || replyText;
+  const images = await askImages(ctx, replied, invocation.message);
+  requireInput(question || images.images.length, search ? "请输入搜索问题或回复一条文字消息" : "请输入问题或回复一条文字消息");
   requireInput(question.length <= 100_000, "输入内容过长");
+  let context = replied?.text ?? "";
+  if (question && context.trim() && question === context.trim()) context = "";
+  const userText = context.trim() ? `上下文:\n${context.trim()}\n\n问题:\n${question}` : question;
   const cfg = await readConfig(ctx);
+  const replyToId = replied?.id;
+  if (images.dropped) await ctx.telegram.reply(invocation.message, "⚠️ 部分图片因数量或体积限制被忽略", {parseMode: "html"});
   await ctx.telegram.edit(invocation.message, feedback("working", search ? "AI 搜索中" : "AI 思考中"), htmlOptions);
   if (search) {
-    const answer = await searchText(cfg, ctx, question, ctx.signal);
-    await sendText(ctx, invocation.message, answer.text, ctx.signal, cfg.collapse);
-    if (answer.sources.length) {
-      const sources = `<b>来源</b>\n${answer.sources.slice(0, 10).map((item, index) => `${index + 1}. <a href="${escape(item.url)}">${escape(item.title || item.url)}</a>`).join("\n")}`;
-      await ctx.telegram.reply(invocation.message, sources, {parseMode: "html", linkPreview: false});
+    const answer = await searchText(cfg, ctx, userText, ctx.signal, images.images);
+    const answerText = answer.text || "AI 回复为空";
+    const formatted = `Q:\n${escape(question)}\n\nA:\n${markdownToHtml(answerText, {collapseSafe: cfg.collapse})}${sourcesHtml(answer.sources)}`;
+    if (cfg.telegraph.enabled && formatted.length > 4050) {
+      const url = await publish(ctx, cfg, question, answerText, ctx.signal, answer.sources);
+      await deliverTelegraphAnswer(ctx, invocation.message, {question, url, tag: cfg.currentSearchTag, collapse: cfg.collapse, replyToId}, ctx.signal);
+    } else {
+      await deliverAnswer(ctx, invocation.message, {question, answer: answerText, sources: answer.sources, tag: cfg.currentSearchTag, collapse: cfg.collapse, replyToId}, ctx.signal);
     }
     return;
   }
-  const answer = await chatText(cfg, ctx.http, question, ctx.signal);
-  if (cfg.telegraph.enabled && answer.length > 3500) {
-    const url = await publish(ctx, cfg, question, answer, ctx.signal);
-    await ctx.telegram.edit(invocation.message, `📰 <a href="${escape(url)}">在 Telegraph 阅读回答</a>`, {parseMode: "html", linkPreview: true});
-  } else await sendText(ctx, invocation.message, answer, ctx.signal, cfg.collapse);
+  const answer = await chatText(cfg, ctx.http, userText, ctx.signal, cfg.prompt, {}, {images: images.images.length ? images.images : undefined});
+  const answerText = answer || "AI 回复为空";
+  const formatted = `Q:\n${escape(question)}\n\nA:\n${markdownToHtml(answerText, {collapseSafe: cfg.collapse})}`;
+  if (cfg.telegraph.enabled && formatted.length > 4050) {
+    const url = await publish(ctx, cfg, question, answerText, ctx.signal);
+    await deliverTelegraphAnswer(ctx, invocation.message, {question, url, tag: cfg.currentChatTag, collapse: cfg.collapse, replyToId}, ctx.signal);
+  } else {
+    await deliverAnswer(ctx, invocation.message, {question, answer: answerText, tag: cfg.currentChatTag, collapse: cfg.collapse, replyToId}, ctx.signal);
+  }
 }
 async function media(invocation: CommandInvocation, ctx: PluginContext, kind: "image" | "video"): Promise<void> {
   const cfg = await readConfig(ctx);
   const action = invocation.args[0]?.toLowerCase() ?? "";
-  const mode = kind === "video" && (action === "first" || action === "firstlast") ? action : "auto";
-  const offset = mode === "auto" ? 0 : 1;
+  const requested: VideoImageMode = kind === "video" && ["first", "firstlast", "reference"].includes(action) ? action as VideoImageMode : "auto";
+  const offset = requested === "auto" ? 0 : 1;
   const ownPrompt = invocation.args.slice(offset).join(" ").trim();
   const replied = await ctx.telegram.getReply(invocation.message);
-  const replyInput = await messageMedia(ctx, replied);
-  const ownInput = await messageMedia(ctx, invocation.message);
-  const inputs = [replyInput, ownInput].filter((item): item is MediaInput => item !== undefined);
+  const replyCollect = await collectMessageImages(ctx, replied, ctx.signal);
+  const ownCollect = await collectMessageImages(ctx, invocation.message, ctx.signal);
+  const merged = mergeMessageImages([replyCollect, ownCollect]);
+  const inputs = merged.images;
   const replyText = replied?.text.trim() ?? "";
-  const prompt = ownPrompt && replyText && !replyInput ? `${replyText}\n\n${ownPrompt}` : ownPrompt || replyText;
-  requireInput(prompt || kind === "video" && inputs.length, kind === "image" ? "至少需要一条文字提示" : "至少需要文字提示或参考图");
+  const prompt = ownPrompt && replyText && replyCollect.images.length === 0 ? `${replyText}\n\n${ownPrompt}` : ownPrompt || replyText;
+  requireInput(kind === "image" ? prompt : (prompt || inputs.length), kind === "image" ? "至少需要一条文字提示" : "至少需要文字提示或参考图");
+  if (merged.dropped) await ctx.telegram.reply(invocation.message, "⚠️ 部分图片因数量或体积限制被忽略", {parseMode: "html"});
   if (kind === "image") {
     await ctx.telegram.edit(invocation.message, feedback("working", "正在生成图片"), htmlOptions);
     const result = await generateImages(ctx, cfg, prompt, inputs[0], ctx.signal);
     await sendMedia(ctx, invocation.message, result, prompt, cfg.imagePreview, cfg.currentImageTag, "image", replied?.id);
     return;
   }
-  const selected = mode === "first" ? inputs.slice(0, 1) : mode === "firstlast" ? inputs.slice(0, 2) : inputs.slice(0, 4);
+  const {mode, images: selected} = normalizeVideoMode(requested, inputs, Boolean(prompt.trim()));
   await ctx.telegram.edit(invocation.message, feedback("working", "正在生成视频"), htmlOptions);
-  const result = await generateVideos(ctx, cfg, prompt, selected, ctx.signal);
+  const result = await generateVideos(ctx, cfg, prompt, selected, ctx.signal, mode);
   await sendMedia(ctx, invocation.message, result, prompt, cfg.videoPreview, cfg.currentVideoTag, "video", replied?.id);
 }
 function safeMessage(error: unknown): string {
@@ -221,7 +306,7 @@ export default function createAi() {
       }
     };
   const providerType = (value: string | undefined): void => { if (value) requireInput(providerTypes.includes(value as typeof providerTypes[number]), "无效 API 类型"); };
-  const configList = guard(async (invocation, ctx) => { await ctx.telegram.edit(invocation.message, visibleConfig(await readConfig(ctx)), htmlOptions); });
+  const configList = guard(async (invocation, ctx) => { await sendPaged(ctx, invocation.message, visibleConfig(await readConfig(ctx))); });
   const configAdd = guard(async (invocation, ctx) => {
     const [tag = "", url = "", key = "", type] = invocation.args;
     requireInput(tag && url && key, "用法：ai config add tag url key [type]");
@@ -273,10 +358,20 @@ export default function createAi() {
     await ctx.telegram.edit(invocation.message, feedback("success", "AI 输出设置已更新"), htmlOptions);
   });
   const setCollapse = guard(async (invocation, ctx) => {
+    const cfg = await readConfig(ctx);
+    if (!invocation.args.length) {
+      await sendPaged(ctx, invocation.message, `📖 <b>消息折叠状态:</b>\n\n📄 当前状态: ${cfg.collapse ? "开启" : "关闭"}`);
+      return;
+    }
     await updateConfig(ctx, raw => { raw.collapse = bool(invocation.args[0] ?? ""); });
     await ctx.telegram.edit(invocation.message, feedback("success", "AI 输出设置已更新"), htmlOptions);
   });
   const setTimeoutValue = guard(async (invocation, ctx) => {
+    const cfg = await readConfig(ctx);
+    if (!invocation.args.length) {
+      await sendPaged(ctx, invocation.message, `⏱️ <b>当前超时设置:</b>\n\n⏰ 超时时间: <code>${cfg.timeout} 秒</code>`);
+      return;
+    }
     const seconds = Number(invocation.args[0]); requireInput(Number.isSafeInteger(seconds) && seconds >= 1 && seconds <= 600, "超时范围为 1-600 秒");
     await updateConfig(ctx, raw => { raw.timeout = seconds; });
     await ctx.telegram.edit(invocation.message, feedback("success", "AI 输出设置已更新"), htmlOptions);
@@ -297,26 +392,66 @@ export default function createAi() {
     await ctx.telegram.edit(invocation.message, feedback("success", "AI 输出设置已更新"), htmlOptions);
   });
   const telegraphDel = guard(async (invocation, ctx) => {
-    requireInput(invocation.args[0] === "all", "用法：ai telegraph on|off|limit 数量|del all");
-    await updateConfig(ctx, raw => {
-      const current = raw.telegraph && typeof raw.telegraph === "object" && !Array.isArray(raw.telegraph) ? raw.telegraph as Record<string, unknown> : {};
-      raw.telegraph = {...current, list: []};
+    const rawArg = invocation.args[0];
+    requireInput(rawArg, "用法：ai telegraph del 序号|all");
+    if (rawArg.toLowerCase() === "all") {
+      await updateConfig(ctx, raw => {
+        const current = record(raw.telegraph);
+        raw.telegraph = {...current, list: []};
+      });
+      await ctx.telegram.edit(invocation.message, feedback("success", "已删除所有记录"), htmlOptions);
+      return;
+    }
+    requireInput(/^[1-9]\d*$/.test(rawArg), "序号必须是正整数");
+    const index = Number(rawArg) - 1;
+    let count = 0;
+    let removed = false;
+    await updateConfig(ctx, (raw, view) => {
+      const displayed = view.telegraph.list;
+      count = displayed.length;
+      const target = displayed[index];
+      if (!target) return;
+      const rawList = Array.isArray(record(raw.telegraph).list) ? record(raw.telegraph).list as unknown[] : [];
+      const actual = rawList.indexOf(target);
+      if (actual < 0) return;
+      const next = [...rawList];
+      next.splice(actual, 1);
+      raw.telegraph = {...record(raw.telegraph), list: next};
+      removed = true;
     });
-    await ctx.telegram.edit(invocation.message, feedback("success", "AI 输出设置已更新"), htmlOptions);
+    if (index >= count) { await ctx.telegram.edit(invocation.message, `序号超出范围 (1-${count})`, htmlOptions); return; }
+    if (!removed) { await ctx.telegram.edit(invocation.message, "该记录已不存在，请刷新状态后重试", htmlOptions); return; }
+    await ctx.telegram.edit(invocation.message, feedback("success", `已删除第 ${index + 1} 项`), htmlOptions);
   });
   const mediaPreview = (kind: "image" | "video") => guard(async (invocation, ctx) => {
+    const cfg = await readConfig(ctx);
+    const current = kind === "image" ? cfg.imagePreview : cfg.videoPreview;
+    if (!invocation.args.length) {
+      await sendPaged(ctx, invocation.message, `${kind === "image" ? "🖼️" : "🎬"} <b>${kind === "image" ? "图片" : "视频"}预览状态:</b>\n\n📄 当前状态: ${current ? "开启" : "关闭"}`);
+      return;
+    }
     const value = invocation.args[0]?.toLowerCase() ?? "";
     requireInput(value === "on" || value === "off", `用法：ai ${kind} preview on|off`);
     await updateConfig(ctx, raw => { raw[kind === "image" ? "imagePreview" : "videoPreview"] = value === "on"; });
     await ctx.telegram.edit(invocation.message, feedback("success", `${kind} preview 已设置为 ${value}`), htmlOptions);
   });
   const videoAudio = guard(async (invocation, ctx) => {
+    const cfg = await readConfig(ctx);
+    if (!invocation.args.length) {
+      await sendPaged(ctx, invocation.message, `🔊 <b>视频音频状态:</b>\n\n📄 当前状态: ${cfg.videoAudio ? "开启" : "关闭"}`);
+      return;
+    }
     const value = invocation.args[0]?.toLowerCase() ?? "";
     requireInput(value === "on" || value === "off", "用法：ai video audio on|off");
     await updateConfig(ctx, raw => { raw.videoAudio = value === "on"; });
     await ctx.telegram.edit(invocation.message, feedback("success", `video audio 已设置为 ${value}`), htmlOptions);
   });
   const videoDuration = guard(async (invocation, ctx) => {
+    const cfg = await readConfig(ctx);
+    if (!invocation.args.length) {
+      await sendPaged(ctx, invocation.message, `⏱️ <b>视频时长:</b>\n\n⏰ 当前时长: <code>${cfg.videoDuration} 秒</code>`);
+      return;
+    }
     const seconds = Number(invocation.args[0]);
     requireInput(Number.isSafeInteger(seconds) && seconds >= 5 && seconds <= 20, "视频时长范围为 5-20 秒");
     await updateConfig(ctx, raw => { raw.videoDuration = seconds; });
@@ -375,7 +510,14 @@ export default function createAi() {
           set: {description: "设置提示词", args: "内容", examples: [{args: "set 用中文回答"}], handle: promptSet},
           del: {description: "删除提示词", args: "", examples: [{args: "del"}], handle: promptDel},
         },
-        handle: guard(async () => { throw new InputError("用法：ai prompt set 内容 | ai prompt del"); }),
+        handle: guard(async (invocation, ctx) => {
+          if (!invocation.args.length) {
+            const cfg = await readConfig(ctx);
+            await sendPaged(ctx, invocation.message, `💭 <b>当前提示词:</b>\n\n📝 内容: <code>${escape(cfg.prompt || "未设置")}</code>`);
+            return;
+          }
+          throw new InputError("用法：ai prompt set 内容 | ai prompt del");
+        }),
       },
       collapse: {group: "🧩 消息设置:", description: "开/关消息折叠", args: "on|off", caseSensitive: true, examples: [{args: "collapse on"}], handle: setCollapse},
       timeout: {group: "🧩 消息设置:", description: "设置超时时间（1-600 秒）", args: "秒数", caseSensitive: true, examples: [{args: "timeout 120"}], handle: setTimeoutValue},
@@ -386,9 +528,12 @@ export default function createAi() {
           on: {description: "开启 Telegraph", args: "", examples: [{args: "on"}], handle: telegraphToggle(true)},
           off: {description: "关闭 Telegraph", args: "", examples: [{args: "off"}], handle: telegraphToggle(false)},
           limit: {description: "设置记录容量（1-100）", args: "数量", examples: [{args: "limit 50"}], handle: telegraphLimit},
-          del: {description: "删除全部记录（仅支持 del all）", args: "all", examples: [{args: "del all"}], handle: telegraphDel},
+          del: {description: "删除一条记录或全部（del 序号|all）", args: "序号|all", examples: [{args: "del 1"}, {args: "del all"}], handle: telegraphDel},
         },
-        handle: guard(async () => { throw new InputError("用法：ai telegraph on|off|limit 数量|del all"); }),
+        handle: guard(async (invocation, ctx) => {
+          if (invocation.args.length) throw new InputError("用法：ai telegraph on|off|limit 数量|del 序号|all");
+          await sendPaged(ctx, invocation.message, telegraphStatus(await readConfig(ctx)));
+        }),
       },
       search: {group: "💬 提问:", description: "联网搜索并回答", args: "问题", examples: [{args: "search 今天有什么新闻"}], handle: guard(async (invocation, ctx) => ask(invocation, ctx, true))},
     },
