@@ -1,8 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {access, writeFile} from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext, ui} from "telebox/sdk";
 import type {Api} from "teleproto";
 
 const QR_ENCODE = ["/usr/bin/qrencode", "/usr/local/bin/qrencode", "/opt/homebrew/bin/qrencode"] as const;
@@ -43,7 +42,42 @@ async function decode(context: PluginContext, image: Buffer): Promise<string[]> 
       signal, timeoutMs: 30_000, maxOutputBytes: 64 * 1024,
       env: {LANG: "C.UTF-8", LC_ALL: "C.UTF-8"},
     });
-    return result.stdout.toString("utf8").split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 20);
+    return result.stdout.toString("utf8").split("\n").map(value => value.endsWith("\r") ? value.slice(0, -1) : value)
+      .filter(value => value.length > 0).slice(0, 20);
+  });
+}
+
+async function resultPages(values: readonly string[]): Promise<readonly string[]> {
+  const blocks:string[]=[];
+  for(const value of values){let chunk="";for(const character of value){const encoded=escape(character);if(chunk&&chunk.length+encoded.length>3300){blocks.push(`<code>${chunk}</code>`);chunk="";}chunk+=encoded;}blocks.push(`<code>${chunk}</code>`);}
+  const pages:string[]=[];let page="<b>二维码内容</b>";
+  for(const block of blocks){if(page.length+block.length+2>3480){pages.push(page);page="";}page+=`${page?"\n\n":""}${block}`;}
+  if(page)pages.push(page);
+  return pages.map((value,index)=>value+ui.pageLabel(index,pages.length));
+}
+
+async function download(context: PluginContext, source: Api.Message): Promise<Buffer> {
+  if (Number(source.document?.size ?? 0) > MAX_IMAGE_BYTES) throw new Error("Invalid image");
+  return context.telegram.withClient(async (client: any, signal) => {
+    const active=AbortSignal.any([context.signal,signal]);active.throwIfAborted();
+    if (typeof client.iterDownload !== "function") {
+      const value = await client.downloadMedia(source.media!, {outputFile: Buffer.alloc(0), signal:active, progressCallback(received: any) {
+        active.throwIfAborted(); if (typeof received?.greater === "function" && received.greater(MAX_IMAGE_BYTES)) throw new Error("Invalid image");
+      }});
+      active.throwIfAborted();
+      if (!Buffer.isBuffer(value) || !value.length || value.length > MAX_IMAGE_BYTES) throw new Error("Invalid image");
+      return value;
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of client.iterDownload(source.media!, {signal:active})) {
+      active.throwIfAborted(); total += chunk.length;
+      if (total > MAX_IMAGE_BYTES) throw new Error("Invalid image");
+      chunks.push(Buffer.from(chunk));
+      active.throwIfAborted();
+    }
+    if (!total) throw new Error("Invalid image");
+    return Buffer.concat(chunks, total);
   });
 }
 
@@ -54,20 +88,24 @@ function media(raw: Api.Message | undefined): boolean {
 async function sendQr(context: PluginContext, invocation: any, input: string): Promise<void> {
   await context.telegram.edit(invocation.message, "正在生成二维码…");
   const image = await generate(context, input);
-  await context.telegram.withClient(async client => {
+  await context.telegram.withClient(async (client,signal) => {
+    const active=AbortSignal.any([context.signal,signal]);active.throwIfAborted();
     const {CustomFile} = await import("teleproto/client/uploads.js");
+    active.throwIfAborted();
     const raw = invocation.message.raw as Api.Message | undefined;
     if (!raw?.peerId) throw new Error("Missing peer");
     await client.sendFile(raw.peerId, {file: new CustomFile("qrcode.png", image.length, "", image),
       caption: "二维码生成完成", replyTo: invocation.message.replyToId ?? invocation.message.id});
-    if (typeof raw.delete === "function") await raw.delete({revoke: true});
+    active.throwIfAborted();
+    if (typeof raw.delete === "function") {
+      try { await raw.delete({revoke: true}); active.throwIfAborted(); }
+      catch { active.throwIfAborted(); context.log.error("qr_command_cleanup_failed"); }
+    }
   });
 }
 
 export default function createQr() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "qr", description: "生成或识别二维码",
-    resources: {processes: {concurrency: 1, queueCapacity: 4, timeoutMs: 30_000, maxOutputBytes: 2 * 1024 * 1024}}, commands: {
-    qr: {description: "生成或识别二维码", async handle(invocation, context) {
+  const command: CommandDefinition = {"args":"[文本]","examples":[{"args":"Hello World"},{"args":"","description":"回复文本生成二维码；回复图片识别二维码，也可读取命令消息中的图片"}],"help":[{"heading":"功能与限制：","body":"生成 PNG 二维码，输入最多 4000 字节；识别图片上限 20 MiB，一次最多返回 20 条内容。生成成功后删除命令消息。"},{"heading":"系统依赖：","body":"需要 qrencode 与 zbarimg。macOS：<code>brew install qrencode zbar</code>；Ubuntu/Debian：<code>sudo apt-get install qrencode zbar-tools</code>；CentOS/RHEL：<code>sudo yum install qrencode zbar</code>。"}],description: "生成或识别二维码", async handle(invocation, context) {
       const input = invocation.args.join(" ").trim();
       try {
         if (input) { await sendQr(context, invocation, input); return; }
@@ -75,21 +113,25 @@ export default function createQr() {
         const source = (media(invocation.message.raw as Api.Message | undefined) ? invocation.message : reply)?.raw as Api.Message | undefined;
         if (media(source)) {
           await context.telegram.edit(invocation.message, "正在识别二维码…");
-          const image = await context.telegram.withClient(async client => client.downloadMedia(source!.media!, {outputFile: Buffer.alloc(0)}) as Promise<Buffer>);
+          const image = await download(context, source!);
           const values = await decode(context, image);
-          await context.telegram.edit(invocation.message, values.length ?
-            `<b>二维码内容</b>\n\n${values.map(value => `<code>${escape(value)}</code>`).join("\n\n")}` : "未在图片中识别到二维码", values.length ? {parseMode: "html"} : {});
+          if (!values.length) await context.telegram.edit(invocation.message, "未在图片中识别到二维码");
+          else {const pages=await resultPages(values),delivery=await ui.deliverPages(pages,context.signal,(page,index)=>index?context.telegram.reply(invocation.message,page,{parseMode:"html"}):context.telegram.edit(invocation.message,page,{parseMode:"html"}));if(delivery.interrupted){context.log.info("qr_result_delivery_interrupted",{published:delivery.published,total:delivery.total,category:ui.deliveryErrorCategory(delivery.error)});if(!delivery.published)throw new Error("delivery failed");await context.telegram.reply(invocation.message,ui.interruptedNotice(delivery)).catch(()=>{});}}
           return;
         }
         if (reply?.text) { await sendQr(context, invocation, reply.text); return; }
         await context.telegram.edit(invocation.message,
-          `<b>二维码工具</b>\n<code>${escape(invocation.prefix)}qr 文本</code>\n也可回复文本生成，或回复图片识别。\n服务器需要安装 qrencode 与 zbarimg。`,
+          help(invocation.prefix),
           {parseMode: "html"});
       } catch {
         if (context.signal.aborted) return;
         context.log.error("qr_failed");
         await context.telegram.edit(invocation.message, "二维码操作失败，请确认输入有效且服务器已安装 qrencode 与 zbarimg");
       }
-    }},
+    }};
+  const help = (prefix: string) => renderCommandHelp("qr", command, {prefix, title: "📱 QR 二维码工具"});
+  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "qr", description: "生成或识别二维码",
+    resources: {processes: {concurrency: 1, queueCapacity: 4, timeoutMs: 30_000, maxOutputBytes: 2 * 1024 * 1024}}, commands: {
+    qr: command,
   }});
 }
