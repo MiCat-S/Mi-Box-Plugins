@@ -8,7 +8,7 @@ const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 const envelope = {id: 17, chatId: '42', senderId: '42', outgoing: true, text: '.dc'};
-let buildRoot, createPlugin, manifest, Api, integer;
+let buildRoot, createPlugin, manifest, Api, integer, teleprotoUtils;
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -33,6 +33,7 @@ test.before(async () => {
   assert.equal(Boolean(require.cache[modulePath]), loaded, 'factory import must not load Teleproto');
   ({Api} = require(path.join(core, 'node_modules/teleproto')));
   ({returnBigInt: integer} = require(path.join(core, 'node_modules/teleproto/Helpers.js')));
+  teleprotoUtils = require(path.join(core, 'node_modules/teleproto/Utils.js'));
 });
 test.after(async () => {
   if (buildRoot) await fs.rm(buildRoot, {recursive: true, force: true});
@@ -106,7 +107,7 @@ test('dc builds a pure default SDK factory with declared protocol dependencies',
   const first = createPlugin();
   assert.notEqual(first, createPlugin());
   assert.equal(first.id, 'dc');
-  assert.equal(first.apiVersion, 1);
+  assert.equal(first.apiVersion, 2);
   assert.deepEqual(Object.keys(first.commands), ['dc']);
   assert.deepEqual(manifest.imports, ['telebox/sdk', 'teleproto', 'teleproto/Helpers.js']);
   assert.equal(first.setup, undefined);
@@ -189,6 +190,32 @@ test('dc explicit usernames and exact numeric IDs resolve before full-user RPC',
     assert.ok(f.edits.at(-1).text.includes('Alice'));
     assert.ok(f.edits.at(-1).text.includes('DC4'));
   }
+});
+
+test('dc full-user request crosses real TL resolve and serialization boundaries', async t => {
+  let nativeClient;
+  const input = new Api.InputPeerUser({userId: integer(123), accessHash: integer(456)});
+  const f = await fixture(t, {native: {
+    getInputEntity: async () => input,
+    invoke: async request => {
+      await request.resolve(nativeClient, teleprotoUtils);
+      assert.ok(request.getBytes().length > 0);
+      return full();
+    },
+  }});
+  nativeClient = f.client;
+  await f.run('.dc 9007199254740993');
+  assert.match(f.edits.at(-1).text, /DC4/);
+});
+
+test('successful lookup does not report query failure when its result edit fails', async t => {
+  const f = await fixture(t, {onEdit: async (_message, text) => {
+    if (text.startsWith('📍')) throw new Error('transport-secret');
+  }});
+  await f.run('.dc @alice');
+  assert.equal(f.edits.filter(item => item.text.includes('查询失败') || item.text.includes('获取用户信息失败')).length, 0);
+  assert.deepEqual(f.logs, [{event: 'dc_result_edit_failed', fields: undefined}]);
+  assert.doesNotMatch(JSON.stringify(f.logs), /transport-secret/);
 });
 
 test('dc mention-name and phone entities preserve peer-ID interpretation', async t => {
