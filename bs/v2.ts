@@ -1,29 +1,70 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
+import {returnBigInt} from "teleproto/Helpers.js";
 
 type Target = {id: string; target: string; chatId?: string; topicId?: string; display?: string; status?: "0"; createdAt: string; updatedAt?: string; [key: string]: unknown};
 type State = {schemaVersion: number; seq: string; mode: "sequence" | "broadcast"; targets: Target[]; [key: string]: unknown};
+class FloodRetryError extends Error {}
+const MAX_FLOOD_WAIT_MS=60_000;
 const defaults = (): State => ({schemaVersion: 1, seq: "0", mode: "sequence", targets: []});
 const store = (context: PluginContext) => context.storage.json<State>("config.json", defaults());
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
 
 function normalize(source: State): State {
-  const targets = Array.isArray(source.targets) ? source.targets.filter(value => value && typeof value.target === "string").map(value => ({
-    ...value, id: String(value.id), target: String(value.target), chatId: value.chatId === undefined ? undefined : String(value.chatId),
-    topicId: value.topicId === undefined ? undefined : String(value.topicId), createdAt: String(value.createdAt ?? Date.now()),
-  })) : [];
+  const targets = Array.isArray(source.targets) ? source.targets.filter(value => value && typeof value.target === "string").map(value => {
+    const normalized={...value,id:String(value.id),target:String(value.target),createdAt:String(value.createdAt??Date.now())};
+    if(value.chatId===undefined)delete normalized.chatId;else normalized.chatId=String(value.chatId);
+    if(value.topicId===undefined)delete normalized.topicId;else normalized.topicId=String(value.topicId);
+    return normalized;
+  }) : [];
   const maximum = targets.reduce((max, value) => Math.max(max, Number(value.id) || 0), 0);
   return {...source, schemaVersion: 1, seq: String(Math.max(maximum, Number(source.seq) || 0)),
     mode: source.mode === "broadcast" ? "broadcast" : "sequence", targets};
 }
 
-function lookup(target: Target): string | bigint {
+function lookup(target: Target): string | ReturnType<typeof returnBigInt> {
   const value = target.chatId ?? target.target;
-  if (/^-?\d+$/.test(value)) return BigInt(value);
+  if (/^-?\d+$/.test(value)) return returnBigInt(value);
   return value;
 }
+
+function entityName(entity: any): string {
+  return entity?.title || [entity?.firstName, entity?.lastName].filter(Boolean).join(" ") || entity?.username && `@${entity.username}` || "来源对话";
+}
+
+function entityId(entity: any): string | undefined {
+  const raw=entity?.id??entity?.channelId??entity?.chatId??entity?.userId;
+  if(raw===undefined)return;
+  return String(raw).replace(/^-100/,"").replace(/^-/g,"");
+}
+
+function messageLink(entity:any,id:number):string|undefined {
+  const username=typeof entity?.username==="string"&&entity.username.trim();
+  if(username)return `https://t.me/${username}/${id}`;
+  const value=entityId(entity);if(!value)return;
+  return entity?.className==="User"?`tg://user?id=${value}`:`https://t.me/c/${value}/${id}`;
+}
+function entityLink(entity:any):string|undefined {
+  const username=typeof entity?.username==="string"&&entity.username.trim();if(username)return `https://t.me/${username}`;
+  const value=entityId(entity);if(!value)return;
+  return entity?.className==="User"?`tg://user?id=${value}`:`https://t.me/c/${value}`;
+}
+function linkTags(entity:any,ids:number[]):string {
+  return ids.map((id,index)=>{const url=messageLink(entity,id);return url?`<a href="${escape(url)}">#${index+1}</a>`:`#${index+1}`;}).join(" ");
+}
+function floodWait(error:unknown):number|undefined {
+  const text=String((error as any)?.errorMessage??(error as any)?.message??"");
+  const match=text.match(/(?:^|\b)FLOOD_WAIT_(\d+)(?:\b|$)/);if(!match)return;
+  return (Number(match[1])+1)*1000;
+}
+function wait(ms:number,signal:AbortSignal):Promise<void>{return new Promise((resolve,reject)=>{
+  if(signal.aborted){reject(signal.reason);return;}const timer=setTimeout(done,ms);
+  function done(){signal.removeEventListener("abort",abort);resolve();}
+  function abort(){clearTimeout(timer);reject(signal.reason);}
+  signal.addEventListener("abort",abort,{once:true});
+});}
 
 function list(state: State): string {
   const rows = state.targets.slice().sort((a, b) => Number(a.id) - Number(b.id)).map(value =>
@@ -52,17 +93,19 @@ async function forward(invocation: any, context: PluginContext, count: number): 
   if (!targets.length) { await context.telegram.edit(invocation.message, "尚未配置可用目标"); return; }
   await context.telegram.edit(invocation.message, "正在保送消息…");
   try {
-    const successes: string[] = [];
+    const successes: {target:Target;entity:any;messages:any[]}[] = [];
     const failures: string[] = [];
+    const throttled: string[] = [];
     await context.telegram.withClient(async (client, signal) => {
       const {Api} = await import("teleproto");
       const raw = invocation.message.raw as ApiTypes.Message | undefined;
       const replied = reply.raw as ApiTypes.Message | undefined;
-      if (!raw?.peerId || !replied) throw new Error("Missing source");
+      if (!replied) throw new Error("Missing source");
+      const sourcePeer=raw?.peerId??returnBigInt(invocation.message.chatId);
       const values: any[] = [];
       for (let id = replied.id; values.length < count && id < replied.id + count * 3; id++) {
         signal.throwIfAborted();
-        const result = await client.getMessages(raw.peerId, {ids: [id]});
+        const result = await client.getMessages(sourcePeer, {ids: [id]});
         const message = Array.isArray(result) ? result[0] : result;
         if (message?.id) values.push(message.id);
       }
@@ -71,21 +114,51 @@ async function forward(invocation: any, context: PluginContext, count: number): 
         signal.throwIfAborted();
         try {
           const entity: any = await client.getEntity(lookup(target) as any);
+          signal.throwIfAborted();
           const input = await client.getInputEntity(entity);
-          const result = await client.invoke(new Api.messages.ForwardMessages({fromPeer: raw.peerId, id: values, toPeer: input,
-            ...(target.topicId && /^\d+$/.test(target.topicId) ? {topMsgId: Number(target.topicId)} : {})}));
+          signal.throwIfAborted();
+          let result:any;
+          for(let attempt=0;attempt<2;attempt++){
+            signal.throwIfAborted();
+            try{result=await client.invoke(new Api.messages.ForwardMessages({fromPeer: sourcePeer, id: values, toPeer: input,
+              ...(target.topicId && /^\d+$/.test(target.topicId) ? {topMsgId: Number(target.topicId)} : {})}));break;}
+            catch(error){const delay=floodWait(error);if(delay===undefined)throw error;
+              if(delay>MAX_FLOOD_WAIT_MS||attempt===1)throw new FloodRetryError();await wait(delay,signal);}
+          }
+          signal.throwIfAborted();
           const messages = forwarded(result);
-          successes.push(`${target.display || target.target}（${messages.length || values.length} 条）`);
+          successes.push({target,entity,messages});
           if (state.mode === "sequence") break;
-        } catch { failures.push(target.display || target.target); }
+        } catch(error) {signal.throwIfAborted();const name=target.display||target.target;
+          if(error instanceof FloodRetryError)throttled.push(name);else failures.push(name);}
+      }
+      if(successes.length){
+        let sourceEntity:any;
+        signal.throwIfAborted();
+        try{sourceEntity=await client.getEntity(sourcePeer);signal.throwIfAborted();}
+        catch{signal.throwIfAborted();context.log.error("bs_source_entity_failed");}
+        for(const success of successes){
+          signal.throwIfAborted();
+          const first=success.messages[0];if(!first?.id)continue;
+          const sourceName=escape(entityName(sourceEntity));
+          const sourceUrl=entityLink(sourceEntity);
+          const source=sourceUrl?`<a href="${escape(sourceUrl)}">${sourceName}</a>`:sourceName;
+          const sentIds=success.messages.map(message=>message?.id).filter((id):id is number=>typeof id==="number");
+          const original=linkTags(sourceEntity,values.slice(0,sentIds.length));
+          const sent=linkTags(success.entity,sentIds);
+          try{await client.sendMessage(success.entity,{message:`来源：${source}<br>原消息：${original}<br>消息：${sent}`,parseMode:"html",linkPreview:false,replyTo:first.id,
+            ...(success.target.topicId&&/^\d+$/.test(success.target.topicId)?{topMsgId:Number(success.target.topicId)}:{})});}
+          catch{signal.throwIfAborted();context.log.error("bs_target_feedback_failed");}
+        }
       }
     });
-    if (!successes.length) { await context.telegram.edit(invocation.message, `保送失败${failures.length ? `：${failures.map(escape).join("、")}` : ""}`); return; }
-    await context.telegram.edit(invocation.message, `已保送至：${successes.map(escape).join("、")}`);
-  } catch {
+    if (!successes.length) { await context.telegram.edit(invocation.message, throttled.length ? `操作频繁，请稍后重试：${throttled.map(escape).join("、")}` : `保送失败${failures.length ? `：${failures.map(escape).join("、")}` : ""}`); return; }
+    await context.telegram.edit(invocation.message, `已保送至：${successes.map(value=>escape(`${value.target.display || value.target.target}（${value.messages.length || count} 条）`)).join("、")}`+
+      (throttled.length?`；限流：${throttled.map(escape).join("、")}`:""));
+  } catch(error) {
     if (context.signal.aborted) return;
     context.log.error("bs_forward_failed");
-    await context.telegram.edit(invocation.message, "保送失败，请检查目标权限或稍后重试");
+    await context.telegram.edit(invocation.message, error instanceof FloodRetryError ? "操作频繁，请稍后重试" : "保送失败，请检查目标权限或稍后重试");
   }
 }
 
