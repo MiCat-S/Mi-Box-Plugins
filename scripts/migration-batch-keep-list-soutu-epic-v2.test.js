@@ -109,13 +109,13 @@ test('epic renders current free games and escapes remote content', async t => {
   await f.run('.epic');
   assert.match(f.edits.at(-1).text, /Game &lt;One&gt;/);
   assert.match(f.edits.at(-1).text, /Fun &amp; free/);
-  assert.match(f.edits.at(-1).text, /前往领取/);
+  assert.match(f.edits.at(-1).text, /href="https:\/\/store\.epicgames\.com\/zh-CN\/p\/game-one">🔗 领取<\/a>/);
   assert.equal(f.edits.at(-1).options.linkPreview, false);
 });
 
 test('epic rejects malformed API data with a stable user-facing error', async t => {
   const f = await fixture(t, 'epic', {fetch: async () => Response.json({secret: 'do-not-leak'})});
   await f.run('.epic');
-  assert.match(f.edits.at(-1).text, /获取限免失败/);
+  assert.match(f.edits.at(-1).text, /获取失败.*网络错误/);
   assert.doesNotMatch(JSON.stringify(f.edits), /do-not-leak/);
 });

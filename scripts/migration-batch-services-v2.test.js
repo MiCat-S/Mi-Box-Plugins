@@ -147,7 +147,8 @@ test('git_PR mergeall reports partial success and authentication failures withou
   const f = baseContext({storage});
   f.context.http = {async withResponse(url, init, consume) {
     const target = String(url); let response;
-    if (init.method === 'GET') response = new Response(JSON.stringify([{number: 2}, {number: 1}]), {status: 200});
+    if (init.method === 'GET' && /\/pulls\/[12]$/.test(target)) response = Response.json({mergeable: true});
+    else if (init.method === 'GET') response = new Response(JSON.stringify([{number: 2}, {number: 1}]), {status: 200});
     else if (target.includes('/1/merge')) response = new Response(JSON.stringify({merged: true}), {status: 200});
     else response = new Response(JSON.stringify({message: 'blocked secret'}), {status: 422});
     return consume(response, f.context.signal);
