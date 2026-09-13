@@ -1,5 +1,5 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {definePlugin, ui, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 const translations: ReadonlyArray<readonly [RegExp, string]> = [
   [/active \(running\)/g, "活跃 (运行中)"],
@@ -17,7 +17,7 @@ const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, chara
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#x27;"})[character]!);
 
 function serviceName(value: string): string | undefined {
-  return /^[A-Za-z0-9_.@\\-]+$/.test(value) && value.length <= 128 ? value : undefined;
+  return !value.startsWith("-") && /^[A-Za-z0-9_.@\\-]+$/.test(value) && value.length <= 128 ? value : undefined;
 }
 
 function translate(value: string): string {
@@ -32,7 +32,9 @@ function captured(error: unknown): string {
 }
 
 async function run(ctx: PluginContext, file: string, args: readonly string[], timeoutMs = 8_000) {
-  return ctx.processes.run(file, args, {timeoutMs, maxOutputBytes: 64 * 1024});
+  const result=await ctx.processes.run(file,args,{timeoutMs,maxOutputBytes:64*1024});
+  ctx.signal.throwIfAborted();
+  return result;
 }
 
 async function detect(ctx: PluginContext): Promise<string> {
@@ -40,14 +42,25 @@ async function detect(ctx: PluginContext): Promise<string> {
     const result = await run(ctx, "/usr/bin/ps", ["-o", "unit=", "-p", String(process.pid)]);
     const unit = result.stdout.toString("utf8").trim();
     if (unit && unit !== "-" && serviceName(unit)) return unit.endsWith(".service") ? unit.slice(0, -8) : unit;
-  } catch {}
-  for (const candidate of ["pagermaid", "pgm", "pagermaid-modify", "pgm-sg", "pgm-hk"]) {
+  } catch {ctx.signal.throwIfAborted();}
+  try {
+    const result=await run(ctx,"/usr/bin/systemctl",["status",String(process.pid)]);
+    const match=result.stdout.toString("utf8").match(/[●◯]\s*([A-Za-z0-9_.@\\-]+\.service)\b/);
+    if(match?.[1]&&serviceName(match[1]))return match[1].slice(0,-8);
+  } catch {ctx.signal.throwIfAborted();}
+  for (const candidate of ["mibot.service", "pagermaid", "pgm", "pagermaid-modify", "pgm-sg", "pgm-hk"]) {
     try {
       const result = await run(ctx, "/usr/bin/systemctl", ["is-active", candidate]);
       if (result.stdout.toString("utf8").trim() === "active") return candidate;
-    } catch {}
+    } catch {ctx.signal.throwIfAborted();}
   }
   return "pagermaid";
+}
+
+async function deliver(ctx:PluginContext,message:MessageEnvelope,html:string):Promise<void>{
+  const pages=await ui.renderRichText(html,ui.PAGE_LABEL_RESERVE);
+  const result=await ui.deliverPages(pages,ctx.signal,(page,index)=>{const value=page+ui.pageLabel(index,pages.length);return index?ctx.telegram.reply(message,value,{parseMode:"html"}):ctx.telegram.edit(message,value,{parseMode:"html"});});
+  if(result.interrupted){ctx.log.error("service_delivery_failed",{kind:"internal",published:result.published,total:result.total});if(!result.published)throw new Error("delivery failed");try{await ctx.telegram.reply(message,ui.interruptedNotice(result));}catch{ctx.signal.throwIfAborted();ctx.log.error("service_delivery_notice_failed",{kind:"internal"});}}
 }
 
 export default function createService() {
@@ -70,7 +83,7 @@ export default function createService() {
       }
       await ctx.telegram.edit(message, `🔍 正在检查 ${escape(name)} 服务状态...`);
       try {
-        const result = await run(ctx, "/usr/bin/systemctl", ["--no-pager", "status", name]);
+        const result = await run(ctx, "/usr/bin/systemctl", ["--no-pager", "status", "--", name]);
         const raw = `${result.stdout.toString("utf8")}\n${result.stderr.toString("utf8")}`;
         if (/could not be found|not be found|Loaded:\s+not-found/i.test(raw)) {
           await ctx.telegram.edit(message, `❌ 服务 '${name}' 未找到。`);
@@ -83,16 +96,17 @@ export default function createService() {
         const details = raw.split("\n").filter(line => /Active|PID|Tasks|Memory|CPU|limit|high|max|available/i.test(line)).map(line => line.trim()).join("\n");
         const body = translate(details || "未返回可识别的状态字段");
         const emoji = body.includes("活跃 (运行中)") ? "🟢" : "🟡";
-        await ctx.telegram.edit(message, `${emoji} <b>${escape(name)} 服务详情${automatic ? " (自动检测)" : ""}</b>\n<pre>${escape(body)}</pre>`, {parseMode:"html"});
+        await deliver(ctx,message,`${emoji} <b>${escape(name)} 服务详情${automatic ? " (自动检测)" : ""}</b>\n<pre>${escape(body)}</pre>`);
       } catch (error) {
-        if (ctx.signal.aborted) return;
+        ctx.signal.throwIfAborted();
         const output = captured(error);
         if (/could not be found|not be found|Loaded:\s+not-found/i.test(output)) {
           await ctx.telegram.edit(message, `❌ 服务 '${name}' 未找到。`);
         } else if (/Active:\s+inactive/i.test(output)) {
           await ctx.telegram.edit(message, `🔴 服务 '${name}' 已停止 (未运行)。`);
         } else {
-          await ctx.telegram.edit(message, `❌ 获取服务详情时发生错误: ${escape(error instanceof Error ? error.message : error)}`);
+          ctx.log.error("service_status_failed",{kind:"internal"});
+          await ctx.telegram.edit(message,"❌ 获取服务详情时发生错误，请稍后重试");
         }
       }
     }}},
