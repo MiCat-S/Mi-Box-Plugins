@@ -1,42 +1,75 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {setTimeout as delay} from "node:timers/promises";
 
 interface State extends Record<string, unknown> { schemaVersion: number; autoMode: boolean; enabledUsers: string[]; maxEdits: number; }
 const defaults: State = {schemaVersion: 1, autoMode: false, enabledUsers: [], maxEdits: 80};
+export const EDIT_INTERVAL_MS = 50;
 const escape = (value: string) => value.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]!);
-const help = (prefix: string) => `<b>打字机效果插件</b>\n<code>${prefix}teletype 文本</code>\n<code>${prefix}teletype on/off/status</code>`;
+const messageNotModified = (error: unknown): boolean => {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as {message?: unknown; errorMessage?: unknown};
+  return [candidate.message, candidate.errorMessage].some(value => typeof value === "string" && value.includes("MESSAGE_NOT_MODIFIED"));
+};
 
 async function animate(message: MessageEnvelope, text: string, context: PluginContext, maxEdits: number): Promise<void> {
-  const chars = Array.from(text).slice(0, 4096);
-  const steps = Math.max(1, Math.ceil(chars.length / Math.max(1, maxEdits - 1)));
+  const chars = Array.from(text);
+  const editBudget = Math.min(100, Math.max(2, Math.trunc(Number(maxEdits) || defaults.maxEdits)));
+  const pairBudget = Math.floor((editBudget - 2) / 2);
+  const steps = Math.max(1, Math.ceil(chars.length / Math.max(1, pairBudget)));
   let rendered = "";
+  context.signal.throwIfAborted();
+  await context.telegram.edit(message, "█", {parseMode: "html"});
+  context.signal.throwIfAborted();
+  await delay(EDIT_INTERVAL_MS, undefined, {signal: context.signal});
+  if (!pairBudget) {
+    await context.telegram.edit(message, escape(chars.join("")), {parseMode: "html"});
+    return;
+  }
   for (let index = 0; index < chars.length; index += steps) {
     context.signal.throwIfAborted();
     rendered += chars.slice(index, index + steps).join("");
-    await context.telegram.edit(message, `${escape(rendered)}█`, {parseMode: "html"});
+    try {
+      await context.telegram.edit(message, `${escape(rendered)}█`, {parseMode: "html"});
+      context.signal.throwIfAborted();
+      await delay(EDIT_INTERVAL_MS, undefined, {signal: context.signal});
+      await context.telegram.edit(message, escape(rendered), {parseMode: "html"});
+    } catch (error) {
+      if (!messageNotModified(error)) throw error;
+      continue;
+    }
+    if (index + steps < chars.length) {
+      context.signal.throwIfAborted();
+      await delay(EDIT_INTERVAL_MS, undefined, {signal: context.signal});
+    }
   }
-  await context.telegram.edit(message, escape(chars.join("")), {parseMode: "html"});
+  context.signal.throwIfAborted();
+  try {
+    await context.telegram.edit(message, escape(chars.join("")), {parseMode: "html"});
+  } catch (error) {
+    if (!messageNotModified(error)) throw error;
+  }
 }
 
 export default function createTeletype() {
   return definePlugin({renderHelp: renderPluginHelp,
     apiVersion: 1, id: "teletype", description: "手动或自动显示打字机编辑效果",
-    commands: {teletype: {helpOnEmpty: true, description: "打字机效果", ignoreEdited: true, async handle(invocation, context) {
+    commands: {teletype: {description: "打字机效果", ignoreEdited: true, async handle(invocation, context) {
       const store = context.storage.json<State>("config.json", defaults);
       const first = invocation.args[0]?.toLowerCase();
-      if (!first) return context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});
+      if (!first) return context.telegram.edit(invocation.message, `❌ <b>参数错误</b>\n\n${renderPluginHelp(invocation.prefix)}`, {parseMode: "html"});
       if (["on", "off", "status"].includes(first)) {
         const user = invocation.message.senderId;
-        if (!user) return context.telegram.edit(invocation.message, "❌ 无法获取用户ID", {});
         if (first === "status") {
           const state = await store.read();
-          return context.telegram.edit(invocation.message, `📊 自动模式: ${state.autoMode && state.enabledUsers.includes(user) ? "🟢 开启" : "🔴 关闭"}`, {});
+          return context.telegram.edit(invocation.message, `📊 <b>状态</b>\n\n自动模式: ${user && state.enabledUsers.includes(user) ? "🟢 开启" : "🔴 关闭"}`, {parseMode: "html"});
         }
         const enabled = first === "on";
-        await store.update(state => ({...state, schemaVersion: 1, autoMode: enabled || state.enabledUsers.some(id => id !== user),
-          enabledUsers: enabled ? [...new Set([...state.enabledUsers, user])] : state.enabledUsers.filter(id => id !== user),
+        if (enabled && !user) return context.telegram.edit(invocation.message, "❌ <b>无法获取用户ID</b>", {parseMode: "html"});
+        await store.update(state => ({...state, schemaVersion: 1, autoMode: enabled,
+          enabledUsers: enabled ? [...new Set([...state.enabledUsers, user!])] : state.enabledUsers.filter(id => id !== user),
           maxEdits: Math.min(100, Math.max(2, Number(state.maxEdits) || 80))}));
-        return context.telegram.edit(invocation.message, `✅ 自动打字机模式已${enabled ? "开启" : "关闭"}`, {});
+        return context.telegram.edit(invocation.message, `${enabled ? "✅" : "❌"} <b>自动打字机模式已${enabled ? "开启" : "关闭"}</b>`, {parseMode: "html"});
       }
       const state = await store.read();
       await animate(invocation.message, invocation.args.join(" "), context, state.maxEdits);
