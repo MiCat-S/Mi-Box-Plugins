@@ -56,7 +56,7 @@ function fixture(t, id, initial, client = {}) {
 
 const deletionState = () => ({schemaVersion: 2, enabled: true, rules: [{id: '1', command: 'ping', delay: 60}], pending: {}});
 const repeatState = () => ({schemaVersion: 1, enabledGroups: ['-1007'], dailyHistory: {}, lastDay: 0, trigger: {timeWindow: 300, minUsers: 2}});
-const incoming = (senderId, text) => ({senderId, text, outgoing: false, raw: {sender: {className: 'User', bot: false}}});
+const incoming = (senderId, text) => ({senderId, text, outgoing: false, raw: {sender: {className: 'User', bot: false}, date: Math.floor(Date.now() / 1000)}});
 
 test('autodel preserves a 30-day delay across bounded, abortable timer segments', async t => {
   const waits = [];

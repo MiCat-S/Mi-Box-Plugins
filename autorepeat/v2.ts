@@ -13,6 +13,9 @@ const store = (context: PluginContext) => context.storage.json<State>("autorepea
 const escape = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]!));
 const dayInShanghai = (now = Date.now()) => Math.floor((now + 8 * 3600_000) / 86400_000);
 const contentKey = (text: string) => createHash("sha256").update(text).digest("hex");
+// The original daily key was the text (<=50 chars) or text.slice(0,50)+length. Honouring that
+// shape lets entries migrated from the legacy lowdb file keep suppressing the same content.
+const legacyContentKey = (text: string) => text.length > 50 ? text.substring(0, 50) + text.length : text;
 
 function normalize(value: unknown): State {
   const source = value && typeof value === "object" ? value as Record<string, any> : {};
@@ -36,15 +39,17 @@ async function updateState(context: PluginContext, transform: (state: State) => 
   return store(context).update(value => transform(normalize(value)));
 }
 
-async function edit(context: PluginContext, message: MessageEnvelope, text: string, html = false, expire = true) {
+async function edit(context: PluginContext, message: MessageEnvelope, text: string, html = false, expire = 30) {
+  const {chatId, id} = message;
   await context.telegram.edit(message, text, html ? {parseMode: "html", linkPreview: false} : {});
   if (!expire) return;
-  void context.tasks.run(`autorepeat:expire:${message.chatId}:${message.id}`, async signal => {
+  void context.tasks.run(`autorepeat:expire:${chatId}:${id}`, async signal => {
     try {
-      await sleep(30_000, undefined, {signal});
-      await context.telegram.withClient(async client => client.deleteMessages(returnBigInt(message.chatId), [message.id], {revoke: true}));
-    } catch (error) {
-      if (!signal.aborted) context.log.error("autorepeat:expire", {error: String(error).slice(0, 300)});
+      await sleep(expire * 1000, undefined, {signal});
+      await context.telegram.withClient(async client => client.deleteMessages(returnBigInt(chatId), [id], {revoke: true}));
+    } catch {
+      // Fixed event and non-sensitive ids only; the underlying error may echo credentials.
+      if (!signal.aborted) context.log.error("autorepeat:expire_failed", {chatId, messageId: id});
     }
   });
 }
@@ -98,8 +103,8 @@ async function processMessage(message: MessageEnvelope, context: PluginContext, 
       messages.push({senderId: message.senderId!, text: message.text, time: now});
       recent.set(chatId, messages.slice(-5000));
       const unique = new Set(messages.filter(item => item.text === message.text).map(item => item.senderId));
-      const token = contentKey(message.text), history = value.dailyHistory[chatId] ?? [];
-      if (unique.size >= value.trigger.minUsers && !history.includes(token)) {
+      const token = contentKey(message.text), legacy = legacyContentKey(message.text), history = value.dailyHistory[chatId] ?? [];
+      if (unique.size >= value.trigger.minUsers && !history.includes(token) && !history.includes(legacy)) {
         repeat = true;
         return {...value, dailyHistory: {...value.dailyHistory, [chatId]: [...history, token].slice(-5000)}};
       }
@@ -120,7 +125,7 @@ export default function createPlugin() {
     try {
       const action = args[0]?.toLowerCase();
       if (action === "allon") {
-        await edit(context, message, "🔄 正在扫描所有群组...", false, false);
+        await edit(context, message, "🔄 正在扫描所有群组...", false, 0);
         const ids = await allGroups(context); await updateState(context, state => ({...state, enabledGroups: [...new Set([...state.enabledGroups, ...ids])]}));
         await edit(context, message, `✅ 已开启 ${ids.length} 个群组的自动复读`); return;
       }
@@ -141,30 +146,31 @@ export default function createPlugin() {
           try { const title = await context.telegram.withClient(async client => String((await client.getEntity(returnBigInt(id)) as any).title ?? id)); rows.push(`• <b>${escape(title)}</b> (<code>${escape(id)}</code>)`); }
           catch { rows.push(`• <code>${escape(id)}</code> (无法获取信息)`); }
         }
-        await edit(context, message, `📝 <b>已开启自动复读群组 (${ids.length})</b>\n<b>第 ${Math.min(page, pages)}/${pages} 页</b>\n\n${rows.join("\n")}`, true); return;
+        await edit(context, message, `📝 <b>已开启自动复读群组 (${ids.length}):</b>\n<b>第 ${Math.min(page, pages)}/${pages} 页</b>\n\n${rows.join("\n")}` + (pages > 1 ? `\n\n使用 <code>${prefix}autorepeat list ${page + 1}</code> 查看下一页` : ""), true); return;
       }
       if (["on", "off"].includes(action)) {
         const group = await resolveGroup(context, message, args[1]);
         await updateState(context, state => ({...state, enabledGroups: action === "on" ? [...new Set([...state.enabledGroups, group.id])] : state.enabledGroups.filter(id => id !== group.id)}));
-        await edit(context, message, `${action === "on" ? "✅ 已开启" : "❌ 已关闭"} <b>${escape(group.title)}</b> 的自动复读`, true); return;
+        await edit(context, message, `${action === "on" ? "✅ 已开启" : "❌ 已关闭"} <b>${escape(group.title)}</b> 的自动复读`, true, 3); return;
       }
       try {
         const group = await resolveGroup(context, message);
         const state = await store(context).read();
         await edit(context, message, `🤖 <b>${escape(group.title)}</b>\n群组ID: <code>${escape(group.id)}</code>\n状态: ${state.enabledGroups.includes(group.id) ? "✅ 已开启" : "❌ 已关闭"}\n触发条件: ${state.trigger.timeWindow}秒内${state.trigger.minUsers}人`, true); return;
       } catch {
-        await edit(context, message, `<b>自动复读</b>\n<code>${prefix}autorepeat on|off [群组]</code>\n<code>${prefix}autorepeat allon|alloff|list</code>\n<code>${prefix}autorepeat set [秒] [人数]</code>`, true);
+        await edit(context, message, renderPluginHelp(prefix), true);
       }
-    } catch (error) { if (!context.signal.aborted) await edit(context, message, `❌ 操作失败: <code>${escape(error instanceof Error ? error.message : error)}</code>`, true); }
+    } catch { if (!context.signal.aborted) await edit(context, message, "❌ 操作失败，请稍后重试"); }
   }}},
   listeners: [{edited: false, ignoreCommands: true, async handle(message, context) {
-    if (message.outgoing || !message.senderId || !message.text || message.forwarded) return;
+    if (message.outgoing || !message.senderId || !message.text) return;
     const raw: any = message.raw;
     const date = Number(raw?.date);
-    if (Number.isFinite(date) && Date.now() / 1000 - date > 60) return;
+    if (!Number.isFinite(date) || date <= 0 || Date.now() / 1000 - date > 60) return;
     if (raw?.sender?.bot === true || raw?.sender?.className !== "User") return;
+    const {chatId, id} = message;
     try { await processMessage(message, context, runtime); }
-    catch (error) { if (!context.signal.aborted) context.log.error("autorepeat:listener", {error: String(error).slice(0, 300)}); }
+    catch { if (!context.signal.aborted) context.log.error("autorepeat:listener_failed", {chatId, messageId: id}); }
   }}],
   async setup(context) { await store(context).update(value => normalize(value)); },
   cleanup() { runtime.recent.clear(); runtime.serial.clear(); },
