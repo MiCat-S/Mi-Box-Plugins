@@ -1,6 +1,7 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
 import type {Api} from "teleproto";
+import {returnBigInt} from "teleproto/Helpers";
 import {crazy4Data} from "./v2/data";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
@@ -19,15 +20,23 @@ export default function createCrazy4() {
         return;
       }
       try {
-        await context.telegram.withClient(async client => {
+        await context.telegram.withClient(async (client, signal) => {
           const raw = invocation.message.raw as Api.Message | undefined;
-          if (!raw?.peerId) throw new Error("Missing peer");
-          await client.sendMessage(raw.peerId, {message: escape(text), parseMode: "html", replyTo: invocation.message.replyToId});
-          if (typeof raw.delete === "function") await raw.delete({revoke: true});
+          const peer = raw?.peerId ?? returnBigInt(invocation.message.chatId);
+          signal.throwIfAborted();
+          await client.sendMessage(peer, {message: escape(text), parseMode: "html", replyTo: invocation.message.replyToId});
+          signal.throwIfAborted();
+          try {
+            if (typeof raw?.delete === "function") await raw.delete({revoke: true});
+            else await client.deleteMessages(peer, [invocation.message.id], {revoke: true});
+          } catch {
+            signal.throwIfAborted();
+            context.log.error("crazy4_receipt_cleanup_failed", {chatId: invocation.message.chatId, messageId: invocation.message.id});
+          }
         });
       } catch {
         if (context.signal.aborted) return;
-        context.log.error("crazy4_failed");
+        context.log.error("crazy4_failed", {chatId: invocation.message.chatId, messageId: invocation.message.id});
         await context.telegram.edit(invocation.message, "文案发送失败，请稍后重试");
       }
     }}},
