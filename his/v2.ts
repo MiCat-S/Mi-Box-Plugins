@@ -1,8 +1,10 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {definePlugin, ui, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 
 const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#x27;"})[c]!);
 const HELP = `📜 <b>消息历史查询</b>\n\n<b>使用方法：</b>\n• <code>{p}his</code> - 回复消息时查询该用户历史\n• <code>{p}his &lt;目标&gt;</code> - 查询目标的消息历史\n• <code>{p}his &lt;目标&gt; &lt;数量&gt;</code> - 查询指定数量消息\n• <code>{p}his &lt;数量&gt;</code> - 回复消息时查询指定数量\n\n<b>注意事项：</b>\n• 仅限群组使用\n• 默认查询30条消息\n• 目标可以是用户名、用户ID或频道ID`;
+class UserError extends Error {constructor(readonly feedback:string){super("HIS_USER_ERROR");}}
+const floodSeconds=(detail:string)=>detail.match(/(?:^|\b)FLOOD_WAIT[_ ]?(\d+)(?:\b|$)/)?.[1];
 
 function mediaText(message: any, caption: string): string {
   const media = message.media; if (!media) return caption;
@@ -22,34 +24,34 @@ function mediaText(message: any, caption: string): string {
 
 async function query(message: MessageEnvelope, target: string, count: number, ctx: PluginContext) {
   await ctx.telegram.edit(message, "🔍 正在查询消息历史...", {parseMode: "html"});
+  ctx.signal.throwIfAborted();
   await ctx.telegram.withClient(async (client: any, signal) => {
-    const chat: any = (message.raw as any)?.peerId ?? message.chatId;
+    const {returnBigInt}=await import("teleproto/Helpers.js");
+    signal.throwIfAborted();
+    const chat: any = (message.raw as any)?.peerId ?? returnBigInt(message.chatId);
+    const targetEntity=/^-?\d+$/.test(target)?returnBigInt(target):target;
     let display = target, base = "";
-    try { const entity: any = await client.getEntity(target); display = [entity.title, entity.firstName, entity.lastName, entity.username && `@${entity.username}`].filter(Boolean).join(" ") || target; } catch {}
-    try { const entity: any = await client.getEntity(chat); if (entity.username) base = `https://t.me/${entity.username}/`; else if (entity.megagroup) base = `https://t.me/c/${String(entity.id).replace("-100", "")}/`; } catch {}
+    try { const entity: any = await client.getEntity(targetEntity);signal.throwIfAborted();display = [entity.title, entity.firstName, entity.lastName, entity.username && `@${entity.username}`].filter(Boolean).join(" ") || target; } catch {signal.throwIfAborted();}
+    try { const entity: any = await client.getEntity(chat);signal.throwIfAborted();if (entity.username) base = `https://t.me/${entity.username}/`; else if (entity.megagroup) base = `https://t.me/c/${String(entity.id).replace("-100", "")}/`; } catch {signal.throwIfAborted();}
     const lines: string[] = [];
-    try {
-      let index = 0;
-      for await (const item of client.iterMessages(chat, {limit: count, fromUser: /^-?\d+$/.test(target) ? BigInt(target) : target})) {
-        signal.throwIfAborted(); index++;
-        let text = mediaText(item, item.text || item.message || "");
-        if (item.className === "MessageService") text = item.action?.className === "MessageActionPinMessage" ? `[置顶消息] ${item.action.message ?? ""}` : item.action?.className === "MessageActionChatEditTitle" ? `[修改群名] ${item.action.title ?? ""}` : `[服务消息] ${String(item.action?.className ?? "").replace("MessageAction", "")}`;
-        if (!text) text = "[Unsupported Message]";
-        const brief = text.length > 50 ? `${text.slice(0, 50)}...` : text;
-        lines.push(base ? `${index}. <a href="${base}${item.id}">${escape(brief)}</a>` : `${index}. ${escape(brief)}`);
-      }
-    } catch (error: any) {
-      const detail = String(error?.message ?? error);
-      if (detail.includes("FLOOD_WAIT")) throw new Error(`FLOOD:${detail.match(/\d+/)?.[0] ?? "60"}`);
-      throw error;
+    let index = 0;
+    signal.throwIfAborted();
+    for await (const item of client.iterMessages(chat, {limit: count, fromUser: targetEntity})) {
+      signal.throwIfAborted(); index++;
+      let text = mediaText(item, item.text || item.message || "");
+      if (item.className === "MessageService") text = item.action?.className === "MessageActionPinMessage" ? `[置顶消息] ${item.action.message ?? ""}` : item.action?.className === "MessageActionChatEditTitle" ? `[修改群名] ${item.action.title ?? ""}` : `[服务消息] ${String(item.action?.className ?? "").replace("MessageAction", "")}`;
+      if (!text) text = "[Unsupported Message]";
+      const characters=[...text];const brief = characters.length > 50 ? `${characters.slice(0, 50).join("")}...` : text;
+      lines.push(base ? `${index}. <a href="${base}${item.id}">${escape(brief)}</a>` : `${index}. ${escape(brief)}`);
     }
+    signal.throwIfAborted();
     if (!lines.length) { await ctx.telegram.edit(message, `❌ 未找到 <b>${escape(display)}</b> 的消息记录`, {parseMode: "html"}); return; }
     const header = `📜 <b>消息历史查询</b>\n\n👤 <b>目标:</b> ${escape(display)}\n💬 <b>消息数:</b> ${lines.length}\n━━━━━━━━━━━━━━━━\n\n`;
-    const chunks: string[] = []; let current = header;
-    for (const line of lines) { if (`${current}\n${line}`.length > 3500) { chunks.push(current); current = line; } else current += `${current ? "\n" : ""}${line}`; }
-    if (current) chunks.push(current);
-    await ctx.telegram.edit(message, chunks[0], {parseMode: "html", linkPreview: false});
-    for (const chunk of chunks.slice(1)) await ctx.telegram.reply(message, chunk, {parseMode: "html", linkPreview: false});
+    const rendered=await ui.renderRichText(header+lines.join("\n"),ui.PAGE_LABEL_RESERVE);
+    signal.throwIfAborted();
+    const pages=rendered.map((page,index)=>page+ui.pageLabel(index,rendered.length));
+    const delivery=await ui.deliverPages(pages,signal,(page,index)=>index?ctx.telegram.reply(message,page,{parseMode:"html",linkPreview:false}):ctx.telegram.edit(message,page,{parseMode:"html",linkPreview:false}));
+    if(delivery.interrupted){ctx.log.info("pagination_delivery_interrupted",{plugin:"his",published:delivery.published,total:delivery.total,category:ui.deliveryErrorCategory(delivery.error)});if(!delivery.published)throw delivery.error;try{await ctx.telegram.reply(message,ui.interruptedNotice(delivery),{parseMode:"html"});}catch{}}
   });
 }
 
@@ -59,12 +61,12 @@ export default function createHis() { return definePlugin({renderHelp: renderPlu
     let target: string | undefined, count = 30;
     if (!args.length || (args.length === 1 && /^\d+$/.test(args[0]) && message.replyToId)) {
       const reply = await ctx.telegram.getReply(message); target = reply?.senderId; if (args[0]) count = Math.min(Number(args[0]), 100);
-    } else if (args.length <= 2) { target = args[0]; if (args[1]) { const parsed = Number(args[1]); if (!Number.isInteger(parsed) || parsed <= 0) { await ctx.telegram.edit(message, "❌ 无效的数量参数", {parseMode:"html"}); return; } count = Math.min(parsed, 100); } }
-    else { await ctx.telegram.edit(message, `❌ 参数过多，请使用 ${prefix}his help 查看帮助`, {parseMode:"html"}); return; }
-    if (!target) { await ctx.telegram.edit(message, "❌ 请回复一条消息或指定查询目标", {parseMode:"html"}); return; }
+    } else if (args.length <= 2) { target = args[0]; if (args[1]) { const parsed = Number(args[1]); if (!Number.isInteger(parsed) || parsed <= 0) throw new UserError("❌ 无效的数量参数"); count = Math.min(parsed, 100); } }
+    else throw new UserError(`❌ 参数过多，请使用 ${escape(prefix)}his help 查看帮助`);
+    if (!target) throw new UserError("❌ 请回复一条消息或指定查询目标");
     await query(message, target, count, ctx);
   } catch (error: any) {
-    if (ctx.signal.aborted) return; const detail = String(error?.message ?? error);
-    await ctx.telegram.edit(message, detail.startsWith("FLOOD:") ? `⏳ <b>请求过于频繁</b>\n\n需要等待 ${detail.slice(6)} 秒后重试` : `❌ <b>操作失败:</b> ${escape(detail)}`, {parseMode:"html"});
+    if (ctx.signal.aborted) return;const detail=error instanceof Error?error.message:"";const wait=floodSeconds(detail);
+    await ctx.telegram.edit(message,error instanceof UserError?error.feedback:wait?`⏳ <b>请求过于频繁</b>\n\n需要等待 ${wait} 秒后重试`:/\bMESSAGE_TOO_LONG\b/.test(detail)?"❌ <b>消息过长</b>\n\n请减少查询数量":"❌ <b>操作失败</b>，请稍后重试",{parseMode:"html"});
   }
 }}}}); }
