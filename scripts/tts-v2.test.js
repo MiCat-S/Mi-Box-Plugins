@@ -20,7 +20,7 @@ async function fixture(t, responder) {
     async edit(message, text, options) { edits.push({message, text, options}); },
     async reply() { assert.fail('unexpected reply'); }, async invoke() { assert.fail('unexpected invoke'); },
     async getReply() { return {id: 7, text: '回复文本 🎉'}; },
-    async withClient(operation, signal) { return operation({async sendFile(peer, options) { sent.push({peer, options, bytes: Buffer.isBuffer(options.file) ? options.file.length : (await fs.stat(options.file)).size}); }}, signal); },
+    async withClient(operation, signal) { return operation({async sendFile(peer, options) { sent.push({peer, options, bytes: Buffer.isBuffer(options.file) ? options.file.length : (await fs.stat(options.file)).size,content:Buffer.isBuffer(options.file)?options.file.toString():undefined}); },async deleteMessages(peer,ids,options){deleted.push({peer,ids,options});}}, signal); },
   }});
   await host.load(create());
   t.after(async () => { await host.shutdown(1000); await fs.rm(root, {recursive: true, force: true}); });
@@ -49,7 +49,7 @@ test('tts synthesizes replied text by streaming to a scoped file with a locked p
   await f.run('.tts config test-key eastus', {saved: true});
   await f.run('.tts', {replyToId: 7});
   assert.equal(f.requests.length, 1); assert.equal(f.sent.length, 1); assert.equal(f.sent[0].bytes, 11); assert.equal(f.sent[0].options.voiceNote, true);
-  assert.equal(f.deleted.length, 1); assert.deepEqual(await fs.readdir(path.join(f.root, '.temp', 'tts')), []);
+  assert.equal(f.deleted.length, 1); assert.deepEqual(f.deleted[0].ids,[1]); assert.deepEqual(await fs.readdir(path.join(f.root, '.temp', 'tts')), []);
 });
 
 test('tts validates regions before network access and lists bounded voice data safely', async t => {
@@ -65,4 +65,35 @@ test('tts loads, unloads and reloads through PluginHost without retained resourc
   assert.equal((await f.host.unload('tts', 1000)).completed, true);
   assert.equal(f.host.snapshot().plugins, 0);
   await f.host.load(create()); assert.equal(f.host.snapshot().plugins, 1);
+});
+
+test('tts unload actively cancels and unlocks a hanging Azure audio body with no upload or delete', async t => {
+  let body,cancelled=false,lockedAtCancel=false,markPulled;const pulled=new Promise(resolve=>{markPulled=resolve;});
+  const f=await fixture(t,()=>{body=new ReadableStream({pull(){markPulled();return new Promise(()=>{});},cancel(){cancelled=true;lockedAtCancel=body.locked;}});return new Response(body,{status:200});});
+  await f.run('.tts config test-key eastus',{saved:true});
+  const work=f.run('.tts hanging');
+  await pulled;
+  assert.equal((await f.host.unload('tts',1000)).completed,true);
+  await work;
+  assert.equal(cancelled,true);assert.equal(lockedAtCancel,true);assert.equal(body.locked,false);
+  assert.equal(f.sent.length,0);assert.equal(f.deleted.length,0);
+});
+
+test('tts voices export preserves entries beyond the former 500-item cutoff', async t => {
+  const voices=Array.from({length:550},(_,index)=>({ShortName:`en-US-Voice${index}Neural`,LocalName:`Voice ${index}`,Locale:'en-US',Gender:'Female'}));
+  const f=await fixture(t,()=>Response.json(voices));
+  await f.run('.tts config test-key eastus',{saved:true});
+  await f.run('.tts voices all');
+  assert.equal(f.sent.length,1);
+  assert.match(f.sent[0].content,/Voice0Neural/);
+  assert.match(f.sent[0].content,/Voice549Neural/);
+  assert.match(f.sent[0].options.caption,/550/);
+});
+
+test('tts uses an exact bigint peer when the host envelope has no raw TL message', async t => {
+  const f=await fixture(t,()=>new Response('audio'));
+  await f.run('.tts config test-key eastus',{saved:true});
+  await f.host.dispatchPrimary({id:9,chatId:'9007199254740997',senderId:'1',outgoing:true,text:'.tts hello'});
+  assert.equal(f.sent.at(-1).peer.toString(),'9007199254740997');
+  assert.deepEqual(f.deleted.at(-1).ids,[9]);
 });

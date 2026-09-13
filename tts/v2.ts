@@ -1,8 +1,8 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
 import {open, stat} from "node:fs/promises";
 import path from "node:path";
-import {definePlugin, type PluginContext} from "telebox/sdk";
-import type {Api as ApiTypes} from "teleproto";
+import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, requireSdkFeatures, type PluginContext} from "telebox/sdk";
+import {returnBigInt} from "teleproto/Helpers.js";
 
 type Config = {schemaVersion: 1; key: string; region: string; voice: string; style: string; rate: string; format: string; [key: string]: unknown};
 type Voice = {ShortName: string; LocalName: string; Locale: string; Gender: string};
@@ -11,9 +11,11 @@ const DEFAULTS: Config = {schemaVersion: 1, key: "", region: "eastus", voice: "z
 const REGIONS = new Set(["australiaeast", "brazilsouth", "canadacentral", "centralindia", "centralus", "eastasia", "eastus", "eastus2", "francecentral", "germanywestcentral", "japaneast", "japanwest", "koreacentral", "northcentralus", "northeurope", "norwayeast", "southafricanorth", "southcentralus", "southeastasia", "southindia", "swedencentral", "switzerlandnorth", "uaenorth", "uksouth", "westcentralus", "westeurope", "westindia", "westus", "westus2", "westus3"]);
 const FORMATS = new Set(["audio-48khz-192kbitrate-mono-mp3", "audio-24khz-160kbitrate-mono-mp3", "audio-16khz-128kbitrate-mono-mp3", "riff-48khz-16bit-mono-pcm", "riff-24khz-16bit-mono-pcm", "riff-16khz-16bit-mono-pcm"]);
 const MAX_AUDIO = 64 * 1024 * 1024;
+requireSdkFeatures("httpAddressPolicy");
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;"})[character]!);
 const ssmlEscape = (value: string): string => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+const plain = (value: string): string => value.replace(/<[^>]+>/g, "").replace(/&quot;/g,'"').replace(/&#x27;|&#39;/g,"'").replace(/&gt;/g,">").replace(/&lt;/g,"<").replace(/&amp;/g,"&");
 const store = (context: PluginContext) => context.storage.json<Config>("config.json", DEFAULTS);
 
 function normalize(value: Partial<Config>): Config {
@@ -45,19 +47,21 @@ function endpoint(value: Config, route: string): {url: string; host: string} {
 
 async function boundedJson(response: Response, signal: AbortSignal, maximum = 2 * 1024 * 1024): Promise<unknown> {
   if (!response.ok || !response.body) throw new Error("Azure request failed");
-  const reader = response.body.getReader(); const chunks: Buffer[] = []; let total = 0;
-  try { while (true) { signal.throwIfAborted(); const part = await reader.read(); if (part.done) break; total += part.value.byteLength;
+  const reader = response.body.getReader(); const chunks: Buffer[] = []; let total = 0,done=false,cancellation:Promise<void>|undefined;
+  const cancel=()=>cancellation??=reader.cancel();const onAbort=()=>{void cancel().catch(()=>undefined);};signal.addEventListener("abort",onAbort,{once:true});
+  try { while (true) { signal.throwIfAborted(); const part = await reader.read(); signal.throwIfAborted();if (part.done){done=true;break;} total += part.value.byteLength;
       if (total > maximum) throw new Error("Azure response too large"); chunks.push(Buffer.from(part.value)); } }
-  finally { await reader.cancel().catch(() => undefined); }
+  finally { signal.removeEventListener("abort",onAbort);try{if(!done)await cancel();}finally{reader.releaseLock();} }
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new Error("Invalid Azure response"); }
 }
 
 async function streamAudio(response: Response, target: string, signal: AbortSignal): Promise<void> {
   if (!response.ok || !response.body) throw new Error("Azure synthesis failed");
-  const handle = await open(target, "wx", 0o600); const reader = response.body.getReader(); let total = 0;
-  try { while (true) { signal.throwIfAborted(); const part = await reader.read(); if (part.done) break; total += part.value.byteLength;
-      if (total > MAX_AUDIO) throw new Error("Azure audio too large"); await handle.write(part.value); } }
-  finally { await reader.cancel().catch(() => undefined); await handle.close(); }
+  const handle = await open(target, "wx", 0o600); const reader = response.body.getReader(); let total = 0,done=false,cancellation:Promise<void>|undefined;
+  const cancel=()=>cancellation??=reader.cancel();const onAbort=()=>{void cancel().catch(()=>undefined);};signal.addEventListener("abort",onAbort,{once:true});
+  try { while (true) { signal.throwIfAborted(); const part = await reader.read(); signal.throwIfAborted();if (part.done){done=true;break;} total += part.value.byteLength;
+      if (total > MAX_AUDIO) throw new Error("Azure audio too large");let offset=0;while(offset<part.value.byteLength){signal.throwIfAborted();const written=await handle.write(part.value,offset,part.value.byteLength-offset);signal.throwIfAborted();if(written.bytesWritten<=0)throw new Error("Azure audio write failed");offset+=written.bytesWritten;} } }
+  finally { signal.removeEventListener("abort",onAbort);try{if(!done)await cancel();}finally{reader.releaseLock();await handle.close();} }
   if (!total) throw new Error("Empty Azure audio");
 }
 
@@ -66,14 +70,11 @@ function help(prefix: string): string {
   return `<b>Azure TTS</b>\n<code>${p}tts &lt;文本&gt;</code>\n<code>${p}tts config &lt;key&gt; &lt;region&gt;</code>（仅收藏夹）\n<code>${p}tts voice &lt;VoiceName&gt;</code>\n<code>${p}tts style &lt;Style|clear&gt;</code>\n<code>${p}tts rate &lt;0.5~2.0&gt;</code>\n<code>${p}tts voices [filter]</code>\n<code>${p}tts list</code>`;
 }
 
-async function deleteCommand(invocation: any, context: PluginContext): Promise<void> {
-  const raw = invocation.message.raw as ApiTypes.Message | undefined;
-  if (!raw || typeof raw.delete !== "function") return;
-  await raw.delete({revoke: invocation.message.saved || Boolean((raw as any).isPrivate)}).catch(() => undefined);
-}
+function peer(invocation:any){return (invocation.message.raw as any)?.peerId??returnBigInt(invocation.message.chatId);}
+async function deleteCommand(invocation: any, context: PluginContext): Promise<void> {try{await context.telegram.withClient(async(client,signal)=>{const active=AbortSignal.any([context.signal,signal]);active.throwIfAborted();await client.deleteMessages(peer(invocation),[invocation.message.id],{revoke:Boolean(invocation.message.saved||(invocation.message.raw as any)?.isPrivate)});active.throwIfAborted();});}catch{context.signal.throwIfAborted();context.log.error("tts_command_cleanup_failed",{category:"DELETE_FAILED"});}}
 
 export default function createTts() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "tts", description: "Azure Speech 文字转语音",
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "tts", description: "Azure Speech 文字转语音",
     commands: {tts: {description: "合成语音并管理 Azure TTS 配置", async handle(invocation, context) {
       const sub = (invocation.args[0] ?? "").toLowerCase();
       const edit = (text: string, html = true) => context.telegram.edit(invocation.message, text, html ? {parseMode: "html"} : undefined);
@@ -106,18 +107,17 @@ export default function createTts() {
           if (!current.key) { await edit("请先配置 Azure API Key", false); return; }
           const target = endpoint(current, "voices/list");
           const value = await context.http.withResponse(target.url, {credentials: "omit", headers: {"Ocp-Apim-Subscription-Key": current.key}},
-            (response, signal) => boundedJson(response, signal), {timeoutMs: 30_000, redirects: {allowedHosts: [target.host], maxRedirects: 0}});
+            (response, signal) => boundedJson(response, signal), {timeoutMs: 30_000, redirects: {allowedHosts: [target.host], maxRedirects: 0},denyPrivateAddresses:true});
           if (!Array.isArray(value)) throw new Error("Invalid voices");
           const filter = (invocation.args[1] ?? "zh-CN").toLowerCase();
           const voices = value.filter((item): item is Voice => item && typeof item === "object" && typeof item.ShortName === "string" && typeof item.LocalName === "string" && typeof item.Locale === "string" && typeof item.Gender === "string")
-            .filter(item => filter === "all" || item.Locale.toLowerCase().includes(filter) || item.ShortName.toLowerCase().includes(filter)).slice(0, 500);
+            .filter(item => filter === "all" || item.Locale.toLowerCase().includes(filter) || item.ShortName.toLowerCase().includes(filter));
           if (!voices.length) { await edit(`未找到匹配「${escape(filter)}」的音色`); return; }
           const lines = voices.map(item => `${item.Gender === "Female" ? "👩" : item.Gender === "Male" ? "👨" : "👤"} <code>${escape(item.ShortName)}</code> (${escape(item.LocalName)})`);
           const body = `<b>可用音色列表</b> (${escape(filter)})\n\n${lines.join("\n")}`;
           if (body.length <= 4000) { await edit(body); return; }
-          const raw = invocation.message.raw as ApiTypes.Message | undefined; if (!raw?.peerId) throw new Error("Missing peer");
           const {Api} = await import("teleproto");
-          await context.telegram.withClient(client => client.sendFile(raw.peerId, {file: Buffer.from(lines.map(line => line.replace(/<[^>]+>/g, "")).join("\n")), attributes: [new Api.DocumentAttributeFilename({fileName: `voices_${filter.replace(/[^a-z0-9-]/g, "_")}.txt`})], caption: `可用音色：${voices.length} 个`}));
+          context.signal.throwIfAborted();await context.telegram.withClient(async(client,signal)=>{const active=AbortSignal.any([context.signal,signal]);active.throwIfAborted();await client.sendFile(peer(invocation), {file: Buffer.from(lines.map(plain).join("\n")), attributes: [new Api.DocumentAttributeFilename({fileName: `voices_${filter.replace(/[^a-z0-9-]/g, "_")}.txt`})], caption: `可用音色：${voices.length} 个`});active.throwIfAborted();});
           await deleteCommand(invocation, context); return;
         }
         let input = invocation.args.join(" ").trim();
@@ -130,15 +130,15 @@ export default function createTts() {
         if (current.style) content = `<mstts:express-as style="${ssmlEscape(current.style)}">${content}</mstts:express-as>`;
         const ssml = `<speak version='1.0' xml:lang='en-US' xmlns:mstts='https://www.w3.org/2001/mstts'><voice name='${ssmlEscape(current.voice)}'>${content}</voice></speak>`;
         const target = endpoint(current, "v1");
-        await context.files.withTemp(async (directory, signal) => {
+        let audioSent=false;
+        try{await context.files.withTemp(async (directory, signal) => {
           const output = path.join(directory, current.format.startsWith("riff-") ? "speech.wav" : "speech.mp3");
           await context.http.withResponse(target.url, {method: "POST", credentials: "omit", headers: {"Ocp-Apim-Subscription-Key": current.key, "Content-Type": "application/ssml+xml", "X-Microsoft-OutputFormat": current.format, "User-Agent": "MiBot-TTS"}, body: ssml},
-            (response, requestSignal) => streamAudio(response, output, requestSignal), {timeoutMs: 120_000, redirects: {allowedHosts: [target.host], maxRedirects: 0}});
+            (response, requestSignal) => streamAudio(response, output, requestSignal), {timeoutMs: 120_000, redirects: {allowedHosts: [target.host], maxRedirects: 0},denyPrivateAddresses:true});
           signal.throwIfAborted(); const info = await stat(output); if (!info.isFile() || !info.size) throw new Error("Empty audio");
-          const raw = invocation.message.raw as ApiTypes.Message | undefined; if (!raw?.peerId) throw new Error("Missing peer");
           const {Api} = await import("teleproto");
-          await context.telegram.withClient(client => client.sendFile(raw.peerId, {file: output, voiceNote: true, replyTo: invocation.message.replyToId ?? invocation.message.id, attributes: [new Api.DocumentAttributeAudio({duration: 0, voice: true, title: "TTS Audio", performer: "Azure TTS"})]}));
-        });
+          signal.throwIfAborted();context.signal.throwIfAborted();await context.telegram.withClient(async(client,clientSignal)=>{const active=AbortSignal.any([context.signal,signal,clientSignal]);active.throwIfAborted();await client.sendFile(peer(invocation), {file: output, voiceNote: true, replyTo: invocation.message.replyToId ?? invocation.message.id, attributes: [new Api.DocumentAttributeAudio({duration: 0, voice: true, title: "TTS Audio", performer: "Azure TTS"})]});audioSent=true;active.throwIfAborted();});
+        });}catch(error){context.signal.throwIfAborted();if(!audioSent)throw error;context.log.error("tts_temp_cleanup_failed",{category:"CLEANUP_FAILED"});}
         await deleteCommand(invocation, context);
       } catch {
         if (context.signal.aborted) return;
