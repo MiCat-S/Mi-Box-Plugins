@@ -11,8 +11,13 @@ const escape = (value: unknown) => String(value).replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const help = (prefix: string) => `<b>批量删除</b>\n\n<code>${escape(prefix)}da true</code> 开始或恢复删除\n<code>${escape(prefix)}da stop</code> 停止任务\n<code>${escape(prefix)}da status</code> 状态发送到收藏夹\n管理员删除全部消息，普通成员仅删除自己的消息。`;
 const failure = (kind: "permission" | "delete" | "task") => kind === "permission" ? "权限检查失败" : kind === "delete" ? "部分消息删除失败" : "删除任务执行失败";
+const MAX_WAIT_SEGMENT_MS=60_000;
+function floodMilliseconds(raw:string):number|undefined{
+  try{const value=BigInt(raw)*1000n;if(value<0n||value>BigInt(Number.MAX_SAFE_INTEGER-Date.now()))return;return Number(value);}catch{return;}
+}
 
-export default function createDa() {
+export default function createDa(options:{sleep?:(ms:number,signal:AbortSignal)=>Promise<void>}={}) {
+  const pause=options.sleep??((ms:number,signal:AbortSignal)=>sleep(ms,undefined,{signal}));
   const active = new Map<string, { controller: AbortController; task?: DeleteTask }>();
   const database = (ctx: PluginContext) => ctx.storage.json<{ tasks: DeleteTask[]; imported: boolean }>("database.json", { tasks: [], imported: false });
   const save = async (ctx: PluginContext, task: DeleteTask) => {
@@ -101,7 +106,7 @@ export default function createDa() {
       active.set(id, slot);
       void ctx.tasks.run(`da:delete:${id}`, async scoped => {
         const signal = AbortSignal.any([scoped, slot.controller.signal]);
-        const wait = (ms: number) => sleep(ms, undefined, { signal });
+        const wait = async(ms:number) => {let remaining=ms;while(remaining>0){signal.throwIfAborted();const segment=Math.min(remaining,MAX_WAIT_SEGMENT_MS);await pause(segment,signal);remaining-=segment;}};
         let completed = false;
         try {
           signal.throwIfAborted();
@@ -145,9 +150,11 @@ export default function createDa() {
                   await save(ctx, task); signal.throwIfAborted(); return;
                 } catch (error) {
                   signal.throwIfAborted();
-                  const flood = String(error).match(/FLOOD_WAIT[_ ]?(\d+)/);
+                  const detail=String((error as any)?.errorMessage??(error as any)?.message??error);
+                  const flood = detail.match(/FLOOD_WAIT[_ ]?(\d+)/);
                   if (flood) {
-                    const ms = Number(flood[1]) * 1000;
+                    const ms=floodMilliseconds(flood[1]);
+                    if(ms===undefined){task.errors.push(failure("delete"));task.errors=task.errors.slice(-20);ctx.log.error("da:delete",{count:ids.length});await save(ctx,task);return;}
                     task.sleepUntil = Date.now() + ms; await save(ctx, task);
                     await wait(ms); task.sleepUntil = null; continue;
                   }
