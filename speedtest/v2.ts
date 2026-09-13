@@ -1,5 +1,5 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type CommandInvocation, type PluginContext} from "telebox/sdk";
+import {definePlugin, ui, type CommandInvocation, type PluginContext} from "telebox/sdk";
 import {
   DEFAULT_ORDER, migrateConfig, normalizeType, readConfig, updateConfig, type MessageType,
 } from "./v2/config";
@@ -43,11 +43,17 @@ async function edit(context: PluginContext, invocation: CommandInvocation, text:
   await context.telegram.edit(invocation.message, text, html ? {parseMode: "html", linkPreview: false} : {});
 }
 
+async function deliverHtml(context:PluginContext,invocation:CommandInvocation,html:string):Promise<void>{
+  const pages=await ui.renderRichText(html,ui.PAGE_LABEL_RESERVE);
+  const result=await ui.deliverPages(pages,context.signal,(page,index)=>{const value=page+ui.pageLabel(index,pages.length);return index?context.telegram.reply(invocation.message,value,{parseMode:"html",linkPreview:false}):context.telegram.edit(invocation.message,value,{parseMode:"html",linkPreview:false});});
+  if(result.interrupted){context.log.error("speedtest_delivery_failed",{kind:"internal",published:result.published,total:result.total});if(!result.published)throw new SpeedtestError("Speedtest 结果发送失败，请稍后重试");try{await context.telegram.reply(invocation.message,ui.interruptedNotice(result));}catch{context.signal.throwIfAborted();context.log.error("speedtest_delivery_notice_failed",{kind:"internal"});}}
+}
+
 async function networkCheck(context: PluginContext): Promise<{ok: boolean; message: string}> {
   try {
     const status = await context.http.withResponse("https://www.speedtest.net", {method: "HEAD"}, async response => response.status,
       {timeoutMs: 10_000, redirects: {allowedHosts: ["www.speedtest.net"], maxRedirects: 0}});
-    return status >= 200 && status < 500 ? {ok: true, message: `网络连接正常（HTTP ${status}）`} : {ok: false, message: `Speedtest 官网返回 HTTP ${status}`};
+    return status >= 200 && status < 400 ? {ok: true, message: `网络连接正常（HTTP ${status}）`} : {ok: false, message: `Speedtest 官网返回 HTTP ${status}`};
   } catch (error) {
     context.signal.throwIfAborted();
     const code = error && typeof error === "object" ? Object.getOwnPropertyDescriptor(error, "code")?.value : undefined;
@@ -145,7 +151,7 @@ export default function createSpeedtest() {
           return listServers(context, executable);
         });
         if (!servers.length) throw new SpeedtestError("未获取到可用服务器");
-        await edit(context, invocation, `${header}\n${servers.map(server => `<code>${server.id}</code> - <code>${escape(server.name)}</code> - <code>${escape(server.location)}</code>`).join("\n")}`, true); return;
+        await deliverHtml(context,invocation,`${header}\n${servers.map(server => `<code>${server.id}</code> - <code>${escape(server.name)}</code> - <code>${escape(server.location)}</code>`).join("\n")}`);return;
       }
       if (sub === "test") {
         const id = parseServerId(args[1]);

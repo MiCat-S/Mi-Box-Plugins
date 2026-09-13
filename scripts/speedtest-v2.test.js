@@ -35,7 +35,7 @@ test.after(async () => { if (moduleRoot) await fs.rm(moduleRoot, {recursive: tru
 
 async function hostFixture(t, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'telebox-speedtest-v2-')));
-  const edits = [], sent = [], logs = [];
+  const edits = [], replies = [], sent = [], logs = [];
   if (options.setup) await options.setup(root);
   const client = {async sendFile(peer, value) {
     if (options.sendFailure) throw new Error('private-send-token');
@@ -47,13 +47,13 @@ async function hostFixture(t, options = {}) {
     http: {fetch: options.fetch || (async () => { throw new Error('unexpected external request'); })},
     telegram: {
       async edit(message, text, messageOptions, signal) { signal.throwIfAborted(); edits.push({message, text, options: messageOptions}); },
-      async reply() { assert.fail('unexpected reply'); }, async invoke() { assert.fail('unexpected invoke'); },
+      async reply(message, text, messageOptions, signal) { signal.throwIfAborted(); replies.push({message, text, options: messageOptions}); }, async invoke() { assert.fail('unexpected invoke'); },
       async getReply() { return undefined; }, async withClient(operation, signal) { return operation(client, signal); },
     }});
   if (options.load !== false) await host.load(createSpeedtest());
   t.after(async () => { await host.shutdown(3000); await fs.rm(root, {recursive: true, force: true}); });
   let sequence = 0;
-  return {root, host, edits, sent, logs, run(text, fields = {}) {
+  return {root, host, edits, replies, sent, logs, run(text, fields = {}) {
     sequence += 1;
     return host.dispatchPrimary({id: sequence, chatId: fields.chatId || '42', senderId: '42', outgoing: true, text,
       raw: {peerId: {id: 42}, async delete() { fields.deleted && fields.deleted(); }}, ...fields});
@@ -179,6 +179,132 @@ test('cancelling a queued serial command releases cleanup and never starts the q
   assert.equal((await fs.readFile(marker, 'utf8')).length, 1);
 });
 
+test('archive download cancellation waits for the first reader cancel promise and preserves the old CLI', async t => {
+  let reading, cancelStarted, release;
+  const readReady = new Promise(resolve => {reading = resolve;});
+  const cancelReady = new Promise(resolve => {cancelStarted = resolve;});
+  const cancelGate = new Promise(resolve => {release = resolve;});
+  const f = await hostFixture(t, {setup: async root => {
+    await writeExecutable(path.join(root, 'speedtest/speedtest'), '#!/bin/sh\necho OLD\n');
+  }, fetch: async input => {
+    assert.equal(new URL(input).hostname, 'install.speedtest.net');
+    return new Response(new ReadableStream({pull() {reading();}, cancel() {cancelStarted(); return cancelGate;}}), {status: 200});
+  }});
+  const managed = path.join(f.root, 'speedtest/speedtest');
+  const before = await fs.readFile(managed);
+  const pending = f.run('.speedtest fix').catch(error => error);
+  await readReady;
+  const first = f.host.unload('speedtest', 10);
+  await cancelReady;
+  assert.equal((await first).completed, false);
+  assert.deepEqual(await fs.readFile(managed), before);
+  release();
+  await pending;
+  assert.equal((await f.host.unload('speedtest', 1000)).completed, true);
+  assert.deepEqual(await fs.readFile(managed), before);
+});
+
+test('result image cancellation waits for reader cleanup and never uploads', async t => {
+  let reading, cancelStarted, release;
+  const readReady = new Promise(resolve => {reading = resolve;});
+  const cancelReady = new Promise(resolve => {cancelStarted = resolve;});
+  const cancelGate = new Promise(resolve => {release = resolve;});
+  const f = await hostFixture(t, {setup: async root => {
+    await writeExecutable(path.join(root, 'speedtest/speedtest'), cliSource(path.join(root, 'image-cancel.argv')));
+  }, fetch: async (input, init = {}) => {
+    const url = new URL(input);
+    if ((init.method || 'GET') === 'HEAD') return new Response(null, {status: 204});
+    if (url.hostname === 'ip-api.com') return Response.json({});
+    return new Response(new ReadableStream({pull() {reading();}, cancel() {cancelStarted(); return cancelGate;}}),
+      {status: 200, headers: {'content-type': 'image/png'}});
+  }});
+  const pending = f.run('.speedtest').catch(error => error);
+  await readReady;
+  const first = f.host.unload('speedtest', 10);
+  await cancelReady;
+  assert.equal((await first).completed, false);
+  assert.equal(f.sent.length, 0);
+  release();
+  await pending;
+  assert.equal((await f.host.unload('speedtest', 1000)).completed, true);
+  assert.equal(f.sent.length, 0);
+});
+
+test('archive download writes every short write before replacing the managed CLI', async t => {
+  let archive;
+  const f = await hostFixture(t, {fetch: async input => {
+    assert.equal(new URL(input).hostname, 'install.speedtest.net');
+    return new Response(archive, {status: 200});
+  }});
+  archive = await archiveWithCli(f.root, cliSource(path.join(f.root, 'short-write.argv')));
+  const originalOpen = fs.open;
+  t.mock.method(fs, 'open', async (...args) => {
+    const handle = await originalOpen(...args);
+    if (!String(args[0]).endsWith('.tgz')) return handle;
+    return new Proxy(handle, {get(target, key) {
+      if (key === 'write') return (buffer, offset, length) => target.write(buffer, offset, Math.max(1, Math.floor(length / 2)));
+      const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
+    }});
+  });
+  await f.run('.speedtest fix');
+  assert.match(f.edits.at(-1).text, /完成/);
+  assert.ok((await fs.readFile(path.join(f.root, 'speedtest/speedtest'))).length > 0);
+});
+
+test('a zero-progress archive write fails and preserves the old CLI', async t => {
+  let archive;
+  const f = await hostFixture(t, {setup: async root => {
+    await writeExecutable(path.join(root, 'speedtest/speedtest'), '#!/bin/sh\necho OLD\n');
+  }, fetch: async () => new Response(archive, {status: 200})});
+  archive = await archiveWithCli(f.root, cliSource(path.join(f.root, 'zero-write.argv')));
+  const managed = path.join(f.root, 'speedtest/speedtest'), before = await fs.readFile(managed), originalOpen = fs.open;
+  t.mock.method(fs, 'open', async (...args) => {
+    const handle = await originalOpen(...args);
+    if (!String(args[0]).endsWith('.tgz')) return handle;
+    return new Proxy(handle, {get(target, key) {if (key === 'write') return async () => ({bytesWritten: 0, buffer: Buffer.alloc(0)});const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});
+  });
+  await f.run('.speedtest update');
+  assert.match(f.edits.at(-1).text, /安装失败/);
+  assert.deepEqual(await fs.readFile(managed), before);
+});
+
+test('image open failure cancels and unlocks the response body', async t => {
+  let response, cancels = 0;
+  const f = await hostFixture(t, {setup: async root => {
+    await writeExecutable(path.join(root, 'speedtest/speedtest'), cliSource(path.join(root, 'open-failure.argv')));
+  }, fetch: async (input, init = {}) => {
+    const url = new URL(input);
+    if ((init.method || 'GET') === 'HEAD') return new Response(null, {status: 204});
+    if (url.hostname === 'ip-api.com') return Response.json({});
+    response = new Response(new ReadableStream({pull(controller) {controller.enqueue(png);}, cancel() {cancels++;}}), {headers: {'content-type': 'image/png'}});
+    return response;
+  }});
+  const originalOpen = fs.open;
+  t.mock.method(fs, 'open', async (...args) => {
+    if (String(args[0]).endsWith('speedtest.png')) throw new Error('open denied');
+    return originalOpen(...args);
+  });
+  await f.run('.speedtest');
+  assert.equal(cancels, 1);
+  assert.equal(response.body.locked, false);
+  assert.equal(f.sent.length, 0);
+  assert.match(f.edits.at(-1).text, /SPEEDTEST/);
+});
+
+test('sticker decoding enforces the external image pixel limit before falling back', async t => {
+  const oversized = await sharp({create: {width: 4097, height: 4097, channels: 3, background: 'black'}}).png().toBuffer();
+  const f = await hostFixture(t, {setup: async root => {
+    const dir = path.join(root, 'speedtest'); await fs.mkdir(dir, {recursive: true});
+    await fs.writeFile(path.join(dir, 'v2-config.json'), JSON.stringify({schemaVersion: 1, default_server_id: null, preferred_type: 'sticker', legacyImported: true}));
+    await writeExecutable(path.join(dir, 'speedtest'), cliSource(path.join(root, 'pixel-limit.argv')));
+  }, fetch: fetchForResult(oversized)});
+  await f.run('.speedtest');
+  assert.equal(reportTools.STICKER_INPUT_PIXEL_LIMIT, 16777216);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].value.file, 'speedtest.png');
+  assert.ok(f.logs.some(item => item.event === 'speedtest_media_send_failed' && item.fields.type === 'sticker'));
+});
+
 test('report partitioning counts visible UTF-16 units and produces a bounded short caption', () => {
   assert.equal(reportTools.visibleUtf16Length('<b>&amp;😀</b>'), 3);
   const exact = reportTools.reportParts('&amp;'.repeat(1024), JSON.parse(result));
@@ -187,6 +313,27 @@ test('report partitioning counts visible UTF-16 units and produces a bounded sho
   assert.equal(long.separateBody, true);
   assert.equal(long.body, '&amp;'.repeat(1025));
   assert.ok(reportTools.visibleUtf16Length(long.caption) < 1024);
+});
+
+test('list paginates all maximally escaped server names within the SDK budget', async t => {
+  const servers = Array.from({length: 20}, (_, index) => ({id: index + 1, name: '&'.repeat(96), location: '<'.repeat(96)}));
+  const f = await hostFixture(t, {setup: async root => {
+    const payload = JSON.stringify({servers});
+    await writeExecutable(path.join(root, 'speedtest/speedtest'), `#!/bin/sh\nprintf '%s\\n' '${payload}'\n`);
+  }});
+  await f.run('.speedtest list');
+  const pages = [f.edits.at(-1).text, ...f.replies.map(reply => reply.text)];
+  assert.ok(pages.length > 1);
+  assert.ok(pages.every(page => page.length <= 3500));
+  const output = pages.join('\n');
+  for (let id = 1; id <= 20; id++) assert.match(output, new RegExp(`<code>${id}<\\/code>`));
+});
+
+test('check treats an HTTP 404 as unavailable like the legacy Axios path', async t => {
+  const f = await hostFixture(t, {fetch: async () => new Response(null, {status: 404})});
+  await f.run('.speedtest check');
+  assert.match(f.edits.at(-1).text, /HTTP 404/);
+  assert.doesNotMatch(f.edits.at(-1).text, /网络连接正常/);
 });
 
 test('photo, sticker, file, and txt modes deliver real image artifacts with their documented behavior', async t => {

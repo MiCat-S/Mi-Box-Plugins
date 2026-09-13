@@ -7,6 +7,7 @@ import {messageOrder, type MessageType} from "./config";
 
 const CAPTION_UTF16_LIMIT = 1024;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+export const STICKER_INPUT_PIXEL_LIMIT = 16_777_216;
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, character =>
   ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;"})[character]!);
 const clipped = (value: unknown, length = 80): string => String(value ?? "").slice(0, length);
@@ -126,33 +127,43 @@ async function downloadImage(context: PluginContext, source: URL, destination: s
   await context.http.withResponse(image, {method: "GET"}, async (response, signal) => {
     if (response.status !== 200 || !response.body || !/^image\/png(?:;|$)/i.test(response.headers.get("content-type") ?? "")) throw new Error("invalid image");
     const reader = response.body.getReader();
-    const output = await open(destination, "wx", 0o600);
+    let output:Awaited<ReturnType<typeof open>>|undefined;
     let total = 0;
+    let failure:unknown,cancellation:Promise<void>|undefined;
+    const cancel=():Promise<void>=>cancellation??=reader.cancel();
+    const onAbort=()=>{void cancel().catch(()=>undefined);};
+    signal.addEventListener("abort",onAbort,{once:true});
     try {
+      output=await open(destination,"wx",0o600);
       for (;;) {
         signal.throwIfAborted();
         const chunk = await reader.read();
+        signal.throwIfAborted();
         if (chunk.done) break;
         total += chunk.value.byteLength;
         if (total > MAX_IMAGE_BYTES) throw new Error("image too large");
-        await output.write(chunk.value);
+        let offset=0;
+        while(offset<chunk.value.byteLength){signal.throwIfAborted();const {bytesWritten}=await output.write(chunk.value,offset,chunk.value.byteLength-offset);signal.throwIfAborted();if(!Number.isSafeInteger(bytesWritten)||bytesWritten<=0)throw new Error("image write made no progress");offset+=bytesWritten;}
       }
       if (!total) throw new Error("empty image");
+    } catch(error){failure=error;
     } finally {
-      await output.close();
-      await reader.cancel().catch(() => undefined);
+      signal.removeEventListener("abort",onAbort);
+      if(output)try{await output.close();}catch(error){failure??=error;}
+      try{await cancel();}catch(error){failure??=error;}
       reader.releaseLock();
     }
+    if(failure)throw failure;
   }, {timeoutMs: 20_000, redirects: {allowedHosts: ["www.speedtest.net"], maxRedirects: 0}});
 }
 
 async function sticker(context: PluginContext, source: string, destination: string): Promise<void> {
   const sharp = (await import("sharp")).default;
-  await sharp(source).resize(512, 512, {fit: "contain", background: {r: 0, g: 0, b: 0, alpha: 0}})
+  await sharp(source,{limitInputPixels:STICKER_INPUT_PIXEL_LIMIT}).resize(512, 512, {fit: "contain", background: {r: 0, g: 0, b: 0, alpha: 0}})
     .webp({quality: 82, effort: 5}).toFile(destination);
   let info = await stat(destination);
   if (info.size > 512 * 1024) {
-    await sharp(source).resize(512, 512, {fit: "contain", background: {r: 0, g: 0, b: 0, alpha: 0}})
+    await sharp(source,{limitInputPixels:STICKER_INPUT_PIXEL_LIMIT}).resize(512, 512, {fit: "contain", background: {r: 0, g: 0, b: 0, alpha: 0}})
       .webp({quality: 55, effort: 6}).toFile(destination);
     info = await stat(destination);
   }

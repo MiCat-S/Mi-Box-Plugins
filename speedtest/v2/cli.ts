@@ -256,24 +256,34 @@ async function downloadArchive(context: PluginContext, url: URL, destination: st
       throw new Error("download size rejected");
     }
     const reader = response.body.getReader();
-    const file = await open(destination, "wx", 0o600);
+    let file:Awaited<ReturnType<typeof open>>|undefined;
     let total = 0;
+    let failure:unknown,cancellation:Promise<void>|undefined;
+    const cancel=():Promise<void>=>cancellation??=reader.cancel();
+    const onAbort=()=>{void cancel().catch(()=>undefined);};
+    signal.addEventListener("abort",onAbort,{once:true});
     try {
+      file=await open(destination,"wx",0o600);
       for (;;) {
         signal.throwIfAborted();
         const chunk = await reader.read();
+        signal.throwIfAborted();
         if (chunk.done) break;
         total += chunk.value.byteLength;
         if (total > MAX_ARCHIVE_BYTES || expected !== undefined && total > expected) throw new Error("download size rejected");
-        await file.write(chunk.value);
+        let offset=0;
+        while(offset<chunk.value.byteLength){signal.throwIfAborted();const {bytesWritten}=await file.write(chunk.value,offset,chunk.value.byteLength-offset);signal.throwIfAborted();if(!Number.isSafeInteger(bytesWritten)||bytesWritten<=0)throw new Error("archive write made no progress");offset+=bytesWritten;}
       }
       if (total === 0) throw new Error("empty download");
       if (expected !== undefined && total !== expected) throw new Error("truncated download");
+    } catch(error){failure=error;
     } finally {
-      await file.close();
-      await reader.cancel().catch(() => undefined);
+      signal.removeEventListener("abort",onAbort);
+      if(file)try{await file.close();}catch(error){failure??=error;}
+      try{await cancel();}catch(error){failure??=error;}
       reader.releaseLock();
     }
+    if(failure)throw failure;
   }, {timeoutMs: 120_000, redirects: {allowedHosts: ["install.speedtest.net"], maxRedirects: 0}});
 }
 
