@@ -22,13 +22,13 @@ async function fixture(t, {cache = {}, cacheLimit = 10, surveillance = {}, clien
     cacheLimit, surveillance, extension: {keep: 'config'}}));
   await fs.writeFile(path.join(dir, 'cache.json'), JSON.stringify({schemaVersion: 1, importedLegacy: true,
     cache, extension: {keep: 'cache'}}));
-  const edits = [], sent = [];
+  const edits = [], sent = [], errors = [];
   const client = {
     async getEntity(value) { return {className: 'Channel', id: String(value).replace(/^-100/, ''), username: `group${String(value).replace(/\D/g, '')}`, title: 'Public group'}; },
     async sendMessage(target, message) { sent.push({target, message}); },
     ...clientPatch,
   };
-  const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}},
+  const host = new PluginHost({storageRoot: root, logger: {info() {}, error(...args) { errors.push(args); }},
     http: {fetch: async () => new Response('', {status: 500})}, telegram: {
       async edit(message, text) { edits.push({message, text}); }, async reply() {}, async invoke() {}, async getReply() {},
       async withClient(operation, signal) { return operation(client, signal); },
@@ -36,7 +36,7 @@ async function fixture(t, {cache = {}, cacheLimit = 10, surveillance = {}, clien
   const definition = create();
   await host.load(definition);
   t.after(async () => { assert.equal((await host.shutdown(2000)).completed, true); await fs.rm(root, {recursive: true, force: true}); });
-  return {root, host, definition, edits, sent,
+  return {root, host, definition, edits, sent, errors,
     read: async (name = 'cache.json') => JSON.parse(await fs.readFile(path.join(dir, name), 'utf8')),
     listen: (chat, id, extra = {}) => host.dispatchListeners({id, chatId: peer(chat), senderId: '42', outgoing: false,
       text: `message ${id}`, raw: {date: now, peerId: peer(chat)}, ...extra}),
@@ -212,4 +212,84 @@ test('unload drains a cache write already submitted for atomic commit', async t 
   await f.host.load(create());
   await f.run('.fbi loc 42');
   assert.match(f.edits.at(-1).text, /（1 条）/);
+});
+
+test('internal rebuild failures are logged without exposing transport details', async t => {
+  const f = await fixture(t, {client: {
+    async getDialogs() { const error = new Error('SECRET_RPC_TOKEN=do-not-render'); error.name = 'SECRET_NAME'; error.code = 'SECRET_CODE'; throw error; },
+  }});
+  await f.run('.fbi cache rebuild');
+  assert.equal(f.edits.at(-1).text, '操作失败，请稍后重试');
+  assert.doesNotMatch(f.edits.at(-1).text, /SECRET_RPC_TOKEN/);
+  assert.deepEqual(f.errors.at(-1), ['fbi_command_failed', {kind: 'internal'}]);
+  assert.doesNotMatch(JSON.stringify(f.errors), /SECRET_(?:NAME|CODE|RPC_TOKEN)/);
+});
+
+test('rebuild cancellation propagates without rendering a business failure', async t => {
+  let entered;
+  const ready = new Promise(resolve => { entered = resolve; });
+  const f = await fixture(t, {client: {
+    async getDialogs() { return [{id: peer(1), isGroup: true}]; },
+    async *iterMessages() { entered(); yield cached(1); },
+  }});
+  const running = f.run('.fbi cache rebuild');
+  await ready;
+  const report = await f.host.unload('fbi', 2000);
+  assert.equal(report.completed, true);
+  await assert.rejects(running, error => error?.name === 'TelegramAbortError' || error?.name === 'AbortError');
+  assert.doesNotMatch(f.edits.at(-1).text, /操作失败/);
+});
+
+test('rebuild cancellation after getEntity settlement never starts history iteration', async t => {
+  let entered, release, iterations = 0;
+  const ready = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const f = await fixture(t, {client: {
+    async getDialogs() { return [{id: peer(1), isGroup: true}]; },
+    async getEntity() { entered(); await gate; return {className: 'Channel', username: 'publicgroup'}; },
+    async *iterMessages() { iterations++; yield cached(1); },
+  }});
+  const running = f.run('.fbi cache rebuild');
+  await ready;
+  const unloading = f.host.unload('fbi', 2000);
+  release();
+  assert.equal((await unloading).completed, true);
+  await assert.rejects(running, error => error?.name === 'TelegramAbortError' || error?.name === 'AbortError');
+  assert.equal(iterations, 0);
+  assert.equal(f.edits.some(edit => /缓存重建完成/.test(edit.text)), false);
+});
+
+test('rebuild cancellation caught from getEntity does not parse a later group', async t => {
+  let entered, rejectEntity, calls = 0;
+  const ready = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise((_, reject) => { rejectEntity = reject; });
+  const f = await fixture(t, {client: {
+    async getDialogs() { return [{id: peer(1), isGroup: true}, {id: peer(2), isGroup: true}]; },
+    async getEntity() { calls++; if (calls === 1) { entered(); await gate; } return {className: 'Channel', username: 'publicgroup'}; },
+    async *iterMessages() { yield cached(1); },
+  }});
+  const running = f.run('.fbi cache rebuild');
+  await ready;
+  const unloading = f.host.unload('fbi', 2000);
+  rejectEntity(new Error('entity failed during cancellation'));
+  assert.equal((await unloading).completed, true);
+  await assert.rejects(running, error => error?.name === 'TelegramAbortError' || error?.name === 'AbortError');
+  assert.equal(calls, 1);
+});
+
+test('an already-aborted rebuild does not wait through the inter-group delay', async t => {
+  let leaving, release;
+  const ready = new Promise(resolve => { leaving = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const f = await fixture(t, {client: {
+    async getDialogs() { return [{id: peer(1), isGroup: true}]; },
+    async getEntity() { return {className: 'Channel', username: 'publicgroup'}; },
+    async *iterMessages() { try { yield cached(1); } finally { leaving(); await gate; } },
+  }});
+  const running = f.run('.fbi cache rebuild');
+  await ready;
+  const unloading = f.host.unload('fbi', 80);
+  release();
+  assert.equal((await unloading).completed, true);
+  await assert.rejects(running, error => error?.name === 'TelegramAbortError' || error?.name === 'AbortError');
 });
