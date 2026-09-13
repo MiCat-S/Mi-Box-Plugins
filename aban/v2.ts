@@ -8,10 +8,6 @@ const commands = {aban: "封禁管理帮助", kick: "踢出", ban: "封禁", unb
 
 export default function createAban() {
   const handle = async (inv: CommandInvocation, ctx: PluginContext) => {
-    if (inv.command === "aban" || ["help", "h"].includes(inv.args[0] ?? "")) {
-      await ctx.telegram.edit(inv.message, renderHelp(inv.prefix), {parseMode: "html", linkPreview: false});
-      return;
-    }
     const run = async () => {
       const runtime = await createAbanRuntime(ctx, inv);
       await ctx.telegram.withClient(async (native, signal) => {
@@ -39,6 +35,12 @@ export default function createAban() {
           isChannel: {value: raw?.isChannel ?? peerId instanceof Api.PeerChannel},
           isGroup: {value: raw?.isGroup ?? (peerId instanceof Api.PeerChannel || peerId instanceof Api.PeerChat)},
         });
+        if (inv.command === "aban" || ["help", "h"].includes(inv.args[0] ?? "")) {
+          // 与原版 .aban 一致：帮助回执走受管 smartEdit，默认 10 秒后清理
+          await runtime.MessageManager.smartEdit(message, renderHelp(inv.prefix));
+          signal.throwIfAborted();
+          return;
+        }
         if (inv.command === "refresh") {
           await runtime.GroupManager.clearCache();
           const groups = await runtime.GroupManager.getManagedGroups(client);

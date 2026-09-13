@@ -436,7 +436,15 @@ class UserResolver {
 class MessageManager {
   static async smartEdit(message: Api.Message, text: string, deleteAfter = CONFIG.MESSAGE_AUTO_DELETE,
     parseMode: "html" | "md" = "html"): Promise<Api.Message> {
-    await ctx.telegram.edit(inv.message, text, {parseMode: parseMode === "md" ? "markdown" : "html", linkPreview: false});
+    try {
+      await ctx.telegram.edit(inv.message, text, {parseMode: parseMode === "md" ? "markdown" : "html", linkPreview: false});
+    } catch (error) {
+      // 取消必须传播，不能把 abort 当成可忽略的编辑失败。
+      if (ctx.signal.aborted || (error as {name?: string})?.name === "AbortError") throw error;
+      // 状态/结果消息编辑失败不阻断后续业务；记录固定日志，且与原版一样不调度删除。
+      ctx.log.error("aban:edit-failed");
+      return message;
+    }
     if (deleteAfter > 0) {
       void ctx.tasks.run("aban:delete-result", async signal => {
         await delay(deleteAfter * 1000, undefined, {signal});
