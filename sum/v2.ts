@@ -1,4 +1,4 @@
-import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type SubcommandDefinition, definePlugin, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, ui, type CommandDefinition, type SubcommandDefinition, definePlugin, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
 import {
   buildMessageLink, DEFAULT_PROMPT, extractUrlsFromEntities, formatDate,
   formatMessagesForAI, htmlEscape,
@@ -21,27 +21,60 @@ function scrubLegacyAiSettings(config: SummaryDB["aiConfig"]): void {
   delete config.default_service_tier;
   delete config.reply_mode;
 }
-const numericPeer = async (value: string): Promise<unknown> => {
+const numericPeer = async (value: string, signal?: AbortSignal): Promise<unknown> => {
   if (!/^-?\d+$/.test(value)) return value;
   const {returnBigInt} = await import("teleproto/Helpers.js");
+  signal?.throwIfAborted();
   return returnBigInt(value);
 };
 
 function intervalCron(interval: string): string {
+  const fields = interval.trim().split(/\s+/);
+  if (fields.length === 6) return fields.join(" ");
+  if (fields.length === 5) return `0 ${fields.join(" ")}`;
   const match = interval.toLowerCase().match(/^(\d+)(m|h|d)$/);
   requireValue(match, "间隔格式示例：30m、2h、1d");
   const value = Number(match[1]);
   requireValue(Number.isSafeInteger(value) && value > 0, "间隔必须为正整数");
   if (match[2] === "m") {
-    requireValue(value <= 59 && 60 % value === 0, "分钟间隔须为 1-59 且能整除 60");
-    return `*/${value} * * * *`;
+    requireValue(value <= 59, "分钟间隔须为 1-59");
+    return `0 */${value} * * * *`;
   }
   if (match[2] === "h") {
-    requireValue(value <= 23 && 24 % value === 0, "小时间隔须为 1-23 且能整除 24");
-    return `0 */${value} * * *`;
+    requireValue(value <= 23, "小时间隔须为 1-23");
+    return `0 0 */${value} * * *`;
   }
   requireValue(value === 1, "当前按天间隔仅支持 1d");
   return "0 0 * * *";
+}
+
+function originalAddArguments(invocation: CommandInvocation): string[] {
+  const line = invocation.message.text.split(/\r?\n/, 1)[0]?.trim() ?? "";
+  const body = line.startsWith(invocation.prefix) ? line.slice(invocation.prefix.length).trim() : line;
+  const values: string[] = [];
+  const pattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(body))) values.push((match[1] ?? match[2] ?? match[3]).replace(/\\(["'])/g, "$1"));
+  if (values.length >= 2 && values[1]?.toLowerCase() === "add") return values.slice(2);
+  return [...invocation.args];
+}
+
+function addSyntax(args: readonly string[]): {target: string; interval: string; rest: readonly string[]} {
+  const target = args[0] ?? "";
+  const first = args[1] ?? "";
+  if (/^\d+[mhd]$/i.test(first) || first.includes(" ")) return {target, interval:first, rest:args.slice(2)};
+  const cronToken = (value: string | undefined) => !!value && !value.startsWith("--") && /^[\w*?,/\-#]+$/.test(value);
+  const dayOfWeekToken = (value: string | undefined) => {
+    if (!value || !/^(?:[0-9*?,/#-]+|(?:SUN|MON|TUE|WED|THU|FRI|SAT)(?:[-,/#](?:SUN|MON|TUE|WED|THU|FRI|SAT|[0-7*]))*)$/i.test(value)) return false;
+    return [...value.matchAll(/\d+/g)].every(match => Number(match[0]) <= 7);
+  };
+  const available = args.slice(1, 7);
+  if (available.length === 6 && available.slice(0, 5).every(cronToken) && dayOfWeekToken(available[5])) {
+    return {target, interval:available.join(" "), rest:args.slice(7)};
+  }
+  const five = args.slice(1, 6);
+  if (five.length === 5 && five.every(cronToken)) return {target, interval:five.join(" "), rest:args.slice(6)};
+  return {target, interval:first, rest:args.slice(2)};
 }
 
 function providerUrl(provider: CustomProvider, type: "gemini" | "anthropic" | "openai-compatible"): string {
@@ -99,21 +132,24 @@ async function migrateAi(ctx: PluginContext): Promise<void> {
   }, ctx.signal);
 }
 
-async function readMessages(ctx: PluginContext, chatId: string, beforeId: number | undefined, count: number, caller: AbortSignal): Promise<{data: MessageData[]; title: string}> {
+async function readMessages(ctx: PluginContext, chatId: string, beforeId: number | undefined, count: number, caller: AbortSignal,
+  timeRange?: number): Promise<{data: MessageData[]; title: string}> {
   return ctx.telegram.withClient(async (client, signal) => {
     const active = AbortSignal.any([signal, caller]);
     active.throwIfAborted();
-    const peer = await numericPeer(chatId);
+    const peer = await numericPeer(chatId, active);
     const entity: any = await client.getEntity(peer as any);
     active.throwIfAborted();
     const username = typeof entity?.username === "string" ? entity.username : undefined;
     const title = entity?.title || [entity?.firstName, entity?.lastName].filter(Boolean).join(" ") || chatId;
     const rows: MessageData[] = [];
     const options: Record<string, unknown> = {limit: Math.min(800, count * 3)};
+    const cutoff = timeRange ? Math.floor(Date.now() / 1000) - timeRange * 3600 : undefined;
     if (beforeId) options.maxId = beforeId;
     for await (const item of client.iterMessages(entity, options)) {
       active.throwIfAborted();
       if (beforeId && item.id >= beforeId) continue;
+      if (cutoff !== undefined && Number(item.date ?? 0) < cutoff) break;
       const content = typeof item.message === "string" ? item.message.trim() : "";
       if (!content) continue;
       const senderEntity: any = item.sender;
@@ -128,12 +164,12 @@ async function readMessages(ctx: PluginContext, chatId: string, beforeId: number
   });
 }
 
-async function summarize(ctx: PluginContext, task: Pick<SummaryTask, "chatId" | "messageCount" | "aiProvider" | "aiPrompt" | "useSpoiler">,
+async function summarize(ctx: PluginContext, task: Pick<SummaryTask, "chatId" | "messageCount" | "timeRange" | "aiProvider" | "aiPrompt" | "useSpoiler">,
   beforeId?: number, signal: AbortSignal = ctx.signal): Promise<{html: string; title: string}> {
   await migrateAi(ctx);
   const db = await store(ctx).read(signal);
   requireValue(ctx.services.available("ai", "chat"), "请先安装 ai 插件并配置聊天模型");
-  const messages = await readMessages(ctx, task.chatId, beforeId, task.messageCount, signal);
+  const messages = await readMessages(ctx, task.chatId, beforeId, task.messageCount, signal, task.timeRange);
   requireValue(messages.data.length, "未找到可总结的消息");
   ctx.log.info("sum:request", {messages: messages.data.length, inputChars: messages.data.reduce((n, item) => n + item.content.length, 0)});
   let output = await ctx.services.call<string>("ai", "chat", {text:formatMessagesForAI(messages.data),
@@ -149,10 +185,15 @@ async function summarize(ctx: PluginContext, task: Pick<SummaryTask, "chatId" | 
 
 async function sendPages(ctx: PluginContext, message: MessageEnvelope, html: string): Promise<void> {
   const pages = htmlPages(html);
-  for (let index = 0; index < pages.length; index++) {
-    ctx.signal.throwIfAborted();
+  const delivery = await ui.deliverPages(pages, ctx.signal, async (page, index) => {
     if (!index) await ctx.telegram.edit(message, pages[index], {parseMode: "html", linkPreview: false});
     else await ctx.telegram.reply(message, pages[index], {parseMode: "html", linkPreview: false});
+  });
+  if (delivery.interrupted) {
+    ctx.log.error("sum:output-failed");
+    if (!delivery.published) throw new UserError("摘要发送失败，请稍后重试");
+    try { await ctx.telegram.reply(message, ui.interruptedNotice(delivery)); }
+    catch { if (!ctx.signal.aborted) ctx.log.error("sum:output-notice-failed"); }
   }
 }
 
@@ -162,8 +203,11 @@ async function pushSummary(ctx: PluginContext, task: SummaryTask, signal: AbortS
   const db = await store(ctx).read(signal);
   const target = task.pushTarget || db.defaultPushTarget || "me";
   await ctx.telegram.withClient(async (client, active) => {
+    const peer = await numericPeer(target, active);
+    active.throwIfAborted();
     for (const page of htmlPages(result.html)) {
-      active.throwIfAborted(); await client.sendMessage(target, {message: page, parseMode: "html", linkPreview: db.aiConfig.link_preview === true});
+      active.throwIfAborted(); await client.sendMessage(peer as never, {message: page, parseMode: "html", linkPreview: db.aiConfig.link_preview === true});
+      active.throwIfAborted();
     }
   });
 }
@@ -171,7 +215,17 @@ async function pushSummary(ctx: PluginContext, task: SummaryTask, signal: AbortS
 export default function createSum() {
   const disposers = new Map<string, () => Promise<void>>();
   const running = new Set<string>();
-  const register = async (ctx: PluginContext, task: SummaryTask): Promise<void> => {
+  const taskLocks = new Map<string, Promise<void>>();
+  const withTaskLock = async <T>(id: string, operation: () => Promise<T>): Promise<T> => {
+    const previous = taskLocks.get(id) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    taskLocks.set(id, current);
+    await previous;
+    try { return await operation(); }
+    finally { release(); if (taskLocks.get(id) === current) taskLocks.delete(id); }
+  };
+  const registerUnlocked = async (ctx: PluginContext, task: SummaryTask): Promise<void> => {
     if (task.disabled || disposers.has(task.id)) return;
     const dispose = await ctx.jobs.register(`task-${task.id}`, {cron: task.cron, description: `群消息总结 ${task.id}`}, async signal => {
       if (running.has(task.id)) return;
@@ -227,43 +281,66 @@ export default function createSum() {
       `供应商、密钥、模型、思考强度与服务等级由 ai 插件统一管理，请使用 ${invocation.prefix}ai config、${invocation.prefix}ai model chat、${invocation.prefix}ai reasoning chat 和 ${invocation.prefix}ai service chat。`);
   };
   const manageTask = (sub: "run" | "del" | "disable" | "enable"): CommandDefinition["handle"] => guarded(async (invocation, ctx) => {
-        const id = invocation.args[0] ?? ""; const db = await store(ctx).read(ctx.signal);
-        const task = db.tasks.find(item => item.id === id); requireValue(task, "摘要任务不存在");
-        if (sub === "run") { await ctx.telegram.edit(invocation.message, "📝 正在生成摘要..."); await pushSummary(ctx, task, ctx.signal); await ctx.telegram.edit(invocation.message, "✅ 摘要已推送"); return; }
-        if (sub === "del" || sub === "disable") { const dispose = disposers.get(id); if (dispose) { await dispose(); disposers.delete(id); } }
-        await store(ctx).update(data => { const index = data.tasks.findIndex(item => item.id === id);
-          if (sub === "del") data.tasks.splice(index, 1); else data.tasks[index].disabled = sub === "disable"; return data; }, ctx.signal);
-        if (sub === "enable") await register(ctx, {...task, disabled: false});
-        await ctx.telegram.edit(invocation.message, "✅ 摘要任务已更新"); return;
+        const id = invocation.args[0] ?? "";
+        if (sub !== "run") { await withTaskLock(id, async () => {
+          const db = await store(ctx).read(ctx.signal); const task = db.tasks.find(item => item.id === id); requireValue(task, "摘要任务不存在");
+          if (sub === "del" || sub === "disable") { const dispose = disposers.get(id); if (dispose) { await dispose(); disposers.delete(id); } }
+          if (sub === "enable") {
+            await registerUnlocked(ctx, {...task, disabled: false});
+            try { await store(ctx).update(data => { const current = data.tasks.find(item => item.id === id); requireValue(current, "摘要任务不存在"); current.disabled = false; return data; }, ctx.signal); }
+            catch (error) { const dispose = disposers.get(id); if (dispose) { await dispose(); disposers.delete(id); } throw error; }
+          } else await store(ctx).update(data => { const index = data.tasks.findIndex(item => item.id === id); requireValue(index >= 0, "摘要任务不存在");
+            if (sub === "del") data.tasks.splice(index, 1); else data.tasks[index]!.disabled = true; return data; }, ctx.signal);
+        });
+        try { await ctx.telegram.edit(invocation.message, "✅ 摘要任务已更新"); } catch { if (!ctx.signal.aborted) ctx.log.error("sum:receipt-failed"); } return; }
+        const db = await store(ctx).read(ctx.signal); const task = db.tasks.find(item => item.id === id); requireValue(task, "摘要任务不存在");
+        if (sub === "run") { await ctx.telegram.edit(invocation.message, "📝 正在生成摘要..."); await pushSummary(ctx, task, ctx.signal);
+          try { await ctx.telegram.edit(invocation.message, "✅ 摘要已推送"); } catch { if (!ctx.signal.aborted) ctx.log.error("sum:receipt-failed"); } return; }
 
   });
   const command: CommandDefinition = {
     description: "群消息即时与定时摘要", helpArgs: ["help", "h", "?"], args: "[消息数] [--provider ai标签]", subcommandsCaseSensitive: false,
     examples: [{args: "", description: "总结当前群最近 100 条文字消息"}, {args: "200"}, {args: "100 --provider main"}],
     subcommands: {
-      list: {description: "查看定时摘要任务", args: "", handle: guarded(async (invocation, ctx) => {
+      list: {description: "查看定时摘要任务", aliases:["ls"], args: "", handle: guarded(async (invocation, ctx) => {
         const db = await store(ctx).read(ctx.signal);
-        const text = db.tasks.map(task => `• <code>${htmlEscape(task.id)}</code> · ${htmlEscape(task.interval)} · ${task.messageCount} 条 · ${task.disabled ? "停用" : "启用"}`).join("\n") || "暂无定时任务";
-        await ctx.telegram.edit(invocation.message, `<b>摘要任务</b>\n${text}`, {parseMode: "html"}); return;
+        const text = db.tasks.map(task => `• <code>${htmlEscape(task.id)}</code> · ${htmlEscape(task.remark || task.chatDisplay || task.chatId)} · ${htmlEscape(task.interval)} · ${task.timeRange ? `过去 ${task.timeRange} 小时` : `${task.messageCount} 条`} · ${task.disabled ? "停用" : "启用"} · 推送 ${htmlEscape(task.pushTarget || db.defaultPushTarget || "me")}`).join("\n") || "暂无定时任务";
+        await sendPages(ctx, invocation.message, `<b>摘要任务</b>\n${text}`); return;
 
       })},
       run: {description: "立即执行任务并推送", args: "ID", handle: manageTask("run")},
-      del: {description: "删除任务", args: "ID", handle: manageTask("del")},
+      del: {description: "删除任务", aliases:["rm"], args: "ID", handle: manageTask("del")},
       disable: {description: "暂停任务", args: "ID", handle: manageTask("disable")},
       enable: {description: "恢复任务", args: "ID", handle: manageTask("enable")},
-      add: {description: "创建定时摘要，推送到收藏夹", args: "here|群组 间隔 [消息数]", examples: [{args: "add here 2h 100"}, {args: "add here 30m 200"}], help: [{heading: "间隔：", body: "分钟间隔为 1–59 且能整除 60；小时间隔为 1–23 且能整除 24；按天仅支持 1d。消息数默认 100，范围 10–500。"}], handle: guarded(async (invocation, ctx) => {
-        const target = invocation.args[0] ?? "", interval = invocation.args[1] ?? "", count = Number(invocation.args[2] ?? 100);
+      add: {description: "创建定时摘要，推送到收藏夹", args: "here|群组 间隔 [消息数]", examples: [{args: "add here 2h 100"}, {args: "add here 30m 200"}, {args: "add here \"30 */2 * * *\" 100"}], help: [{heading: "间隔：", body: "分钟间隔为 1–59；小时间隔为 1–23；按天仅支持 1d。也支持五或六字段 Cron，表达式可加引号。消息数默认 100，范围 10–500。可用 --time、--provider、--spoiler 和备注。"}], handle: guarded(async (invocation, ctx) => {
+        const syntax = addSyntax(originalAddArguments(invocation));
+        const target = syntax.target, interval = syntax.interval;
+        let count = 100, timeRange: number | undefined, provider: string | undefined, remark = "";
+        let spoiler: boolean | undefined;
+        for (let index = 0; index < syntax.rest.length; index++) {
+          const value = syntax.rest[index]!;
+          if (value === "--time" || value === "--provider") {
+            const next = syntax.rest[++index]; requireValue(next, `请提供 ${value} 的值`);
+            if (value === "--time") { timeRange = Number(next); requireValue(Number.isSafeInteger(timeRange) && timeRange > 0 && timeRange <= 720, "时间范围须为 1-720 小时"); }
+            else provider = next;
+          } else if (value === "--spoiler") spoiler = true;
+          else if (value === "--no-spoiler") spoiler = false;
+          else if (/^\d+$/.test(value)) count = Number(value);
+          else remark += `${remark ? " " : ""}${value}`;
+        }
         requireValue(target && Number.isSafeInteger(count) && count >= 10 && count <= 500, "用法：sum add here|群组 2h 100");
         const chatId = target === "here" ? invocation.message.chatId : target;
         const cron = intervalCron(interval);
-        const db = await store(ctx).read(ctx.signal); const id = String(Number(db.seq || "0") + 1);
-        const task: SummaryTask = {id, cron, chatId, interval, messageCount: count, pushTarget: "me", createdAt: new Date().toISOString(),
-          useSpoiler: db.aiConfig.default_spoiler === true};
-        await store(ctx).update(data => { data.seq = id; data.tasks.push(task); return data; }, ctx.signal);
-        try { await register(ctx, task); } catch (error) {
-          await store(ctx).update(data => { data.tasks = data.tasks.filter(item => item.id !== id); data.seq = db.seq; return data; }, ctx.signal); throw error;
+        let task: SummaryTask | undefined;
+        await store(ctx).update(data => { const id = String(Number(data.seq || "0") + 1); data.seq = id;
+          task = {id, cron, chatId, interval, messageCount: count, pushTarget: data.defaultPushTarget || "me", createdAt: new Date().toISOString(),
+            ...(timeRange ? {timeRange} : {}), ...(provider ? {aiProvider:provider} : {}), ...(remark ? {remark} : {}),
+            useSpoiler: spoiler ?? data.aiConfig.default_spoiler === true}; data.tasks.push(task); return data; }, ctx.signal);
+        requireValue(task, "摘要任务创建失败");
+        try { await withTaskLock(task.id, () => registerUnlocked(ctx, task!)); } catch (error) {
+          await store(ctx).update(data => { data.tasks = data.tasks.filter(item => item.id !== task!.id); return data; }, ctx.signal); throw error;
         }
-        await ctx.telegram.edit(invocation.message, `✅ 已创建摘要任务 ${id}`); return;
+        try { await ctx.telegram.edit(invocation.message, `✅ 已创建摘要任务 ${task.id}`); } catch { if (!ctx.signal.aborted) ctx.log.error("sum:receipt-failed"); } return;
 
       })},
       config: {description: "查看统一 AI 选择与摘要设置", args: "", subcommandsCaseSensitive: true, defaultSubcommand: "list", subcommands: {
@@ -273,10 +350,11 @@ export default function createSum() {
         set: {description: "修改摘要显示，或查看统一 AI 配置方式", args: "preview|spoiler|prompt ...", subcommands: {
           default: {description: "查看统一 AI 配置方式", handle: centralConfig},
           preview: switches("link_preview"), spoiler: switches("default_spoiler"),
+          push: {description:"设置定时摘要默认推送目标",args:"目标",handle:configured(async(i,ctx)=>{const value=i.args.join(" ").trim();requireValue(value,"推送目标不能为空");await store(ctx).update(data=>{data.defaultPushTarget=value;return data;},ctx.signal);await confirmed(i,ctx);})},
           reasoning: {description: "查看统一 AI 配置方式", handle: centralConfig},
           service: {description: "查看统一 AI 配置方式", handle: centralConfig},
           prompt: {description: "设置默认摘要提示词", args: "内容", subcommands: {
-            show: {description: "查看当前实际提示词", args: "", handle: configured(async (i, ctx, db) => { await ctx.telegram.edit(i.message, `<b>当前摘要提示词</b>\n\n<code>${htmlEscape(db.aiConfig.default_prompt || DEFAULT_PROMPT)}</code>`, {parseMode: "html"}); })},
+            show: {description: "查看当前实际提示词", args: "", handle: configured(async (i, ctx, db) => { await sendPages(ctx, i.message, `<b>当前摘要提示词</b>\n\n<code>${htmlEscape(db.aiConfig.default_prompt || DEFAULT_PROMPT)}</code>`); })},
             reset: {description: "恢复内置详细版提示词", args: "", handle: prompt(true)},
           }, handle: prompt(false)},
         }, handle: centralConfig},
@@ -315,9 +393,9 @@ export default function createSum() {
       }, ctx.signal);
       await migrateAi(ctx);
       const db = await store(ctx).read(ctx.signal); for (const task of db.tasks) {
-      try { await register(ctx, task); } catch { ctx.log.error("sum:register-failed", {taskId: task.id}); }
+      try { await withTaskLock(task.id, () => registerUnlocked(ctx, task)); } catch { ctx.log.error("sum:register-failed", {taskId: task.id}); }
       }
     },
-    async cleanup() { disposers.clear(); running.clear(); },
+    async cleanup() { disposers.clear(); running.clear(); taskLocks.clear(); },
   });
 }
