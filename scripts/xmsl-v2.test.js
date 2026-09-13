@@ -59,21 +59,27 @@ test('xmsl migrates its legacy provider to ai and scrubs local credentials idemp
 });
 
 function direct(options = {}) {
-  const edits = [], calls = [], serviceCalls = []; const signal = new AbortController().signal;
+  const edits = [], replies = [], errors = [], calls = [], serviceCalls = [], downloadOptions = []; const controller = new AbortController(), signal = controller.signal;
+  let editAttempts = 0, replyAttempts = 0;
   let state = {schemaVersion: 1, apiMode: 'openai', baseUrl: '', apiKey: '', model: '', importedLegacy: true, aiMigrated: true};
-  const context = {signal, log: {info() {}, error() {}}, storage: {json() {return {async read() {return structuredClone(state);},
+  const context = {signal, log: {info() {}, error(event) {errors.push(event);}}, storage: {json() {return {async read() {return structuredClone(state);},
     async update(change) {state = await change(structuredClone(state)); return structuredClone(state);}};}},
     services: {available(id, service) {return id === 'ai' && ['chat', 'selection'].includes(service);}, async call(id, service, input) {
-      serviceCalls.push({id, service, input}); if (service === 'selection') return {chat: {tag: 'main', model: 'vision'}}; return '羡慕猫奴';
+      serviceCalls.push({id, service, input}); if (service === 'selection') return {chat: {tag: 'main', model: 'vision'}}; return options.answer || '羡慕猫奴';
     }},
-    files: {async withTemp(use) {const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-xmsl-media-')); try {return await use(dir, signal);} finally {await fs.rm(dir, {recursive: true, force: true});}}},
+    files: {async withTemp(use) {const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-xmsl-media-')); let value;
+      try {value = await use(dir, signal);} finally {await fs.rm(dir, {recursive: true, force: true});}
+      if (options.cleanupFails) throw new Error('private cleanup'); return value;}},
     processes: {async run(command, args, runOptions) {calls.push({command, args, options: runOptions}); if (options.processError) throw options.processError;
       const output = args.at(-1); if (output.endsWith('.gif')) await fs.writeFile(output, 'gif'); else await fs.writeFile(output, Buffer.from([0x89,0x50,0x4e,0x47,1])); return {stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 0};}},
-    telegram: {async edit(_message, text, editOptions) {edits.push({text, options: editOptions});}, async getReply() {return options.reply;},
-      async withClient(operation) {return operation({async *iterDownload() {yield options.mediaBytes || Buffer.from([0x89,0x50,0x4e,0x47,1]);}}, signal);}}};
+    telegram: {async edit(_message, text, editOptions) {editAttempts++; if (options.resultEditFailsOnce && editAttempts === 2) throw new Error('private first page failure'); edits.push({text, options: editOptions});},
+      async reply(_message, text, replyOptions) {replyAttempts++; if (options.replyFails || (options.replyFailsOnce && replyAttempts === 1)) throw new Error('private delivery failure'); replies.push({text, options: replyOptions});},
+      async getReply() {return options.reply;},
+      async withClient(operation) {return operation({iterDownload(_media, current) {downloadOptions.push(current); if (options.iterator) return options.iterator(current);
+        return (async function*() {yield options.mediaBytes || Buffer.from([0x89,0x50,0x4e,0x47,1]);})();}}, signal);}}};
   const run = (text = '.xmsl') => create('xmsl').commands.xmsl.handle({command: 'xmsl', prefix: '.', args: text.split(/\s+/).slice(1),
     message: {id: 1, chatId: '1', senderId: '1', outgoing: true, text, replyToId: 2, raw: {peerId: 1}}}, context);
-  return {edits, calls, serviceCalls, run};
+  return {context, edits, replies, errors, calls, serviceCalls, downloadOptions, controller, run};
 }
 
 test('xmsl sends replied static images to the central multimodal chat service', async () => {
@@ -86,7 +92,8 @@ test('xmsl sends replied static images to the central multimodal chat service', 
 
 test('xmsl extracts WebM and TGS first frames with bounded helpers', async () => {
   const webm = direct({reply: {id: 2, text: '', raw: {media: {document: {mimeType: 'video/webm', attributes: [{className: 'DocumentAttributeSticker'}]}}}}, mediaBytes: Buffer.from('webm')});
-  await webm.run(); assert.equal(webm.calls[0].command, '/usr/bin/ffmpeg'); assert.deepEqual(webm.calls[0].args.slice(0, 3), ['-nostdin', '-y', '-i']);
+  await webm.run(); assert.equal(webm.calls[0].command, '/usr/bin/ffmpeg'); assert.deepEqual(webm.calls[0].args.slice(0, 5), ['-nostdin', '-y', '-protocol_whitelist', 'file', '-i']);
+  assert.ok(webm.calls[0].args.includes('-fs')); assert.ok(webm.calls[0].options.signal instanceof AbortSignal); assert.ok(webm.calls[0].options.cwd);
   const tgs = direct({reply: {id: 2, text: '', raw: {media: {document: {mimeType: 'application/x-tgsticker', attributes: [{className: 'DocumentAttributeSticker'}]}}}}, mediaBytes: Buffer.from('tgs')});
   await tgs.run(); assert.equal(tgs.calls[0].command, '/usr/bin/python3'); assert.equal(tgs.calls[1].command, '/usr/bin/ffmpeg');
   assert.equal(tgs.serviceCalls.filter(call => call.service === 'chat').length, 1);
@@ -95,6 +102,63 @@ test('xmsl extracts WebM and TGS first frames with bounded helpers', async () =>
 test('xmsl stops after a timed-out media helper and declares its process budget', async () => {
   const f = direct({reply: {id: 2, text: '', raw: {media: {document: {mimeType: 'video/webm', attributes: [{className: 'DocumentAttributeSticker'}]}}}},
     mediaBytes: Buffer.from('webm'), processError: Object.assign(new Error('private argv'), {code: 'TIMED_OUT'})});
-  await f.run(); assert.equal(f.calls.length, 1); assert.match(f.edits.at(-1).text, /调用失败/); assert.doesNotMatch(f.edits.at(-1).text, /private argv/);
+  await f.run(); assert.equal(f.calls.length, 1); assert.match(f.edits.at(-1).text, /WebM 贴纸转换失败/); assert.doesNotMatch(f.edits.at(-1).text, /private argv/);
   assert.deepEqual(create('xmsl').resources.processes, {concurrency: 1, queueCapacity: 1, timeoutMs: 90000, maxOutputBytes: 256 * 1024});
+});
+
+test('xmsl preserves the complete legacy instruction corpus and long-answer notice', async t => {
+  const f = await hosted(t); await f.run('.xmsl 我今天心情不好');
+  const body = JSON.parse(f.requests[0].init.body), prompt = body.messages.find(message => message.role === 'system').content;
+  assert.match(prompt, /负面内容也可以轻轻调侃/); assert.match(prompt, /用户：\[一张美食图片\]/); assert.match(prompt, /你：羡慕会吃/);
+  const long = direct({answer: '甲'.repeat(16001)}); await long.run('.xmsl 测试');
+  assert.match(long.edits.at(-1).text, /^⚠️ 回复过长\(4001 tokens, 超过限制4000\)/); assert.equal(long.edits.at(-1).text.endsWith('...'), true);
+});
+
+test('xmsl falls back to replied text when media conversion fails and preserves completed media across temp cleanup failure', async () => {
+  const fallback = direct({reply: {id: 2, text: '仍然分析这段字', raw: {media: {document: {mimeType: 'video/webm', attributes: [{className: 'DocumentAttributeSticker'}]}}}},
+    mediaBytes: Buffer.from('webm'), processError: Object.assign(new Error('private helper'), {code: 'TIMED_OUT'})});
+  await fallback.run(); const chat = fallback.serviceCalls.find(call => call.service === 'chat'); assert.equal(chat.input.text, '仍然分析这段字'); assert.equal(chat.input.images, undefined);
+  const cleanup = direct({cleanupFails: true, reply: {id: 2, text: '猫', raw: {media: {photo: {}}, photo: {}}}}); await cleanup.run();
+  assert.equal(cleanup.serviceCalls.filter(call => call.service === 'chat').length, 1); assert.equal(cleanup.edits.at(-1).text, '羡慕猫奴');
+});
+
+test('xmsl media writer completes short writes', async () => {
+  const {artifactDir} = buildPlugin({id: 'xmsl', packageRoot: path.resolve(__dirname, '../xmsl'), entry: 'v2.ts'});
+  const {writeAll} = require(path.join(artifactDir, 'index.cjs')); const bytes = [], signal = new AbortController().signal;
+  await writeAll({async write(chunk, offset, length) {const count = Math.min(2, length); bytes.push(...chunk.subarray(offset, offset + count)); return {bytesWritten: count};}}, Uint8Array.from([1,2,3,4,5]), signal);
+  assert.deepEqual(bytes, [1,2,3,4,5]);
+});
+
+test('xmsl passes the combined signal into iterDownload and cancellation prevents late processing', async () => {
+  let began; const started = new Promise(resolve => {began = resolve;});
+  const f = direct({reply: {id: 2, text: '', raw: {media: {photo: {}}, photo: {}}}, iterator(current) {
+    return {[Symbol.asyncIterator]() {return this;}, next() {began(); return new Promise((_resolve, reject) => current.signal.addEventListener('abort', () => reject(current.signal.reason), {once: true}));}};
+  }});
+  const running = f.run(); await started; assert.ok(f.downloadOptions[0].signal instanceof AbortSignal); f.controller.abort(new DOMException('unload', 'AbortError')); await running;
+  assert.equal(f.calls.length, 0); assert.equal(f.serviceCalls.filter(call => call.service === 'chat').length, 0); assert.deepEqual(f.edits, []);
+});
+
+test('xmsl closes a newly opened handle when cancellation lands before iteration starts', async t => {
+  const promises = require('node:fs/promises'), controller = new AbortController(); let closed = 0, iterated = 0;
+  t.mock.method(promises, 'open', async () => {controller.abort(new DOMException('unload', 'AbortError')); return {async close() {closed++;}};});
+  const context = {signal: controller.signal, telegram: {async withClient(operation) {return operation({iterDownload() {iterated++; return []; }}, new AbortController().signal);}}};
+  await assert.rejects(require(path.join(buildPlugin({id: 'xmsl', packageRoot: path.resolve(__dirname, '../xmsl'), entry: 'v2.ts'}).artifactDir, 'index.cjs'))
+    .download(context, {media: {}}, '/unused', controller.signal), error => error?.name === 'AbortError');
+  assert.equal(closed, 1); assert.equal(iterated, 0);
+});
+
+test('xmsl safely paginates a normal long result and does not overwrite partial delivery with an AI failure', async () => {
+  const answer = '&'.repeat(8000), complete = direct({answer}); await complete.run('.xmsl 长回复');
+  const pages = [complete.edits.at(-1), ...complete.replies];
+  assert.ok(pages.length > 1); assert.ok(pages.every(page => page.text.length <= 4000 && page.options.parseMode === 'html'));
+  assert.equal(pages.reduce((count, page) => count + (page.text.match(/&amp;/g) || []).length, 0), 8000);
+  assert.ok(pages.every(page => /\d+\/\d+ 页$/.test(page.text)));
+  const partial = direct({answer, replyFailsOnce: true}); await partial.run('.xmsl 长回复');
+  assert.equal(partial.edits.length, 2); assert.ok(partial.errors.includes('xmsl_delivery_interrupted'));
+  assert.match(partial.replies.at(-1).text, /已发送 1\/\d+ 页，后续页发送中断/);
+  assert.doesNotMatch(partial.edits.at(-1).text, /XMSL 调用失败/);
+  const none = direct({answer, resultEditFailsOnce: true}); await none.run('.xmsl 长回复');
+  assert.equal(none.edits.at(-1).text, 'XMSL 结果发送失败，请重新执行'); assert.ok(none.errors.includes('xmsl_delivery_failed'));
+  const noticeFailure = direct({answer, replyFails: true}); await noticeFailure.run('.xmsl 长回复');
+  assert.ok(noticeFailure.errors.includes('xmsl_delivery_notice_failed')); assert.ok(!noticeFailure.errors.includes('xmsl_failed'));
 });
