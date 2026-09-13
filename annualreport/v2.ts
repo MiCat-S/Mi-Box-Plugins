@@ -1,5 +1,7 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {getBotName, definePlugin, type PluginContext} from "telebox/sdk";
+import {getBotName, definePlugin, requireSdkFeatures, type PluginContext} from "telebox/sdk";
+
+requireSdkFeatures("applicationInfo");
 
 type Stats = {schemaVersion: number; startTime: number; reportCount: number};
 type ChatStats = {private: number; group: number; bots: number; channel: number};
@@ -9,6 +11,23 @@ const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']
 
 function reportYear(now = new Date()): number {
   return now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+}
+
+function statsStore(context: PluginContext) {
+  return context.storage.json<Stats>("stats.json", {schemaVersion: 1, startTime: Date.now(), reportCount: 0});
+}
+
+function normalizeStats(value: Stats, increment: boolean): Stats {
+  return {...value, schemaVersion: 1,
+    startTime: Number.isFinite(value.startTime) ? value.startTime : Date.now(),
+    reportCount: (Number.isSafeInteger(value.reportCount) ? value.reportCount : 0) + (increment ? 1 : 0)};
+}
+
+function runDays(context: PluginContext, startTime: number, now = Date.now()): number {
+  const licenseModifiedAt = context.application.licenseModifiedAt;
+  return licenseModifiedAt === undefined
+    ? Math.max(0, Math.floor((now - startTime) / 86_400_000))
+    : Math.floor((now - licenseModifiedAt) / 86_400_000);
 }
 
 function classify(dialogs: readonly any[]): ChatStats {
@@ -26,17 +45,37 @@ function classify(dialogs: readonly any[]): ChatStats {
 }
 
 async function accountStats(context: PluginContext): Promise<{chats: ChatStats; blocked: number; user: any}> {
-  return context.telegram.withClient(async client => {
-    const dialogs: any[] = [];
-    for (const params of [undefined, {folder: 1}]) {
-      const page = await client.getDialogs(params);
-      if (Array.isArray(page)) dialogs.push(...page);
+  return context.telegram.withClient(async (client, signal) => {
+    let dialogs: any[] = [];
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        signal.throwIfAborted();
+        const page = await client.getDialogs();
+        signal.throwIfAborted();
+        if (Array.isArray(page)) dialogs = page;
+        break;
+      } catch {
+        signal.throwIfAborted();
+        context.log.error("annualreport_dialogs_failed", {attempt});
+      }
     }
-    const {Api} = await import("teleproto");
-    const blockedResult: any = await client.invoke(new Api.contacts.GetBlocked({offset: 0, limit: 1}));
-    const blocked = Number.isFinite(blockedResult?.count) ? Number(blockedResult.count) :
-      Array.isArray(blockedResult?.users) ? blockedResult.users.length : 0;
-    return {chats: classify(dialogs), blocked, user: await client.getMe()};
+    let blocked = 0;
+    try {
+      signal.throwIfAborted();
+      const {Api} = await import("teleproto");
+      signal.throwIfAborted();
+      const blockedResult: any = await client.invoke(new Api.contacts.GetBlocked({offset: 0, limit: 1}));
+      signal.throwIfAborted();
+      blocked = Number.isFinite(blockedResult?.count) ? Number(blockedResult.count) :
+        Array.isArray(blockedResult?.users) ? blockedResult.users.length : 0;
+    } catch {
+      signal.throwIfAborted();
+      context.log.error("annualreport_blocked_failed");
+    }
+    signal.throwIfAborted();
+    const user = await client.getMe();
+    signal.throwIfAborted();
+    return {chats: classify(dialogs), blocked, user};
   });
 }
 
@@ -56,18 +95,18 @@ async function hitokoto(context: PluginContext): Promise<string> {
 }
 
 export default function createAnnualReport() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "annualreport", description: "生成 Telegram 年度使用报告", commands: {
+  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "annualreport", description: "生成 Telegram 年度使用报告",
+    async setup(context) {
+      await statsStore(context).update(value => normalizeStats(value, false));
+    }, commands: {
     annualreport: {description: "生成 Telegram 年度使用报告", async handle(invocation, context) {
       await context.telegram.edit(invocation.message, "正在生成年度报告…");
       try {
-        const store = context.storage.json<Stats>("stats.json", {schemaVersion: 1, startTime: Date.now(), reportCount: 0});
-        const stats = await store.update(value => ({...value, schemaVersion: 1,
-          startTime: Number.isFinite(value.startTime) ? value.startTime : Date.now(),
-          reportCount: (Number.isSafeInteger(value.reportCount) ? value.reportCount : 0) + 1}));
+        const stats = await statsStore(context).update(value => normalizeStats(value, true));
         const pluginCount = context.plugins.list().length;
         const [{chats, blocked, user}, quote] = await Promise.all([accountStats(context), hitokoto(context)]);
         const name = user?.username ? `@${user.username}` : [user?.firstName, user?.lastName].filter(Boolean).join(" ") || "Telegram 用户";
-        const days = Math.max(0, Math.floor((Date.now() - stats.startTime) / 86_400_000));
+        const days = runDays(context, stats.startTime);
         const premium = user?.premium ? "\n⭐ <b>会员状态</b>\nTelegram Premium 已启用\n" : "";
         const clean = blocked < 20 ? "账户黑名单保持得很干净" : "愿新一年少遇到一些打扰";
         await context.telegram.edit(invocation.message, `<b>${escape(name)} 的 ${reportYear()} 年度报告</b>\n\n` +
