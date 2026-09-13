@@ -17,14 +17,15 @@ const create = require(path.join(artifactDir, 'index.cjs')).default;
 const JPEG = Buffer.from('/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAEf/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAf/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxB//9k=', 'base64');
 const SEARCH = `<div class="movie-list"><div class="item"><a href="/v/abc"><div class="video-title">ABP-123 &lt;title&gt;</div><div class="cover"><img src="https://c0.jdbstatic.com/a.jpg"></div><div class="score"><span class="value">4.5</span></div></a></div></div>`;
 const LONG_SEARCH = `<div class="movie-list"><div class="item"><a href="/v/abc"><div class="video-title">ABP-123 &lt;&amp;${'A'.repeat(489)}&#x1F600;</div><div class="cover"><img src="https://c0.jdbstatic.com/a.jpg"></div><div class="score"><span class="value">4.5</span></div></a></div></div>`;
-const DETAIL = `<div class="panel-block"><strong>導演</strong><span class="value"><a>&lt;Dir&gt;</a></span></div><div class="panel-block"><strong>演員</strong><span class="value"><a>Alice</a></span></div><div class="panel-block"><strong>類別</strong><span class="value"><a>Tag</a></span></div><div class="score"><span class="value">4.5</span></div>`;
+const DETAIL = `<div class="panel-block"><strong>導演</strong><span class="value"><a>&lt;Dir&gt;</a></span></div><div class="panel-block"><strong>片商</strong><span class="value"><a>&lt;Maker&gt;</a></span></div><div class="panel-block"><strong>演員</strong><span class="value"><a>Alice</a></span></div><div class="panel-block"><strong>類別</strong><span class="value"><a>Tag</a></span></div><div class="score"><span class="value">4.5</span></div>`;
 const LONG_DETAIL = `<div class="panel-block"><strong>導演</strong><span class="value"><a>${'D'.repeat(200)}</a></span></div><div class="panel-block"><strong>系列</strong><span class="value"><a>${'S'.repeat(200)}</a></span></div><div class="panel-block"><strong>演員</strong><span class="value">${Array.from({length: 20}, (_, index) => `<a>A${index}${'x'.repeat(60)}</a>`).join('')}</span></div><div class="panel-block"><strong>類別</strong><span class="value">${Array.from({length: 20}, (_, index) => `<a>T${index}${'y'.repeat(60)}</a>`).join('')}</span></div><div class="score"><span class="value">4.5</span></div>`;
 
 async function flush() { for (let index = 0; index < 8; index += 1) await Promise.resolve(); }
 
 async function fixture(t, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'telebox-javdb-v2-')));
-  const edits = [], sends = [], deletes = [], requests = [], logs = [];
+  const edits = [], replies = [], sends = [], deletes = [], requests = [], logs = [];
+  let replyAttempts = 0;
   const transportScope = new ResourceScope();
   let clientActive = false;
   let commandDeletes = 0;
@@ -37,6 +38,7 @@ async function fixture(t, options = {}) {
       assert.equal(clientActive, true, 'sendFile escaped the transport scope');
       sends.push({peer, value});
       if (options.sendFails) throw new Error('private send detail');
+      if (options.onSend) await options.onSend();
       return {id: options.sentId ?? 88};
     },
     async deleteMessages(...args) {
@@ -56,16 +58,22 @@ async function fixture(t, options = {}) {
     if (url.hostname === 'javdb.com' && url.pathname === '/v/abc') return new Response(options.detail ?? DETAIL);
     if (url.hostname === 'c0.jdbstatic.com') {
       if (options.imageFails) throw new Error('private image detail');
+      if (options.imageResponse) return options.imageResponse();
       return new Response(JPEG, {headers: {'content-type': 'image/jpeg'}});
     }
     assert.fail(`unexpected network target: ${url.href}`);
   };
-  const host = new PluginHost({storageRoot: root, logger: {
+  const host = new PluginHost({storageRoot: root, prefixes: options.prefixes, logger: {
     info(event, fields) { logs.push({level: 'info', event, fields}); },
     error(event, fields) { logs.push({level: 'error', event, fields}); },
   }, http: {fetch}, telegram: {
     async edit(message, text, settings, signal) { signal.throwIfAborted(); edits.push({message, text, settings}); },
-    async reply() { assert.fail('unexpected reply'); },
+    async reply(message, text, settings, signal) {
+      signal.throwIfAborted();
+      replyAttempts += 1;
+      if (replyAttempts === options.replyFailsAt) throw new Error('private page transport detail');
+      replies.push({message, text, settings});
+    },
     async invoke() { assert.fail('unexpected invoke'); },
     async getReply() { return undefined; },
     async withClient(operation, signal) {
@@ -86,18 +94,19 @@ async function fixture(t, options = {}) {
     assert.equal(transportReport.completed, true);
     await fs.rm(root, {recursive: true, force: true});
   });
-  return {host, edits, sends, deletes, requests, logs, raw,
+  return {host, edits, replies, sends, deletes, requests, logs, raw,
     commandDeletes: () => commandDeletes,
-    run: text => host.dispatchPrimary({id: 1, chatId: '7', senderId: '1', outgoing: true, text, raw})};
+    run: (text, extra = {}) => host.dispatchPrimary({id: 1, chatId: '7', senderId: '1', outgoing: true, text, raw, ...extra})};
 }
 
 test('javdb normalizes codes, escapes details, preserves aliases and sends a short report as the cover caption', async t => {
   const f = await fixture(t);
-  await f.run('.av abp 123');
+  await f.run('.av abp 123', {replyToId: 900719925});
   assert.match(f.requests[0].url.search, /q=ABP-123/);
   assert.equal(f.sends.length, 1);
-  assert.match(f.sends[0].value.caption, /&lt;title&gt;[\s\S]*&lt;Dir&gt;[\s\S]*Alice/);
+  assert.match(f.sends[0].value.caption, /&lt;title&gt;[\s\S]*&lt;Dir&gt;[\s\S]*&lt;Maker&gt;[\s\S]*Alice/);
   assert.equal(f.commandDeletes(), 1);
+  assert.equal(f.sends[0].value.replyTo, 900719925);
   assert.deepEqual(f.host.listCommands().filter(value => value.pluginId === 'javdb').map(value => value.name), ['av', 'jav', 'javdb', 'jd']);
   assert.ok(f.requests.every(value => value.init.redirect === 'manual'));
 });
@@ -107,8 +116,10 @@ test('javdb edits the complete long report and sends a bounded, intact cover cap
   await success.run('.javdb ABP-123');
   const fallback = await fixture(t, {search: LONG_SEARCH, detail: LONG_DETAIL, imageFails: true});
   await fallback.run('.javdb ABP-123');
-  const body = success.edits.at(-1).text;
-  assert.equal(body, fallback.edits.at(-1).text);
+  const successPages = [success.edits.at(-1).text, ...success.replies.map(item => item.text)];
+  const fallbackPages = [fallback.edits.at(-1).text, ...fallback.replies.map(item => item.text)];
+  assert.deepEqual(successPages, fallbackPages);
+  const body = successPages.join('\n');
   assert.match(body, /JavDB/);
   assert.ok(load(`<body>${body}</body>`).text().length > 1024);
   const mediaCaption = success.sends[0].value.caption;
@@ -172,9 +183,36 @@ test('javdb retains cover cleanup when command deletion fails', async t => {
   t.mock.timers.enable({apis: ['setTimeout']});
   const f = await fixture(t, {commandDeleteFails: true});
   await f.run('.av ABP-123');
+  assert.equal(f.edits.length, 1);
+  assert.equal(f.sends.length, 1);
   t.mock.timers.tick(60_000);
   await flush();
   assert.equal(f.deletes.length, 1);
+});
+
+test('javdb paginates a complete long fallback instead of truncating later fields', async t => {
+  const detail = `<div class="panel-block"><strong>演員</strong><span class="value">${Array.from({length: 20}, (_, index) => `<a>Actor-${index}-${'x'.repeat(180)}</a>`).join('')}</span></div><div class="panel-block"><strong>類別</strong><span class="value">${Array.from({length: 30}, (_, index) => `<a>Tag-${index}-${'y'.repeat(180)}</a>`).join('')}</span></div>`;
+  const f = await fixture(t, {detail, imageFails: true});
+  await f.run('.av ABP-123');
+  const pages = [...f.edits.slice(1).map(item => item.text), ...f.replies.map(item => item.text)];
+  assert.ok(pages.length > 1);
+  assert.match(pages.join('\n'), /Actor-19/);
+  assert.match(pages.join('\n'), /Tag-29/);
+  assert.ok(pages.every(page => page.length <= 3500));
+});
+
+test('javdb actively cancels and releases a hanging image reader on unload', async t => {
+  let cancelled = false;
+  const stream = new ReadableStream({pull() {}, cancel() {cancelled = true;}});
+  const f = await fixture(t, {imageResponse: () => new Response(stream, {headers: {'content-type': 'image/jpeg'}})});
+  const running = f.run('.av ABP-123');
+  while (!stream.locked) await new Promise(resolve => setImmediate(resolve));
+  const unloading = f.host.unload('javdb', 1000);
+  assert.equal((await unloading).completed, true);
+  await running;
+  assert.equal(cancelled, true);
+  assert.equal(stream.locked, false);
+  assert.equal(f.sends.length, 0);
 });
 
 test('javdb reports a sanitized cover deletion failure', async t => {
@@ -224,4 +262,41 @@ test('javdb rejects malformed codes before network access', async t => {
   await f.run('.jd ../../etc/passwd');
   assert.equal(f.requests.length, 0);
   assert.match(f.edits.at(-1).text, /格式无效/);
+});
+
+test('javdb help for every alias escapes an HTML-bearing active prefix', async t => {
+  const f = await fixture(t, {prefixes: ['<&']});
+  for (const command of ['javdb', 'av', 'jav', 'jd']) {
+    await f.run(`<&${command} help`);
+    assert.match(f.edits.at(-1).text, /<code>&lt;&amp;javdb &lt;番号&gt;<\/code>/);
+    assert.doesNotMatch(f.edits.at(-1).text, /<code><&/);
+  }
+  assert.equal(f.requests.length, 0);
+});
+
+test('javdb cancellation during cover upload causes no command deletion, cleanup timer, or fallback', async t => {
+  const started = Promise.withResolvers(), release = Promise.withResolvers();
+  const f = await fixture(t, {onSend: async () => {started.resolve(); await release.promise;}});
+  const running = f.run('.av ABP-123');
+  await started.promise;
+  const unloading = f.host.unload('javdb', 1000);
+  release.resolve();
+  assert.equal((await unloading).completed, true);
+  await running;
+  assert.equal(f.commandDeletes(), 0);
+  assert.equal(f.deletes.length, 0);
+  assert.equal(f.edits.length, 1);
+});
+
+test('javdb preserves the first page and stops before cover work when the second page fails', async t => {
+  const f = await fixture(t, {search: LONG_SEARCH, detail: LONG_DETAIL, replyFailsAt: 1});
+  await f.run('.javdb ABP-123');
+  assert.match(f.edits.at(-1).text, /1\/2 页/);
+  assert.equal(f.edits.length, 2);
+  assert.equal(f.replies.length, 1);
+  assert.match(f.replies[0].text, /已发送 1\/2 页/);
+  assert.deepEqual(f.logs.map(entry => entry.event), ['javdb_report_delivery_failed']);
+  assert.deepEqual(f.requests.map(entry => entry.url.pathname), ['/search', '/v/abc']);
+  assert.equal(f.sends.length, 0);
+  assert.equal(f.commandDeletes(), 0);
 });
