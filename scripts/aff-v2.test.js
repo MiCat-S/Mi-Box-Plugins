@@ -83,10 +83,12 @@ test('aff rejects blank saves and invalid deletion without changing storage', as
   f.setReply({id: 2, chatId: 'chat', text: ' \n '});
   await f.run('.aff save');
   assert.match(f.edits.at(-1).text, /请回复/);
-  for (const index of ['0', '-1', '2', '1.5', '1e0']) {
+  for (const index of ['0', '-1', '1.5', '1e0']) {
     await f.run(`.aff remove ${index}`);
-    assert.match(f.edits.at(-1).text, /序号无效/);
+    assert.match(f.edits.at(-1).text, /无效的序号/);
   }
+  await f.run('.aff remove 2');
+  assert.match(f.edits.at(-1).text, /删除失败：找不到序号 2/);
   assert.equal((await f.read()).affs[0].text, 'keep');
 });
 
@@ -105,10 +107,8 @@ test('aff preserves existing entries when capacity is reached', async t => {
   assert.equal(f.edits.at(-1).text, 'entry-31');
 });
 
-test('aff keeps literal markup and refuses oversized text without truncation', async t => {
-  const f = await fixture(t);
-  f.setReply({id: 2, chatId: 'chat', text: '<b>literal & content</b>'});
-  await f.run('.aff save');
+test('aff keeps historical V2 literal entries and refuses oversized text without truncation', async t => {
+  const f = await fixture(t, {affs: [{text: '<b>literal & content</b>', webPage: false}]});
   await f.run('.aff 1');
   assert.equal(f.edits.at(-1).text, '<b>literal & content</b>');
   assert.equal(f.edits.at(-1).options.parseMode, undefined);
