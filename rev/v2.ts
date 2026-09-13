@@ -1,12 +1,14 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {access, stat} from "node:fs/promises";
-import {constants} from "node:fs";
+import {open, stat} from "node:fs/promises";
 import path from "node:path";
 import {definePlugin, type PluginContext} from "telebox/sdk";
 import type {Api as ApiTypes} from "teleproto";
 
 type Flip = "h" | "v" | undefined;
 const FFMPEG = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"] as const;
+const MAX_MEDIA_BYTES = 50 * 1024 * 1024;
+class DeliveredCleanupError extends Error {}
+const aborted=(error:unknown):boolean=>error instanceof DOMException&&error.name==="AbortError";
 const segmenter = new Intl.Segmenter(undefined, {granularity: "grapheme"});
 const FORMAT_ENTITIES = new Set(["MessageEntityBold", "MessageEntityItalic", "MessageEntityUnderline",
   "MessageEntityStrike", "MessageEntitySpoiler"]);
@@ -130,24 +132,24 @@ function mediaInfo(raw: ApiTypes.Message | undefined): {extension: string; gif: 
 
 function ffmpegArgs(input: string, output: string, flip: Flip, invert: boolean, gif: boolean, webm: boolean): string[] {
   const filters = [flip === "h" ? "hflip" : flip === "v" ? "vflip" : "", invert ? "negate" : ""].filter(Boolean);
-  const args = ["-nostdin", "-y", "-i", input];
+  const args = ["-nostdin", "-y", "-protocol_whitelist", "file", "-i", input];
   if (gif) {
     const base = filters.join(",") || "null";
     args.push("-filter_complex", `[0:v]${base}[flip];[flip]split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer`, "-loop", "0");
   } else if (filters.length) args.push("-vf", filters.join(","));
   if (webm) args.push("-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", "32", "-auto-alt-ref", "0");
-  args.push(output);
+  args.push("-fs", String(MAX_MEDIA_BYTES), output);
   return args;
 }
 
-async function runFfmpeg(context: PluginContext, args: readonly string[]): Promise<void> {
+async function runFfmpeg(context: PluginContext, args: readonly string[], directory:string,signal: AbortSignal): Promise<void> {
   for (const command of FFMPEG) {
-    try { await context.processes.run(command, args, {timeoutMs: 180_000, maxOutputBytes: 512 * 1024}); return; }
+    signal.throwIfAborted();
+    try { await context.processes.run(command, args, {cwd:directory,signal, timeoutMs: 180_000, maxOutputBytes: 512 * 1024}); signal.throwIfAborted(); return; }
     catch (error) {
-      context.signal.throwIfAborted();
+      signal.throwIfAborted();
       if ((error as {code?: unknown})?.code !== "SPAWN_FAILED") throw error;
-      try { await access(command, constants.F_OK); } catch { continue; }
-      throw error;
+      continue;
     }
   }
   throw new Error("FFmpeg unavailable");
@@ -160,10 +162,13 @@ async function editReversedReply(context: PluginContext, invocation: any, reply:
   const layout = reverseLayout(text);
   const entities = reversedEntities(layout, text, (source as any)?.entities ?? []);
   if (!entities.length || !raw?.peerId) { await context.telegram.edit(invocation.message, layout.text); return; }
-  await context.telegram.withClient(async client => {
+  await context.telegram.withClient(async (client, clientSignal) => {
+    const signal=AbortSignal.any([context.signal,clientSignal]);
     const {Api} = await import("teleproto");
-    await client.invoke(new Api.messages.EditMessage({peer: await client.getInputEntity(raw.peerId!), id: invocation.message.id,
-      message: layout.text, entities}));
+    signal.throwIfAborted();
+    const peer=await client.getInputEntity(raw.peerId!);signal.throwIfAborted();
+    await client.invoke(new Api.messages.EditMessage({peer,id:invocation.message.id,message:layout.text,entities}));
+    signal.throwIfAborted();
   });
 }
 
@@ -177,25 +182,30 @@ export default function createRev() {
       const info = mediaInfo(reply?.raw as ApiTypes.Message | undefined);
       if (!info && reply?.text) { await editReversedReply(context, invocation, reply); return; }
       if (!info) {
-        await context.telegram.edit(invocation.message,
-          `<b>内容反转</b>\n<code>${invocation.prefix}rev 文字</code>\n回复媒体可使用 <code>${invocation.prefix}rev [h|v] [c]</code>。`, {parseMode: "html"});
+        await context.telegram.edit(invocation.message,renderPluginHelp(invocation.prefix),{parseMode:"html"});
         return;
       }
+      let sent=false;
       try {
-        await context.telegram.edit(invocation.message, "正在处理媒体…");
+        await context.telegram.edit(invocation.message, "🔄 正在处理媒体，请稍候...",{parseMode:"html"});
         const source = reply!.raw as ApiTypes.Message;
-        await context.files.withTemp(async (directory, signal) => {
+        let operationSignal:AbortSignal|undefined;
+        try{await context.files.withTemp(async (directory, signal) => {
+          operationSignal=signal;
           const input = path.join(directory, `input${info.extension}`);
           const output = path.join(directory, `output${info.extension}`);
-          await context.telegram.withClient(async client => { await client.downloadMedia(source.media!, {outputFile: input}); });
+          if(Number(source.document?.size??0)>MAX_MEDIA_BYTES)throw new Error("Input too large");
+          await context.telegram.withClient(async (client,clientSignal) => {const combined=AbortSignal.any([signal,clientSignal]),file=await open(input,"wx",0o600);let total=0;try{for await(const chunk of client.iterDownload(source.media! as any,{signal:combined})){combined.throwIfAborted();total+=chunk.length;if(total>MAX_MEDIA_BYTES)throw new Error("Input too large");let offset=0;while(offset<chunk.length){combined.throwIfAborted();const result=await file.write(chunk,offset,chunk.length-offset);combined.throwIfAborted();if(result.bytesWritten<=0)throw new Error("Write failed");offset+=result.bytesWritten;}}if(!total)throw new Error("Empty media");}finally{await file.close();}combined.throwIfAborted();});
           signal.throwIfAborted();
-          await runFfmpeg(context, ffmpegArgs(input, output, selected.flip, selected.invert, info.gif, info.webm));
+          await runFfmpeg(context, ffmpegArgs(input, output, selected.flip, selected.invert, info.gif, info.webm),directory,signal);
           const result = await stat(output);
-          if (!result.isFile() || !result.size || result.size > 50 * 1024 * 1024) throw new Error("Invalid output");
-          await context.telegram.withClient(async client => {
+          signal.throwIfAborted();
+          if (!result.isFile() || !result.size || result.size > MAX_MEDIA_BYTES) throw new Error("Invalid output");
+          await context.telegram.withClient(async (client,clientSignal) => {
+            const combined=AbortSignal.any([signal,clientSignal]);combined.throwIfAborted();
             const raw = invocation.message.raw as ApiTypes.Message | undefined;
             if (!raw?.peerId) throw new Error("Missing peer");
-            const options: any = {file: output, replyTo: invocation.message.replyToId};
+            const options: any = {file: output, replyTo: invocation.message.replyToId,topMsgId:invocation.message.topicId};
             if (reply?.text) {
               const layout = reverseLayout(reply.text);
               options.caption = layout.text;
@@ -204,17 +214,24 @@ export default function createRev() {
             }
             if (info.webm || info.webp) {
               const {Api} = await import("teleproto");
+              combined.throwIfAborted();
               options.attributes = [new Api.DocumentAttributeSticker({alt: "rev", stickerset: new Api.InputStickerSetEmpty()})];
             }
+            combined.throwIfAborted();
             await client.sendFile(raw.peerId, options);
-            if (typeof raw.delete === "function") await raw.delete({revoke: true});
+            sent=true;combined.throwIfAborted();
           });
-        });
-      } catch {
+        });}catch(error){context.signal.throwIfAborted();operationSignal?.throwIfAborted();if(aborted(error))throw error;if(sent){context.log.error("rev_temp_cleanup_failed");}else throw error;}
+        const raw=invocation.message.raw as ApiTypes.Message|undefined;
+        if(typeof raw?.delete==="function"){context.signal.throwIfAborted();try{await raw.delete({revoke:true});context.signal.throwIfAborted();return;}catch{context.signal.throwIfAborted();context.log.error("rev_command_cleanup_failed");}}
+        try{await context.telegram.edit(invocation.message,"✅ 媒体已处理完成");}catch{context.signal.throwIfAborted();context.log.error("rev_receipt_failed");}
+      } catch(error) {
         if (context.signal.aborted) return;
+        if(aborted(error))return;
+        if(sent){context.log.error("rev_receipt_failed");return;}
         context.log.error("rev_failed");
         await context.telegram.edit(invocation.message, "媒体处理失败，请确认服务器已安装 FFmpeg 且媒体格式受支持");
       }
-    }},
+    },helpArgs:["help","h"]},
   }});
 }
