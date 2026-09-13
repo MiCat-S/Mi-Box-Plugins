@@ -48,7 +48,8 @@ test('dbdj samples unique valid recent speakers and deletes its command', async 
   const f = await fixture(t, 'dbdj', client, {raw: {peerId: {}, async delete() { deleted++; }}});
   await f.run('.dbdj 50 2 恭喜');
   assert.equal(f.replies.length, 1);
-  assert.match(f.replies[0].text, /有效 2 人 · 选中 2 人/);
+  assert.match(f.replies[0].text, /有效用户数: 2/);
+  assert.match(f.replies[0].text, /选中人数: 2/);
   assert.match(f.replies[0].text, /恭喜/);
   assert.equal(deleted, 1);
 });

@@ -99,6 +99,7 @@ export default function createDbdj() {
             }
           }
           let response: string;
+          let paginatedResponse: string | undefined;
           if (!candidates.length) {
             response = `未在最近的 <code>${scanCount}</code> 条消息中找到可抽取的有效用户。`;
           } else {
@@ -108,11 +109,12 @@ export default function createDbdj() {
             const suffix = note ? ` ${escape(note)}` : "";
             const seconds = String(Math.round((Date.now() - started) / 10) / 100);
             response = `点兵点将, 点到谁... ${mentions}${suffix}\n\n📊 统计信息:\n• 扫描消息数: ${scanCount}\n• 有效用户数: ${candidates.length}\n• 选中人数: ${winners.length}\n• 选中概率: ${probability}%\n• 耗时: ${seconds} 秒`;
+            paginatedResponse = `点兵点将, 点到谁...\n${winners.map(user => user.name).join("\n")}${suffix}\n\n📊 统计信息:\n• 扫描消息数: ${scanCount}\n• 有效用户数: ${candidates.length}\n• 选中人数: ${winners.length}\n• 选中概率: ${probability}%\n• 耗时: ${seconds} 秒`;
           }
           const entityCount = response.match(/<a /g)?.length ?? 0;
           const rendered = response.length <= ui.MAX_HTML_LENGTH && entityCount <= ui.MAX_ENTITIES
             ? [response]
-            : await ui.renderRichText(response, ui.PAGE_LABEL_RESERVE);
+            : await ui.renderRichText(paginatedResponse ?? response, ui.PAGE_LABEL_RESERVE);
           const pages = rendered.map((page, index, all) => page + ui.pageLabel(index, all.length));
           const delivery = await ui.deliverPages(pages, signal, page =>
             context.telegram.reply(invocation.message, page, {parseMode: "html", linkPreview: false}));
