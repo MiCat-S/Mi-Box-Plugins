@@ -25,12 +25,17 @@ async function helper(context: PluginContext, candidates: readonly string[], arg
   throw new Error("Helper unavailable");
 }
 
-function stickerSet(document: any, Api: any): any | undefined {
+function stickerSet(document: any, Api: any, toLong:typeof import("teleproto/Helpers.js").returnBigInt): any | undefined {
   const attribute = (document?.attributes ?? []).find((entry: any) => entry instanceof Api.DocumentAttributeSticker);
   const set = attribute?.stickerset;
   if (set instanceof Api.InputStickerSetShortName && set.shortName) return new Api.InputStickerSetShortName({shortName: set.shortName});
   const id = set?.id ?? set?._id; const accessHash = set?.accessHash ?? set?.access_hash;
-  if (id !== undefined && accessHash !== undefined) return new Api.InputStickerSetID({id, accessHash});
+  if (id !== undefined && accessHash !== undefined) return new Api.InputStickerSetID({id:toLong(id), accessHash:toLong(accessHash)});
+}
+
+function byteSize(value:unknown):bigint|undefined {
+  if(value===undefined||value===null)return;
+  try{return BigInt(String(value));}catch{return;}
 }
 
 function stickerDocument(source: any, Api: any): any | undefined {
@@ -133,49 +138,64 @@ export default function createGetStickers() {
       getstickers: {description: "下载回复贴纸所属的贴纸包", async handle(invocation, context) {
         try {
           const reply = invocation.message.replyToId === undefined ? undefined : await context.telegram.getReply(invocation.message);
+          context.signal.throwIfAborted();
           const source = (reply?.raw ?? invocation.message.raw) as ApiTypes.Message | undefined;
-          await context.telegram.withClient(async client => {
-            const {Api} = await import("teleproto");
+          await context.telegram.withClient(async (client,clientSignal) => {
+            const [{Api},{returnBigInt}]=await Promise.all([import("teleproto"),import("teleproto/Helpers.js")]);
+            clientSignal.throwIfAborted();
             const document = stickerDocument(source, Api);
             if (!document) {await context.telegram.edit(invocation.message, help(invocation.prefix), {parseMode: "html"});return;}
-            const inputSet = stickerSet(document, Api);
+            const inputSet = stickerSet(document, Api, returnBigInt);
             if (!inputSet) throw new Error("Sticker set required");
+            clientSignal.throwIfAborted();
             const result: any = await client.invoke(new Api.messages.GetStickerSet({stickerset: inputSet, hash: 0}));
+            clientSignal.throwIfAborted();
             const documents = Array.isArray(result?.documents) ? result.documents : [];
             if (!documents.length || documents.length > MAX_STICKERS) throw new Error("Invalid sticker count");
             const name = String(result?.set?.shortName ?? "stickers").replace(/[^A-Za-z0-9_]/g, "_").slice(0, 64) || "stickers";
             await context.telegram.edit(invocation.message, `正在下载 ${documents.length} 张贴纸…`);
-            await context.files.withTemp(async (directory, signal) => {
+            clientSignal.throwIfAborted();
+            await context.files.withTemp(async (directory, tempSignal) => {
+              const signal=AbortSignal.any([clientSignal,tempSignal]);
+              signal.throwIfAborted();
               const pack = path.join(directory, "pack");
               const packFile = path.join(pack, "pack.txt");
               await import("node:fs/promises").then(fs => fs.mkdir(pack, {recursive: true, mode: 0o700}));
+              signal.throwIfAborted();
               const emojiById = new Map<string, string>();
               for (const item of result?.packs ?? []) for (const id of item?.documents ?? []) emojiById.set(String(id), String(item?.emoticon ?? ""));
               for (let index = 0; index < documents.length; index++) {
                 signal.throwIfAborted(); const item: any = documents[index]; const kind = extension(item, Api);
-                if (Number(item.size) > MAX_ITEM) throw new Error("Sticker too large");
+                const declaredSize=byteSize(item.size);
+                if(declaredSize!==undefined&&(declaredSize<=0n||declaredSize>BigInt(MAX_ITEM)))throw new Error("Invalid sticker size");
                 const stem = String(index).padStart(3, "0"); const sourceFile = path.join(pack, `${stem}.${kind}`);
-                await client.downloadFile(new Api.InputDocumentFileLocation({id: item.id, accessHash: item.accessHash,
+                await client.downloadFile(new Api.InputDocumentFileLocation({id:returnBigInt(item.id), accessHash:returnBigInt(item.accessHash),
                   fileReference: item.fileReference ?? Buffer.alloc(0), thumbSize: ""}), {outputFile: sourceFile, signal,
                   progressCallback(downloaded) {
                     signal.throwIfAborted();
-                    if (downloaded.greater(MAX_ITEM)) throw new Error("Sticker too large");
+                    const received=byteSize(downloaded);if(received===undefined||received>BigInt(MAX_ITEM))throw new Error("Sticker too large");
                   }});
                 signal.throwIfAborted();
-                const sourceInfo = await stat(sourceFile); if (!sourceInfo.isFile() || !sourceInfo.size || sourceInfo.size > MAX_ITEM) throw new Error("Sticker too large");
+                const sourceInfo = await stat(sourceFile); if (!sourceInfo.isFile() || !sourceInfo.size || sourceInfo.size > MAX_ITEM || declaredSize!==undefined&&BigInt(sourceInfo.size)!==declaredSize) throw new Error("Invalid sticker download");
+                signal.throwIfAborted();
                 const converted = path.join(pack, `${stem}.gif`); const ok = await convert(context, sourceFile, converted, kind, directory);
-                if (ok) {const convertedInfo=await stat(converted);if(!convertedInfo.isFile()||!convertedInfo.size||convertedInfo.size>MAX_ITEM)throw new Error("Converted sticker too large");await unlink(sourceFile);}
+                signal.throwIfAborted();
+                if (ok) {const convertedInfo=await stat(converted);signal.throwIfAborted();if(!convertedInfo.isFile()||!convertedInfo.size||convertedInfo.size>MAX_ITEM)throw new Error("Converted sticker too large");await unlink(sourceFile);signal.throwIfAborted();}
                 const finalName = ok ? `${stem}.gif` : `${stem}.${kind}`;
                 await appendFile(packFile, JSON.stringify({image_file: finalName, emojis: emojiById.get(String(item.id)) ?? ""}) + "\n", {encoding: "utf8", mode: 0o600});
-                if (index === 0 || (index + 1) % 10 === 0 || index + 1 === documents.length) await context.telegram.edit(invocation.message, `正在下载 ${documents.length} 张贴纸… ${index + 1}/${documents.length}`);
+                signal.throwIfAborted();
+                if (index === 0 || (index + 1) % 10 === 0 || index + 1 === documents.length) {await context.telegram.edit(invocation.message, `正在下载 ${documents.length} 张贴纸… ${index + 1}/${documents.length}`);signal.throwIfAborted();}
               }
               const archive = path.join(directory, `${name}.zip`);
               await createArchive(pack, archive, signal);
+              signal.throwIfAborted();
               const info = await stat(archive); if (!info.isFile() || !info.size || info.size > MAX_ARCHIVE) throw new Error("Invalid archive");
+              signal.throwIfAborted();
               const raw = invocation.message.raw as ApiTypes.Message | undefined;
-              if (!raw?.peerId) throw new Error("Missing peer");
-              await client.sendFile(raw.peerId, {file: archive, caption: name, replyTo: invocation.message.replyToId, forceDocument: true});
-              if (typeof raw.delete === "function") await raw.delete({revoke: true});
+              const peer=raw?.peerId??returnBigInt(invocation.message.chatId);
+              await client.sendFile(peer, {file: archive, caption: name, replyTo: invocation.message.replyToId, forceDocument: true});
+              signal.throwIfAborted();
+              if (typeof raw?.delete === "function") {try{await raw.delete({revoke: true});}catch{context.log.info("getstickers_command_cleanup_failed");}}
             });
           });
         } catch {
