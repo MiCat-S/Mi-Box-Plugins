@@ -1,38 +1,59 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
 import {definePlugin} from "telebox/sdk";
+import {archive, ensureDatabase, jobs, session, stats} from "./v2/archive";
+import {renderHelp} from "./v2/help";
+import {parseArchiveInput} from "./v2/input";
 
 export default function createLeech() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "leech", description: "历史消息归档与抓取工具",
-    commands: {leech: {helpArgs: ["help","h"], helpOnEmpty: true, description: "查看归档状态和数据库信息", async handle(invocation, ctx) {
-      const sub = invocation.args[0]?.toLowerCase() ?? "help";
-      if (sub === "help" || sub === "h") {
-        await ctx.telegram.edit(invocation.message,
-          `用法：${invocation.prefix}leech session|stats|db\n历史抓取功能正在迁移中`);
-        return;
-      }
-      const db = ctx.storage.sqlite("leech.sqlite");
-      if (sub === "db") {
-        await ctx.telegram.edit(invocation.message, "Leech 数据库已启用：<code>assets/leech.sqlite</code>", {parseMode: "html"});
-        return;
-      }
-      if (sub === "stats") {
-        const result = await db.read(connection => {
-          const tables = connection.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{name: string}>;
-          return tables.map(table => {
-            const name = table.name.replace(/"/g, "\"\"");
-            const row = connection.prepare(`SELECT COUNT(*) AS count FROM "${name}"`).get() as {count: number};
-            return `${table.name}: ${row.count}`;
-          });
-        });
-        await ctx.telegram.edit(invocation.message, `<b>Leech 统计</b>\n${result.join("\n") || "暂无数据"}`, {parseMode: "html"});
-        return;
-      }
-      if (sub === "session") {
-        const me = await ctx.telegram.withClient(client => client.getMe());
-        await ctx.telegram.edit(invocation.message, `<b>Telegram 会话正常</b>\n账号：<code>${String((me as {id?: unknown})?.id ?? "unknown")}</code>`, {parseMode: "html"});
-        return;
-      }
-      await ctx.telegram.edit(invocation.message, "未知子命令，请使用 .leech help");
-    }}},
+  return definePlugin({
+    renderHelp,
+    apiVersion: 1,
+    id: "leech",
+    description: "历史消息归档与抓取工具",
+    async setup(context) {
+      await ensureDatabase(context, true);
+    },
+    commands: {
+      leech: {
+        helpArgs: ["help", "h"],
+        helpOnEmpty: true,
+        description: "归档聊天历史并查看任务",
+        async handle(invocation, context) {
+          const subcommand = invocation.args[0]?.toLowerCase() ?? "help";
+          if (subcommand === "help" || subcommand === "h") {
+            await context.telegram.edit(invocation.message, renderHelp(invocation.prefix), {parseMode: "html"});
+            return;
+          }
+          if (subcommand === "session" || subcommand === "login") {
+            await session(invocation, context);
+            return;
+          }
+          if (["chat", "group", "messages"].includes(subcommand)) {
+            const input = parseArchiveInput(invocation.args.slice(1));
+            if (!input) {
+              await context.telegram.edit(invocation.message,
+                "❌ 参数无效：请提供 --from YYYY-MM-DD --to YYYY-MM-DD，并检查 limit/batch");
+              return;
+            }
+            await archive(invocation, context, input);
+            return;
+          }
+          if (subcommand === "jobs") {
+            await jobs(invocation, context);
+            return;
+          }
+          if (subcommand === "stats") {
+            await stats(invocation, context);
+            return;
+          }
+          if (subcommand === "db") {
+            await context.telegram.edit(invocation.message,
+              "🗄️ Leech SQLite DB:\n<code>assets/leech/leech.sqlite</code>", {parseMode: "html"});
+            return;
+          }
+          await context.telegram.edit(invocation.message,
+            `❌ Unknown Leech 子命令\n\n${renderHelp(invocation.prefix)}`, {parseMode: "html"});
+        },
+      },
+    },
   });
 }
