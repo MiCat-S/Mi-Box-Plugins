@@ -1,29 +1,9 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import { definePlugin, type MessageEnvelope, type PluginContext } from "telebox/sdk";
+import { STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, ui, type CommandDefinition, type MessageEnvelope, type PluginContext } from "telebox/sdk";
 import type { Api } from "teleproto";
 
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g,
   character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;" })[character]!);
 const code = (value: unknown): string => `<code>${escape(value)}</code>`;
-const help = (prefix: string): string => `🆔 <b>用户信息查询插件</b>
-
-<b>使用方式：</b>
-• <code>${escape(prefix)}ids</code> - 显示自己的信息
-• <code>${escape(prefix)}ids @用户名</code> - 查询指定用户信息
-• <code>${escape(prefix)}ids 用户ID</code> - 通过ID查询用户信息
-• 回复消息后使用 <code>${escape(prefix)}ids</code> - 查询被回复用户信息
-
-<b>显示信息包括：</b>
-• 用户名和显示名称
-• 用户ID、注册时间估算、DC
-• <b>入群时间</b>（仅群组有效）
-• 共同群组数量
-• 用户简介
-• 三种跳转链接
-
-<b>支持格式：</b>
-• @用户名、用户ID、频道ID、回复消息`;
-
 const points: readonly (readonly [number, number])[] = [
   [0, 1376438400], [50000000, 1400000000], [150000000, 1451606400],
   [350000000, 1483228800], [500000000, 1514764800], [900000000, 1559347200],
@@ -80,48 +60,36 @@ function format(info: Info): string {
 }
 
 async function send(context: PluginContext, message: MessageEnvelope, text: string): Promise<void> {
-  if (text.length <= 4096) {
-    await context.telegram.edit(message, text, { parseMode: "html" });
-    return;
-  }
-  // An oversized href cannot be paginated. Its label remains, and the full URL is in the link-text section.
-  text = text.replace(/<a href="[^"]{3500,}">([^<]*)<\/a>/g, "$1");
-  // Tokenize only our generated HTML, keeping entities, code points and formatting intact across pages.
-  const pages: string[] = [], stack: { open: string; close: string }[] = [];
-  let page = "";
-  const closing = () => stack.map(tag => tag.close).reverse().join("");
-  for (const token of text.match(/<[^>]*>|&(?:amp|lt|gt|quot|#x27);|[\s\S]/gu) ?? []) {
-    if (page.length + token.length + closing().length > 3900) {
-      pages.push(page + closing());
-      page = stack.map(tag => tag.open).join("");
-    }
-    if (/^<\//.test(token)) stack.pop();
-    else if (token.startsWith("<")) stack.push({ open: token, close: `</${token.match(/^<(\w+)/)![1]}>` });
-    page += token;
-  }
-  if (page) pages.push(page);
-  for (let i = 0; i < pages.length; i++) {
-    context.signal.throwIfAborted();
-    const output = pages[i] + `\n\n📄 (${i + 1}/${pages.length})`;
-    if (i === 0) await context.telegram.edit(message, output, { parseMode: "html" });
-    else await context.telegram.reply(message, output, { parseMode: "html" });
+  const rendered = await ui.renderRichText(text, ui.PAGE_LABEL_RESERVE);
+  const pages = rendered.map((page, index) => page + ui.pageLabel(index, rendered.length));
+  const delivery = await ui.deliverPages(pages, context.signal, (page, index) => index === 0
+    ? context.telegram.edit(message, page, {parseMode: "html"})
+    : context.telegram.reply(message, page, {parseMode: "html"}));
+  if (delivery.interrupted) {
+    context.log.info("ids_delivery_interrupted", {published: delivery.published, total: delivery.total,
+      category: ui.deliveryErrorCategory(delivery.error)});
+    if (!delivery.published) throw new Error("ids_delivery_failed");
   }
 }
 
-export default function createIds() {
-  return definePlugin({renderHelp: renderPluginHelp,
-    apiVersion: 1, id: "ids", description: `用户信息查询插件\n\n${help("")}`,
-    commands: { ids: {helpArgs: ["help","h"],  description: "用户信息查询插件", async handle({ message, prefix }, context) {
+const idsCommand: CommandDefinition = {
+  description: "用户信息查询插件",
+  helpArgs: ["help", "h"],
+  args: "[@用户名|用户ID]",
+  arguments: [{name: "目标", description: "支持 @用户名、用户 ID、频道 ID；省略或回复消息时查询该用户或自己"}],
+  examples: [{args: ""}, {args: "@用户名"}, {args: "123456789"}],
+  help: [{heading: "显示信息：", body: "用户名与显示名称、用户 ID、注册时间估算、DC、入群时间（仅群组）、共同群组数量、用户简介与三种跳转链接。"}],
+  async handle({ message, prefix }, context) {
       const target = message.text.trim().split(/\r?\n/)[0].split(/\s+/)[1] || "";
       try {
         context.signal.throwIfAborted();
         if (target === "help" || target === "h") {
-          await context.telegram.edit(message, help(prefix), { parseMode: "html" });
+          await context.telegram.edit(message, renderCommandHelp("ids", idsCommand, { prefix, title: "🆔 用户信息查询插件" }), { parseMode: "html" });
           return;
         }
         await context.telegram.edit(message, "🔍 <b>正在查询用户信息...</b>", { parseMode: "html" });
         const info = await context.telegram.withClient(async (client, signal): Promise<Info | undefined> => {
-          const { Api } = await import("teleproto");
+          const { Api, utils } = await import("teleproto");
           const { returnBigInt } = await import("teleproto/Helpers.js");
           const call = async <T>(operation: () => Promise<T>): Promise<T> => {
             signal.throwIfAborted();
@@ -132,6 +100,7 @@ export default function createIds() {
           signal.throwIfAborted();
           let user: Profile | undefined, id: ReturnType<typeof returnBigInt> | undefined;
           let hasReplySender = false;
+          let identityMismatch = false;
           if (target.startsWith("@")) {
             const entity = await call(() => client.getEntity(target));
             user = entity as Profile; id = returnBigInt(entity.id);
@@ -141,7 +110,11 @@ export default function createIds() {
             if (!match) throw new InvalidTargetError();
             const magnitude = BigInt(match[2] ? "0x" + match[2] : match[3]);
             id = returnBigInt(match[1] === "-" ? -magnitude : magnitude);
-            try { user = await call(() => client.getEntity(id!)) as Profile; }
+            try {
+              const resolved = await call(() => client.getEntity(id!)) as Profile;
+              identityMismatch = resolved.id === undefined || returnBigInt(resolved.id).toString() !== id.toString();
+              user = identityMismatch ? undefined : resolved;
+            }
             catch { signal.throwIfAborted(); }
           } else {
             try {
@@ -165,9 +138,18 @@ export default function createIds() {
             }
           }
           if (!id || id.isZero()) return { id: "0", commonChats: 0, dc: "未知" };
+          const resolveUser = async () => {
+            if (identityMismatch) return undefined;
+            const resolved = user ? utils.getInputUser(user as any) :
+              utils.getInputUser(await call(() => client.getInputEntity(id!)));
+            if (resolved instanceof Api.InputUser && resolved.userId.toString() !== id!.toString()) return undefined;
+            return resolved;
+          };
           const result: Info = { id: id.toString(), user, commonChats: 0, dc: "未知" };
           try {
-            const full = await call(() => client.invoke(new Api.users.GetFullUser({ id })));
+            const inputUser = await resolveUser();
+            if (!inputUser) throw new InvalidTargetError();
+            const full = await call(() => client.invoke(new Api.users.GetFullUser({ id: inputUser })));
             result.bio = full.fullUser?.about;
             result.commonChats = full.fullUser?.commonChatsCount || 0;
             const photo = (full.users[0] as Api.User | undefined)?.photo;
@@ -176,8 +158,12 @@ export default function createIds() {
           const raw = message.raw as Api.Message | undefined;
           if (raw?.isGroup || raw?.isChannel || (!raw && message.chatId.startsWith("-"))) {
             try {
+              const channelEntity = await call(() => client.getInputEntity(raw?.peerId ?? returnBigInt(message.chatId)));
+              const resolvedUser = await resolveUser();
+              if (!resolvedUser) throw new InvalidTargetError();
+              const participantEntity = utils.getInputPeer(resolvedUser);
               const participant = await call(() => client.invoke(new Api.channels.GetParticipant({
-                channel: raw?.peerId ?? returnBigInt(message.chatId), participant: id,
+                channel: utils.getInputChannel(channelEntity), participant: participantEntity,
               })));
               if ("date" in participant.participant && participant.participant.date) {
                 const date = new Date(participant.participant.date * 1000);
@@ -200,6 +186,11 @@ export default function createIds() {
         const detail = error instanceof InvalidTargetError ? "无效格式" : "未知错误，请稍后重试";
         await context.telegram.edit(message, `❌ <b>查询失败:</b> ${detail}`, { parseMode: "html" });
       }
-    } } },
+    },
+};
+export default function createIds() {
+  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "ids", description: "用户信息查询插件",
+    renderHelp: prefix => renderCommandHelp("ids", idsCommand, {prefix, title: "🆔 用户信息查询插件"}),
+    commands: { ids: idsCommand },
   });
 }

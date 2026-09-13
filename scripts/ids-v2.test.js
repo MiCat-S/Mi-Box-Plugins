@@ -8,7 +8,7 @@ const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 const envelope = {id: 17, chatId: '42', senderId: '42', outgoing: true, text: '.ids'};
-let buildRoot, createPlugin, manifest, Api, integer;
+let buildRoot, createPlugin, manifest, Api, integer, utils;
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -31,7 +31,7 @@ test.before(async () => {
   createPlugin = require(path.join(built.artifactDir, 'index.cjs')).default;
   createPlugin();
   assert.equal(Boolean(require.cache[modulePath]), loaded, 'factory import must not load Teleproto');
-  ({Api} = require(path.join(core, 'node_modules/teleproto')));
+  ({Api, utils} = require(path.join(core, 'node_modules/teleproto')));
   require(path.join(core, 'node_modules/teleproto/tl/custom/message.js')).installMessageBehaviour();
   ({returnBigInt: integer} = require(path.join(core, 'node_modules/teleproto/Helpers.js')));
 });
@@ -51,8 +51,12 @@ async function fixture(t, {native = {}, reply, hostOptions = {}, onEdit, onReply
   const edits = [], replies = [], calls = [], logs = [], replyReads = [];
   const handlers = {
     getMe: async () => user(),
-    getEntity: async () => user(),
-    getInputEntity: async () => new Api.InputPeerUser({userId: integer(123), accessHash: integer(456)}),
+    getEntity: async value => typeof value === 'string' && value.startsWith('@') ? user() : user({id: integer(value.toString())}),
+    getInputEntity: async value => {
+      const text = value?.channelId?.toString?.() ?? value?.toString?.() ?? "";
+      if (value?.channelId !== undefined || text.startsWith("-100")) return new Api.InputPeerChannel({channelId: value.channelId ?? integer(text.slice(4)), accessHash: integer(456)});
+      return new Api.InputPeerUser({userId: value?.id ?? value?.userId ?? value, accessHash: integer(456)});
+    },
     invoke: async request => {
       assert.ok(request instanceof Api.users.GetFullUser);
       return full();
@@ -107,7 +111,7 @@ test('ids builds a pure default SDK factory with declared protocol dependencies'
   const first = createPlugin();
   assert.notEqual(first, createPlugin());
   assert.equal(first.id, 'ids');
-  assert.equal(first.apiVersion, 1);
+  assert.equal(first.apiVersion, 2);
   assert.deepEqual(Object.keys(first.commands), ['ids']);
   assert.deepEqual(manifest.imports, ['telebox/sdk', 'teleproto', 'teleproto/Helpers.js']);
   assert.equal(first.setup, undefined);
@@ -152,16 +156,16 @@ test('ids self output retains fields, links and a single GetFullUser', async t =
   await f.run();
   assert.equal(f.replyReads.length, 1);
   assert.deepEqual(f.calls.map(call => call.method), ['getMe', 'invoke']);
-  assert.equal(f.calls[1].args[0].id.toString(), '123');
+  assert.equal(f.calls[1].args[0].id.userId.toString(), '123');
   assert.equal(f.edits[0].text, '🔍 <b>正在查询用户信息...</b>');
-  assert.equal(f.edits[1].text, '👤 <b>Alice</b>\n\n<b>基本信息：</b>\n' +
+  assert.equal(f.edits[1].text, ('👤 <b>Alice</b>\n\n<b>基本信息：</b>\n' +
     '• 用户名：<code>@alice</code>\n• 用户ID：<code>123</code>\n' +
     '• 注册时间（基于ID估算）：<code>2013年8月</code>\n' +
     '• DC：<code>DC4</code>\n• 共同群：<code>3</code> 个\n' +
     '\n<b>简介：</b>\n<code>Biography</code>\n\n<b>跳转链接：</b>\n' +
     '• <a href="tg://user?id=123">用户资料</a>\n• <a href="https://t.me/alice">聊天链接</a>\n' +
     '• <a href="tg://openmessage?user_id=123">打开消息</a>\n\n<b>链接文本：</b>\n' +
-    '• <code>tg://user?id=123</code>\n• <code>https://t.me/alice</code>\n• <code>tg://openmessage?user_id=123</code>');
+    '• <code>tg://user?id=123</code>\n• <code>https://t.me/alice</code>\n• <code>tg://openmessage?user_id=123</code>').replaceAll('\n\n', '\n'));
   assert.doesNotMatch(f.edits[1].text, /±|精确|校准/);
 });
 test('ids keeps first-line/first-target parsing and explicit target priority over reply', async t => {
@@ -171,7 +175,7 @@ test('ids keeps first-line/first-target parsing and explicit target priority ove
   assert.equal(f.replyReads.length, 0);
   await f.run('.ids\n@other');
   assert.equal(f.replyReads.length, 1);
-  assert.equal(f.calls.at(-1).args[0].id.toString(), '999');
+  assert.equal(f.calls.at(-1).args[0].id.userId.toString(), '999');
 });
 test('ids exact decimal/hex IDs preserve parseInt-compatible prefixes without rounding', async t => {
   for (const [input, id] of [['9007199254740993', '9007199254740993'], ['-1009007199254740993', '-1009007199254740993'],
@@ -179,7 +183,7 @@ test('ids exact decimal/hex IDs preserve parseInt-compatible prefixes without ro
     const f = await fixture(t);
     await f.run('.ids ' + input);
     assert.equal(f.calls[0].args[0].toString(), id);
-    assert.equal(f.calls[1].args[0].id.toString(), id);
+    assert.equal(f.calls[1].args[0].id.userId.toString(), id);
     assert.match(f.edits.at(-1).text, new RegExp('用户ID：<code>' + id + '</code>'));
     assert.ok(f.edits.at(-1).text.includes('tg://user?id=' + id));
     assert.ok(f.edits.at(-1).text.includes('tg://openmessage?user_id=' + id));
@@ -188,8 +192,16 @@ test('ids exact decimal/hex IDs preserve parseInt-compatible prefixes without ro
 test('ids username result uses exact protocol BigInteger ID', async t => {
   const f = await fixture(t, {native: {getEntity: async () => user({id: integer('9007199254740993')})}});
   await f.run('.ids @alice');
-  assert.equal(f.calls[1].args[0].id.toString(), '9007199254740993');
+  assert.equal(f.calls[1].args[0].id.userId.toString(), '9007199254740993');
   assert.match(f.edits.at(-1).text, /基于ID估算.*未知/);
+});
+test('ids rejects a mismatched numeric entity without borrowing its access hash or full profile', async t => {
+  const f = await fixture(t, {native: {getEntity: async () => user({id: integer('123')})}});
+  await f.run('.ids 9007199254740993');
+  assert.deepEqual(f.calls.map(call => call.method), ['getEntity']);
+  assert.doesNotMatch(f.edits.at(-1).text, /Alice|Biography|DC4/);
+  assert.match(f.edits.at(-1).text, /用户 9007199254740993/);
+  assert.equal(f.calls.some(call => call.method === 'invoke'), false);
 });
 test('ids deleted or uncached reply sender never falls back to owner', async t => {
   for (const raw of [undefined, {sender: new Api.UserEmpty({id: integer('9007199254740993')})}]) {
@@ -206,8 +218,8 @@ test('ids reply cached profile, snake_case names and status ordering survive', a
   const f = await fixture(t, {reply: {...envelope, senderId: '123', raw: {sender: profile}}});
   await f.run();
   const text = f.edits.at(-1).text;
-  assert.match(text, /&lt;First&gt; &quot;Last&quot;/);
-  assert.match(text, /@a&amp;b&#x27;/);
+  assert.match(text, /&lt;First&gt; "Last"/);
+  assert.match(text, /@a&amp;b'/);
   assert.match(text, /🤖 机器人 ✅ 已验证 ⭐ Premium ⚠️ 诈骗 ❌ 虚假/);
 });
 test('ids absent reply/sender and safe reply lookup failure retain self fallback', async t => {
@@ -256,7 +268,7 @@ test('ids unresolved numeric target and optional full-user failure retain partia
   assert.match(text, /共同群：<code>0/);
   assert.match(text, /DC：<code>未知/);
   assert.match(text, /https:\/\/t.me\/@id123/);
-  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls.length, 3);
 });
 test('ids photo-empty, photo-absent and empty full result retain separate DC fallbacks', async t => {
   for (const [response, expected] of [[full(user({photo: new Api.UserProfilePhotoEmpty()})), '无头像'],
@@ -268,6 +280,7 @@ test('ids photo-empty, photo-absent and empty full result retain separate DC fal
   }
 });
 test('ids group/forum participant RPC retains exact peer and participant and local date', async t => {
+  const serializationErrors = [];
   const peer = new Api.PeerChannel({channelId: integer('9007199254740993')});
   const raw = new Api.Message({id: 17, peerId: peer, message: '.ids 9007199254740993',
     replyTo: new Api.MessageReplyHeader({replyToMsgId: 5, replyToTopId: 2, forumTopic: true})});
@@ -275,16 +288,28 @@ test('ids group/forum participant RPC retains exact peer and participant and loc
   const date = new Date(1700000000 * 1000), pad = n => String(n).padStart(2, '0');
   const stamp = date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes());
   const f = await fixture(t, {native: {invoke: async request => {
-    if (request instanceof Api.channels.GetParticipant) {
-      assert.equal(request.channel, peer);
-      assert.equal(request.participant.toString(), '9007199254740993');
+    const isParticipant = request instanceof Api.channels.GetParticipant;
+    try {
+      await request.resolve({getInputEntity: async value => {
+        if (value instanceof Api.InputChannel || value instanceof Api.PeerChannel) return new Api.InputPeerChannel({channelId: value.channelId, accessHash: value.accessHash ?? integer(456)});
+        if (value instanceof Api.InputUser) return new Api.InputPeerUser({userId: value.userId, accessHash: value.accessHash});
+        if (value instanceof Api.InputPeerUser || value instanceof Api.InputPeerChannel) return value;
+        return new Api.InputPeerUser({userId: value.id ?? value, accessHash: integer(789)});
+      }}, utils);
+      assert.ok(request.getBytes().length > 0);
+    } catch (error) { serializationErrors.push(error); throw error; }
+    if (isParticipant) {
       return {participant: new Api.ChannelParticipant({userId: integer(123), date: 1700000000})};
     }
     return full();
   }}});
   await f.run('.ids 9007199254740993', {raw, topicId: 2});
+  assert.deepEqual(serializationErrors, []);
   assert.equal(f.calls.filter(call => call.method === 'invoke').length, 2);
-  assert.ok(f.edits.at(-1).text.includes('入群时间：<code>' + stamp));
+  const participantRequest = f.calls.find(call => call.args[0] instanceof Api.channels.GetParticipant).args[0];
+  assert.equal(participantRequest.channel.channelId.toString(), '9007199254740993');
+  assert.equal(participantRequest.participant.userId.toString(), '9007199254740993');
+  assert.ok(f.edits.at(-1).text.includes('入群时间：<code>' + stamp), f.edits.at(-1).text);
   assert.equal(f.edits.at(-1).message.topicId, 2);
 });
 test('ids rawless group and inaccessible participant are handled without extra full-user RPC', async t => {
@@ -300,16 +325,16 @@ test('ids rawless group and inaccessible participant are handled without extra f
   assert.equal(f.calls.filter(call => call.method === 'invoke').length, 2);
 });
 function validPage(text) {
-  assert.ok(text.length <= 4096, 'HTML page exceeds Telegram bound');
+  assert.ok(text.length <= 3500, 'HTML page exceeds SDK bound');
   assert.equal(text.isWellFormed(), true, 'UTF-16 surrogate split');
   const stack = [];
   for (const token of text.match(/<[^>]*>|&[^;]*;|[^<&]+/gu) || []) {
     if (token.startsWith('</')) assert.equal(stack.pop(), token.slice(2, -1));
     else if (token.startsWith('<')) stack.push(token.match(/^<(\w+)/)[1]);
-    else if (token.startsWith('&')) assert.match(token, /^&(amp|lt|gt|quot|#x27);$/);
+    else if (token.startsWith('&')) assert.match(token, /^&(amp|lt|gt|quot|#x27|#39);$/);
   }
   assert.equal(stack.length, 0, 'unclosed formatting');
-  const plain = text.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#x27);/g, '');
+  const plain = text.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#x27|#39);/g, '');
   assert.doesNotMatch(plain, /[<&]/, 'broken token/entity');
 }
 test('ids generated HTML pages preserve entities, UTF-16, closing tags and oversized single href', async t => {
@@ -321,11 +346,21 @@ test('ids generated HTML pages preserve entities, UTF-16, closing tags and overs
     assert.ok(pages.length > 1);
     for (const [i, page] of pages.entries()) {
       validPage(page.text);
-      assert.ok(page.text.endsWith('📄 (' + (i + 1) + '/' + pages.length + ')'));
+      assert.ok(page.text.endsWith((i + 1) + '/' + pages.length + ' 页'));
     }
     assert.match(pages.map(page => page.text).join(''), /a{199}\.\.\./);
     assert.equal(f.calls.filter(call => call.method === 'invoke').length, 1);
   }
+});
+test('ids preserves the first result page when a later reply fails', async t => {
+  const profile = user({firstName: 'A'.repeat(9000)});
+  const f = await fixture(t, {native: {getMe: async () => profile, invoke: async () => full(profile)},
+    onReply: async () => {throw new Error('transport-secret');}});
+  await f.run();
+  assert.equal(f.edits.length, 2);
+  assert.match(f.edits[1].text, /^👤|超出单条消息/);
+  assert.doesNotMatch(JSON.stringify({edits: f.edits, replies: f.replies, logs: f.logs}), /transport-secret/);
+  assert.deepEqual(f.logs.at(-1), {event: 'ids_delivery_interrupted', fields: {published: 1, total: 4, category: 'Error'}});
 });
 for (const method of ['getMe', 'getEntity', 'invoke']) {
   for (const rejects of [false, true]) test('ids cancellation waits for ' + method + ' settlement (' + rejects + ')', async t => {
