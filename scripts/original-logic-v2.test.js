@@ -49,13 +49,20 @@ test('komari aggregates all nodes and renders hardware, billing and bit rates',a
   assert.match(total,/101 \/ 101/);assert.match(total,/202/);assert.match(total,/25.00%/);assert.match(total,/101 Kbps/);
   const detail=await api.getNodeDetails('local','node 100');for(const term of ['Test CPU','Test GPU','arm64','kvm','$5 / 30 天','1 Kbps','2 Kbps'])assert.ok(detail.includes(term),term);
 });
-test('openlist installation saves initial credentials and updates preserve them',async t=>{
+test('openlist installation transaction saves initial credentials and updates preserve them',async t=>{
   const {buildPlugin}=require(path.join(core,'scripts/build-v2-plugin.cjs'));
   const create=require(path.join(buildPlugin({id:'openlist',packageRoot:path.resolve(__dirname,'../openlist'),entry:'v2.ts'}).artifactDir,'index.cjs')).default;
   const platform=Object.getOwnPropertyDescriptor(process,'platform');Object.defineProperty(process,'platform',{value:'linux'});t.after(()=>Object.defineProperty(process,'platform',platform));
-  let state={schemaVersion:1,username:'',password:'',defaultPath:'',legacyImported:true};const calls=[],edits=[];const signal=new AbortController().signal;
-  const ctx={signal,storage:{json:()=>({read:async()=>structuredClone(state),update:async fn=>(state=await fn(state))})},telegram:{edit:async(_m,text)=>edits.push(text)},http:{withResponse:async(_url,_init,fn)=>fn(new Response('test archive'),signal)},files:{withTemp:async fn=>{const dir=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'mibot-openlist-test-'));try{return await fn(dir,signal);}finally{fs.rmSync(dir,{recursive:true,force:true});}}},processes:{run:async(executable,args)=>{calls.push([executable,...args]);return{stdout:Buffer.from(args[0]==='admin'?'username: admin\n':''),stderr:Buffer.from(args[0]==='admin'?'password: fixture-password\n':'')};}}};
-  const run=action=>create().commands.op.handle({message:{id:1,chatId:'7',outgoing:true,saved:false},args:[action],prefix:'.'},ctx);
+  const root=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'mibot-openlist-transaction-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  let installed=false,state={schemaVersion:1,username:'',password:'',defaultPath:'',port:5244,legacyImported:true};
+  const calls=[],edits=[],signal=new AbortController().signal;
+  const ctx={signal,log:{info(){},error(){}},storage:{json:()=>({read:async()=>structuredClone(state),update:async fn=>(state=await fn(state))})},
+    telegram:{edit:async(_m,text)=>edits.push(text)},http:{withResponse:async()=>assert.fail('release retrieval is outside this transaction fixture')},
+    files:{dataDirectory:async name=>{const dir=path.join(root,name);fs.mkdirSync(dir,{recursive:true});return dir;},withTemp:async fn=>{const dir=fs.mkdtempSync(path.join(root,'temp-'));try{return await fn(dir,signal);}finally{fs.rmSync(dir,{recursive:true,force:true});}}},
+    processes:{run:async(executable,args)=>{calls.push([executable,...args]);if(executable==='/usr/bin/install'&&args.at(-1)==='/opt/openlist/openlist')installed=true;return{stdout:Buffer.from(args[0]==='admin'?'username: admin\n':''),stderr:Buffer.from(args[0]==='admin'?'password: fixture-password\n':'')};}}};
+  const plugin=create({releaseBinary:async(_ctx,dir)=>{const file=path.join(dir,'validated-binary');fs.writeFileSync(file,'fixture');return file;},ordinary:async target=>target==='/opt/openlist/openlist'&&installed});
+  const run=action=>plugin.commands.op.subcommands[action].handle({message:{id:1,chatId:'7',outgoing:true,saved:false},args:[],prefix:'.'},ctx);
   await run('install');assert.equal(state.username,'admin');assert.equal(state.password,'fixture-password');assert.match(edits.at(-1),/安装完成/);
   const adminIndex=calls.findIndex(x=>x[1]==='admin');assert.ok(adminIndex>calls.findIndex(x=>x.includes('enable')));
   calls.length=0;await run('update');assert.match(edits.at(-1),/更新完成/);assert.ok(calls.every(x=>x[1]!=='admin'));assert.equal(state.password,'fixture-password');assert.ok(edits.every(x=>!x.includes('fixture-password')));
