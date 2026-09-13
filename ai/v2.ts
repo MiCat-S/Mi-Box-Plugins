@@ -11,6 +11,7 @@ import {escape, publish, searchText} from "./v2/text";
 import {deliverAnswer, deliverTelegraphAnswer, sourcesHtml} from "./v2/answer";
 import {markdownToHtml} from "./v2/markdown";
 import {generateImages, generateVideos, materializeMedia, collectMessageImages, mergeMessageImages, sendMedia, type MediaInput, type VideoImageMode} from "./v2/media";
+import {diagnostics, type DiagnosticsInput} from "./v2/diagnostics";
 
 const htmlOptions = {parseMode: "html", linkPreview: false} as const;
 /** Long read-only output goes through SDK safe pagination instead of a single oversized edit. */
@@ -599,6 +600,14 @@ export default function createAi() {
           ? String((input as Record<string,unknown>).tag ?? "").trim() : cfg.currentChatTag;
         requireInput(tag, "请提供 AI 配置标签");
         return listProviderModels(cfg, ctx.http, tag, signal);
+      }},
+      diagnostics: {description: "返回不含凭据和原始错误的 API 诊断与基准结果", async handle(input, ctx, signal) {
+        requireInput(input !== null && typeof input === "object" && !Array.isArray(input), "诊断输入无效");
+        const value=input as Record<string,unknown>,action=value.action;
+        requireInput((action==="full"||action==="benchmark")&&typeof value.tag==="string"&&value.tag.trim(), "诊断输入无效");
+        if(action==="benchmark"&&value.models!==undefined)requireInput(Array.isArray(value.models)&&value.models.length>=1&&value.models.length<=3&&value.models.every(model=>typeof model==="string"&&model.trim()), "诊断模型无效");
+        const cfg=await readConfig(ctx,signal);
+        return diagnostics(ctx,cfg,{action,tag:value.tag.trim(),...(action==="benchmark"&&Array.isArray(value.models)?{models:(value.models as string[]).map(model=>model.trim())}:{})} as DiagnosticsInput,signal);
       }},
       translate: {description: "使用当前聊天模型翻译文字", async handle(input, ctx, signal) {
         requireInput(input !== null && typeof input === "object" && !Array.isArray(input), "翻译输入无效");

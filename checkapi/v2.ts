@@ -9,6 +9,9 @@ const migrationDefaults: MigrationState = {schemaVersion:2,entries:[],legacyImpo
 const migrationStore = (context:PluginContext) => context.storage.json<MigrationState>("keys-v2.json",migrationDefaults);
 
 type Selection = {providers?: Array<{tag?:string;type?:string;models?:Record<string,string>}>};
+type Diagnostic = {provider:{tag:string;type:string;displayName:string};balance:{status:string;fields:readonly {label:string;value:string}[]};
+  chat?:{ok:boolean;text?:string;model?:string;elapsedMs:number;usage?:{prompt:number;completion:number;total:number};rateLimits?:Record<string,string>;error?:string};
+  models?:{ok:boolean;names?:string[];error?:string};benchmarks?:ReadonlyArray<{model:string;ok:boolean;elapsedMs:number;usage?:{total:number};error?:string}>};
 const esc = (value:unknown): string => String(value ?? "").replace(/[&<>"']/g,
   character => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[character]!);
 
@@ -34,6 +37,28 @@ async function modelList(context: PluginContext, tag: string): Promise<string[]>
   requireService(context, "models");
   if (!tag) throw new Error("missing tag");
   return context.services.call<string[]>("ai", "models", {tag}, context.signal);
+}
+async function diagnostic(context:PluginContext,action:"full"|"benchmark",tag:string):Promise<Diagnostic>{
+  requireService(context,"diagnostics");if(!tag)throw new Error("missing tag");
+  return context.services.call<Diagnostic>("ai","diagnostics",{action,tag},context.signal);
+}
+function fullLines(result:Diagnostic):string[]{
+  const rows=[`🔍 <b>${esc(result.provider.displayName)}</b> (${esc(result.provider.type)})`,`🏷️ ${esc(result.provider.tag)}`,"","💰 <b>账户余额</b>："];
+  rows.push(result.balance.fields.length?result.balance.fields.map(field=>`${esc(field.label)}: ${esc(field.value)}`).join("\n"):`${result.balance.status==="unsupported"?"💰 请前往官网查看余额":"⚠️ 查询失败"}`);
+  rows.push("","💬 <b>对话测试</b>：");
+  if(result.chat?.ok){rows.push(`✅ 响应: "${esc(result.chat.text)}" (${result.chat.elapsedMs}ms) | 🤖 <code>${esc(result.chat.model)}</code>`);if(result.chat.usage)rows.push(`📊 Token: 入${result.chat.usage.prompt} 出${result.chat.usage.completion} 计${result.chat.usage.total}`);if(result.chat.rateLimits)for(const[name,value]of Object.entries(result.chat.rateLimits))rows.push(`⚡ ${esc(name)}: ${esc(value)}`);}
+  else rows.push(`❌ 失败: ${esc(result.chat?.error??"未配置聊天模型")}`);
+  rows.push("","📋 <b>可用模型</b>：",result.models?.ok?`🤖 共 ${result.models.names?.length??0} 个\n${(result.models.names??[]).map(name=>`<code>${esc(name)}</code>`).join(" | ")}`:`❌ 获取失败：${esc(result.models?.error??"unavailable")}`);
+  return rows;
+}
+async function checkAll(context: PluginContext): Promise<Array<{tag:string;count?:number}>> {
+  const configured=await tags(context),results:Array<{tag:string;count?:number}>=[];
+  for (const item of configured) {
+    context.signal.throwIfAborted();
+    try {results.push({tag:item.tag,count:(await modelList(context,item.tag)).length});}
+    catch {context.signal.throwIfAborted();results.push({tag:item.tag});}
+  }
+  return results;
 }
 
 function legacyEntry(value:unknown): LegacyEntry | undefined {
@@ -71,13 +96,19 @@ const checkapiCommand: CommandDefinition = {
   description:"检测 ai 插件统一管理的 API", helpOnEmpty:true, helpArgs:["help"], subcommandsCaseSensitive:false,
   subcommands:{
     save:{description:"查看统一 AI 配置方式",handle:central},
-    del:{description:"查看统一 AI 配置方式",handle:central},
+    del:{description:"查看统一 AI 配置方式",aliases:["delete"],handle:central},
     list:{description:"查看 ai 插件中的提供商标签",async handle(invocation,context){return run(invocation,context,async()=>{
       const list=await tags(context);
       await context.telegram.edit(invocation.message,list.length?list.map(item=>`<b>${esc(item.tag)}</b> · ${esc(item.type)}${Object.keys(item.models).length?` · ${esc(Object.entries(item.models).map(([mode,model])=>`${mode}=${model}`).join(" · "))}`:""}`).join("\n"):"ai 插件中尚未配置 API",{parseMode:"html"});
     });}},
-    check:{description:"验证指定 ai 提供商的模型接口",args:"标签",arguments:[{name:"标签",required:true}],examples:[{args:"check main"}],
-      async handle(invocation,context){return run(invocation,context,async()=>{const list=await modelList(context,invocation.args[0]??"");await context.telegram.edit(invocation.message,`✅ API 有效，共 ${list.length} 个模型。`);});}},
+    check:{description:"验证指定或全部 ai 提供商的模型接口",args:"[标签]",arguments:[{name:"标签",description:"省略时检查全部配置"}],examples:[{args:"check"},{args:"check main"}],
+      async handle(invocation,context){return run(invocation,context,async()=>{
+        const tag=invocation.args[0];
+        if (tag) {const list=await modelList(context,tag);await context.telegram.edit(invocation.message,`✅ API 有效，共 ${list.length} 个模型。`);return;}
+        const results=await checkAll(context);
+        await context.telegram.edit(invocation.message,results.length?results.map(item=>item.count===undefined
+          ? `<b>${esc(item.tag)}</b> · ❌ 检测失败`:`<b>${esc(item.tag)}</b> · ✅ ${item.count} 个模型`).join("\n"):"ai 插件中尚未配置 API",{parseMode:"html"});
+      });}},
     models:{description:"显示指定 ai 提供商的完整模型列表",args:"标签",arguments:[{name:"标签",required:true}],examples:[{args:"models main"}],
       async handle(invocation,context){return run(invocation,context,async()=>{
         const tag=invocation.args[0]??"",list=await modelList(context,tag);
@@ -91,8 +122,16 @@ const checkapiCommand: CommandDefinition = {
         const output=await context.services.call<string>("ai","chat",{tag,text:invocation.args.slice(1).join(" ")||"say hello",maxOutputTokens:100},context.signal);
         await context.telegram.edit(invocation.message,esc(output),{parseMode:"html"});
       });}},
+    speed:{description:"逐模型测试指定 ai 提供商的响应速度",args:"标签",arguments:[{name:"标签",required:true}],examples:[{args:"speed main"}],async handle(invocation,context){return run(invocation,context,async()=>{
+      const result=await diagnostic(context,"benchmark",invocation.args[0]??"");const lines=[`⚡ <b>${esc(result.provider.displayName)}</b> 速度测试 (最多 50 token)：`];
+      for(const row of result.benchmarks??[]){const tps=row.ok&&row.usage&&row.elapsedMs>0?(row.usage.total/(row.elapsedMs/1000)).toFixed(1):"?";lines.push(row.ok?`  ✅ <code>${esc(row.model)}</code>: ${row.elapsedMs}ms (${tps} tok/s)`:`  ❌ <code>${esc(row.model)}</code>: ${esc(row.error??"失败")}`);}await context.telegram.edit(invocation.message,lines.join("\n"),{parseMode:"html"});
+    });}},
+    compare:{description:"完整对比两个 ai 提供商",args:"标签1 标签2",arguments:[{name:"标签1",required:true},{name:"标签2",required:true}],examples:[{args:"compare main backup"}],async handle(invocation,context){return run(invocation,context,async()=>{
+      const [first,second]=invocation.args;if(!first||!second)throw new Error("missing tags");const [left,right]=await Promise.all([diagnostic(context,"full",first),diagnostic(context,"full",second)]);
+      const pages=await ui.renderRichText([...fullLines(left),"","━━━━━━━━━━━━━━━━","",...fullLines(right)].join("\n"));for(const [index,page] of pages.entries())await context.telegram[index?"reply":"edit"](invocation.message,page,{parseMode:"html"});
+    });}},
   },
-  examples:[{args:"list"},{args:"check main"},{args:"models main"},{args:"ask main 用一句话打招呼"}],
+  examples:[{args:"list"},{args:"check"},{args:"check main"},{args:"models main"},{args:"ask main 用一句话打招呼"},{args:"speed main"},{args:"compare main backup"}],
   help:[
     {heading:"统一配置：",body:"API 地址、密钥、类型与模型由 ai 插件统一管理；本插件只读取标签并执行模型列表或对话检测。"},
     {heading:"参数与限制：",body:"check、models 和 ask 的第一个参数都是 ai 配置标签。ask 默认使用该标签的聊天模型，输出上限为 100 tokens。"},
