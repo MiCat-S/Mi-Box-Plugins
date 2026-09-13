@@ -10,10 +10,10 @@ const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 const built = buildPlugin({id: 'soutu', packageRoot: path.resolve(__dirname, '../soutu'), entry: 'v2.ts'});
 const create = require(path.join(built.artifactDir, 'index.cjs')).default;
 
-async function fixture(t, {bytes = Buffer.from('ffd8ffe000104a464946', 'hex'), download, upload} = {}) {
+async function fixture(t, {bytes = Buffer.from('ffd8ffe000104a464946', 'hex'), download, upload, media = 'photo'} = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-soutu-file-')));
-  const edits = [], events = [], requests = [], targets = [];
-  const raw = {photo: {}, async downloadMedia(options) {
+  const edits = [], errors = [], events = [], requests = [], targets = [];
+  const raw = {...(media === 'photo' ? {photo: {}} : media === 'document' ? {document: {mimeType: 'image/png'}} : {}), async downloadMedia(options) {
     assert.equal(typeof options.outputFile, 'string');
     assert.ok(options.signal instanceof AbortSignal);
     targets.push(options.outputFile); events.push('download');
@@ -22,7 +22,7 @@ async function fixture(t, {bytes = Buffer.from('ffd8ffe000104a464946', 'hex'), d
     await options.progressCallback(BigInt(bytes.length));
     return options.outputFile;
   }};
-  const host = new PluginHost({storageRoot: root, tempRoot: path.join(root, 'temp'), logger: {info() {}, error() {}},
+  const host = new PluginHost({storageRoot: root, tempRoot: path.join(root, 'temp'), logger: {info() {}, error(event) {errors.push(event);}},
     telegram: {async edit(_m, text, options) {edits.push({text, options}); events.push(text.includes('正在下载') ? 'progress' : 'result');},
       async reply() {}, async invoke() {assert.fail('unexpected RPC');}, async getReply() {return {raw};},
       async withClient(fn, signal) {return fn({}, signal);}},
@@ -34,11 +34,27 @@ async function fixture(t, {bytes = Buffer.from('ffd8ffe000104a464946', 'hex'), d
   });
   await host.load(create());
   t.after(async () => {assert.equal((await host.shutdown(2000)).completed, true); await fs.rm(root, {recursive: true, force: true});});
-  return {host, edits, events, requests, targets,
-    run: () => host.dispatchPrimary({id: 1, chatId: '1', senderId: '1', outgoing: true, replyToId: 2, text: '.soutu'}),
+  return {host, edits, errors, events, requests, targets,
+    run: (text = '.soutu') => host.dispatchPrimary({id: 1, chatId: '1', senderId: '1', outgoing: true, replyToId: 2, text}),
     async cleaned() {for (const file of targets) await assert.rejects(fs.stat(path.dirname(file)), {code: 'ENOENT'});},
   };
 }
+
+test('soutu preserves legacy help in the second argument without touching media or network', async t => {
+  const f = await fixture(t);
+  await f.run('.soutu anything help');
+  assert.equal(f.targets.length, 0);
+  assert.equal(f.requests.length, 0);
+  assert.match(f.edits.at(-1).text, /搜图插件/);
+});
+
+test('soutu accepts a replied image document', async t => {
+  const f = await fixture(t, {media: 'document'});
+  await f.run();
+  assert.equal(f.requests.length, 1);
+  assert.match(f.edits.at(-1).text, /Google Lens/);
+  await f.cleaned();
+});
 
 for (const [name, hex] of [['photo.jpg', 'ffd8ffe000104a464946'], ['photo.png', '89504e470d0a1a0a'], ['photo.gif', '474946383961'], ['photo.webp', '524946460000000057454250'], ['photo.jpg', '01']]) {
   test(`soutu preserves ${name} bytes and multipart metadata (${hex})`, async t => {
@@ -135,4 +151,21 @@ test('soutu keeps the file available when an allowed redirect replays the upload
       : new Response('https://0x0.st/redirect.png');
   }});
   await f.run(); assert.equal(f.requests.length, 2); assert.match(f.edits.at(-1).text, /Google Lens/); await f.cleaned();
+});
+
+test('soutu delivers the returned link once when temporary cleanup fails', async t => {
+  const promises = require('node:fs/promises');
+  const originalRm = promises.rm;
+  let uploads = 0;
+  const f = await fixture(t, {upload: async () => {uploads += 1; return new Response('https://0x0.st/clean.jpg');}});
+  promises.rm = async target => {
+    if (String(target).includes(`${path.sep}soutu${path.sep}job-`)) throw new Error('private cleanup secret');
+    return originalRm(target, {recursive: true, force: true});
+  };
+  try { await f.run(); }
+  finally { promises.rm = originalRm; }
+  assert.equal(uploads, 1);
+  assert.match(f.edits.at(-1).text, /https:\/\/0x0\.st\/clean\.jpg/);
+  assert.deepEqual(f.errors, ['soutu_temp_cleanup_failed']);
+  assert.doesNotMatch(JSON.stringify({edits:f.edits,errors:f.errors}), /private cleanup secret/);
 });
