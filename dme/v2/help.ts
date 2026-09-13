@@ -22,5 +22,5 @@ export function renderHelp(prefix: string): string {
 <b>示例：</b>
 • <code>${p}dme 10</code> - 快速删除最近10条消息
 • <code>${p}dme -f 100</code> - 防撤回删除最近100条消息
-• <code>${p}dme 999</code> - 快速删除所有自己的消息`;
+• <code>${p}dme 999999</code> - 快速删除所有可见的自己的消息`;
 }

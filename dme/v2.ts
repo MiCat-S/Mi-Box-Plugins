@@ -5,7 +5,13 @@ import {randomUUID} from "node:crypto";
 import type { TelegramClient } from "teleproto";
 
 const defaults = { batchSize: 50, searchLimit: 100, retryAttempts: 3 };
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 type Config = typeof defaults;
+const normalizeConfig = (value: Partial<Config>): Config => ({
+  batchSize: Number.isInteger(value.batchSize) ? Math.max(5, Math.min(100, value.batchSize!)) : defaults.batchSize,
+  searchLimit: Number.isInteger(value.searchLimit) ? Math.max(10, Math.min(500, value.searchLimit!)) : defaults.searchLimit,
+  retryAttempts: Number.isInteger(value.retryAttempts) ? Math.max(0, Math.min(10, value.retryAttempts!)) : defaults.retryAttempts,
+});
 const escape = (value: unknown) => String(value).replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const help = (prefix: string) => `<b>智能防撤回删除</b>\n\n<code>${escape(prefix)}dme 数量</code> 快速删除自己的消息\n<code>${escape(prefix)}dme -f 数量</code> 替换文本和媒体后删除\n<code>${escape(prefix)}dme 999999</code> 删除全部可见的自己的消息\n普通数量单次最多 2000 条；仅处理命令之前的消息及当前话题。\n收藏夹直接删除；-f 模式下广播频道主直接按数量删除。\n防撤回编辑可能因消息类型、编辑时限或权限失败，不保证第三方副本被删除。`;
@@ -95,20 +101,55 @@ async function execute(ctx: PluginContext, client: TelegramClient, signal: Abort
 
   let image: Buffer | undefined;
   let imageLoaded = false;
+  const validImage = (value: Buffer) => value.length >= 8 && value.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]));
   const loadImage = async () => {
     if (imageLoaded) return image;
     imageLoaded = true;
     try {
       image = await ctx.tasks.run("dme:image", async scoped => {
-        const { readFile, writeFile, rename, unlink } = await import("node:fs/promises");
+        const { readFile, writeFile, rename, unlink, stat } = await import("node:fs/promises");
         const combined = AbortSignal.any([signal, scoped]);
         const file = await ctx.files.dataFile("dme_troll_image.png");
-        try { return await readFile(file, { signal: combined }); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        try {
+          const details = await stat(file); combined.throwIfAborted();
+          if (details.size <= 0 || details.size > MAX_IMAGE_BYTES) { await unlink(file); combined.throwIfAborted(); }
+          else {
+            const cached = await readFile(file, { signal: combined }); combined.throwIfAborted();
+            // Recheck the bytes after stat: another process may have replaced the file in between.
+            if (cached.length <= MAX_IMAGE_BYTES && validImage(cached)) return cached;
+            await unlink(file); combined.throwIfAborted();
+          }
+        } catch (error) { combined.throwIfAborted(); if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
         const buffer = await ctx.http.withResponse("https://raw.githubusercontent.com/TeleBoxOrg/TeleBox/main/telebox.png",
-          { signal: combined }, async response => {
-            if (!response.ok) throw new Error(`Image HTTP ${response.status}`);
-            return Buffer.from(await response.arrayBuffer());
+          { signal: combined }, async (response, responseSignal) => {
+            if (!response.ok || !response.body) throw new Error("Image unavailable");
+            const active = AbortSignal.any([combined, responseSignal]), reader = response.body.getReader(), chunks: Buffer[] = [];
+            let cancelling: Promise<void> | undefined;
+            const cancel = () => { cancelling ??= reader.cancel().catch(() => {}); };
+            const abort = () => cancel();
+            let total = 0;
+            active.addEventListener("abort", abort, { once: true });
+            if (active.aborted) cancel();
+            try {
+              for (;;) {
+                active.throwIfAborted();
+                const item = await reader.read();
+                active.throwIfAborted();
+                if (item.done) break;
+                total += item.value.byteLength;
+                if (total > MAX_IMAGE_BYTES) throw new Error("Image too large");
+                chunks.push(Buffer.from(item.value));
+              }
+            } finally {
+              active.removeEventListener("abort", abort);
+              cancel();
+              await cancelling;
+              reader.releaseLock();
+            }
+            if (!total) throw new Error("Image empty");
+            const downloaded = Buffer.concat(chunks, total);
+            if (!validImage(downloaded)) throw new Error("Image invalid");
+            return downloaded;
           }, {redirects:{allowedHosts:["raw.githubusercontent.com"],maxRedirects:2}});
         combined.throwIfAborted();
         // Publish the cache atomically so simultaneous chats never read a partial image.
@@ -241,9 +282,12 @@ export default function createDme() {
           await ctx.telegram.edit(message, help(prefix), { parseMode: "html" }); return;
         }
         const anti = sub === "-f", token = anti ? args[1] : args[0];
+        if (anti && !token) {
+          await ctx.telegram.edit(message, `❌ <b>参数错误:</b> 请指定删除数量\n\n💡 使用 <code>${escape(prefix)}dme -f [数量]</code>`, { parseMode: "html" }); return;
+        }
         const count = Number(token);
         if (!token || !/^\d+$/.test(token) || !Number.isSafeInteger(count) || count <= 0) {
-          await ctx.telegram.edit(message, "参数错误：请指定正整数删除数量"); return;
+          await ctx.telegram.edit(message, `❌ <b>参数错误:</b> 删除数量必须为正整数\n\n💡 使用 <code>${escape(prefix)}dme [数量]</code> 或 <code>${escape(prefix)}dme -f [数量]</code>`, { parseMode: "html" }); return;
         }
         if (active.has(message.chatId)) {
           await ctx.telegram.edit(message, "当前会话已有 DME 删除任务正在执行，请等待任务完成"); return;
@@ -251,7 +295,7 @@ export default function createDme() {
         active.add(message.chatId);
         try {
           await ctx.tasks.run(`dme:delete:${message.chatId}`, async scoped => {
-            const config = await store(ctx).read();
+            const config = normalizeConfig(await store(ctx).read());
             await ctx.telegram.withClient((client, signal) => execute(ctx, client,
               AbortSignal.any([signal, scoped]), message, count, anti, config));
           });
