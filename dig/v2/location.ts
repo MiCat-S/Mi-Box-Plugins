@@ -2,6 +2,7 @@ import {isIP} from "node:net";
 import type {PluginContext} from "telebox/sdk";
 
 async function readLocation(ctx: PluginContext, url: string): Promise<Record<string, unknown>> {
+  const host = new URL(url).hostname;
   return ctx.http.withResponse(url, {headers: {"User-Agent": "Mi-Box-DNS/2"}}, async (response, signal) => {
     if (!response.ok || !response.body) throw new Error("Location unavailable");
     const reader = response.body.getReader();
@@ -29,7 +30,7 @@ async function readLocation(ctx: PluginContext, url: string): Promise<Record<str
       signal.removeEventListener("abort", onAbort);
       try {if (!done) await cancel();} finally {reader.releaseLock();}
     }
-  }, {timeoutMs: 3_000});
+  }, {timeoutMs: 3_000, denyPrivateAddresses:true, redirects:{allowedHosts:[host], maxRedirects:2}});
 }
 
 function label(data: Record<string, unknown>): string {

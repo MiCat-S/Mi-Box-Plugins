@@ -1,5 +1,5 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
+import {definePlugin, requireSdkFeatures, ui, type PluginContext} from "telebox/sdk";
 import {isIP} from "node:net";
 import {annotateLocations} from "./v2/location";
 
@@ -30,6 +30,8 @@ function args(input: readonly string[]): string[] {
   return [domain, type, server ? `@${server}` : "", ...(flags.length ? flags : ["+short"])];
 }
 
+const inputErrors = new Set(["查询选项不支持", "只能指定一个 DNS 服务器", "参数过多", "域名格式无效", "记录类型不支持", "DNS 服务器格式无效"]);
+
 function format(output: string, domain: string, type: string): string[] {
   if (!output.trim()) return [`<b>DNS 查询</b>\n<code>${escape(domain)}</code>\n\n无记录`];
   const heading = `<b>DNS 查询结果</b>\n<code>${escape(domain)}</code> · <code>${type}</code>\n\n`;
@@ -53,6 +55,7 @@ async function runDig(ctx: PluginContext, values: string[]): Promise<string> {
 }
 
 export default function createDig() {
+  requireSdkFeatures("httpAddressPolicy");
   return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "dig", description: "查询 DNS 记录",
     commands: {dig: {helpArgs: ["help","h"], helpOnEmpty: true, description: "查询 DNS 记录", async handle(invocation, ctx) {
       const raw = invocation.args;
@@ -66,13 +69,20 @@ export default function createDig() {
         ctx.signal.throwIfAborted();
         const output = await runDig(ctx, values);
         const pages = format(await annotateLocations(ctx, output), values[0], values[1]);
-        for (const [index, page] of pages.entries()) {
-          ctx.signal.throwIfAborted();
-          if (index === 0) await ctx.telegram.edit(invocation.message, page, {parseMode: "html"});
-          else await ctx.telegram.reply(invocation.message, page, {parseMode: "html"});
+        const delivery = await ui.deliverPages(pages, ctx.signal, (page,index) => index === 0
+          ? ctx.telegram.edit(invocation.message, page, {parseMode:"html"})
+          : ctx.telegram.reply(invocation.message, page, {parseMode:"html"}));
+        if (delivery.interrupted) {
+          ctx.log.error("dig_result_delivery_failed");
+          if (!delivery.published) throw delivery.error ?? new Error("result_delivery_failed");
+          try {await ctx.telegram.reply(invocation.message, ui.interruptedNotice(delivery));}
+          catch {ctx.signal.throwIfAborted(); ctx.log.error("dig_interrupted_notice_failed");}
         }
       } catch (error) {
-        if (!ctx.signal.aborted) await ctx.telegram.edit(invocation.message, `<b>DNS 查询失败</b>\n${escape(error instanceof Error ? error.message : "请稍后重试")}`, {parseMode: "html"});
+        if (!ctx.signal.aborted) {
+          const detail = error instanceof Error && inputErrors.has(error.message) ? error.message : "查询执行失败，请稍后重试";
+          await ctx.telegram.edit(invocation.message, `<b>DNS 查询失败</b>\n${escape(detail)}`, {parseMode: "html"});
+        }
       }
     }}},
   });
