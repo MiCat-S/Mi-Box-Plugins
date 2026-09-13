@@ -498,5 +498,9 @@
   "zpr": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/zpr/zpr.ts",
     "desc": "二次元图片"
+  },
+  "koutu": {
+    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/koutu/v2.ts",
+    "desc": "PicUP 图片、贴纸与头像一键抠图"
   }
 }

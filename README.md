@@ -96,6 +96,7 @@ V2 入口为各插件的 `v2.ts`；其余源码仍待迁移，不代表可以直
 - `keyword` - 关键词自动回复  
 - `kkp` - 获取NSFW视频  
 - `komari` - Komari 服务器监控  
+- `koutu` - PicUP 图片、贴纸与头像一键抠图（需 API Key）
 - `listusernames` - 列出属于自己的公开群组/频道  
 - `lottery` - 抽奖  
 - `lu_bs` - 鲁小迅整点报时  
