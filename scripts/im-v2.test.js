@@ -10,12 +10,14 @@ const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 const packageRoot = process.env.IM_PACKAGE_ROOT || path.resolve(__dirname, '../im');
 const {artifactDir} = buildPlugin({id: 'im', packageRoot, entry: 'v2.ts'});
-const createIm = require(path.join(artifactDir, 'index.cjs')).default;
+const artifact = require(path.join(artifactDir, 'index.cjs'));
+const createIm = artifact.default;
 const peer = new Api.PeerChannel({channelId: 55n});
 const base = {id: 1, chatId: '-10055', senderId: '9', outgoing: true, text: '.im help', raw: {peerId: peer}};
 
 async function fixture(t, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mi-box-im-v2-')));
+  if (options.setupRoot) await options.setupRoot(root);
   const edits = [], replies = [], invokes = [], deletes = [], logs = [];
   let replied = options.reply;
   const client = {async getEntity() {return options.entity ?? new Api.Channel({id: 55n, accessHash: 7n, title: '<群😀>', photo: new Api.ChatPhotoEmpty(), date: 0});},
@@ -51,6 +53,57 @@ test('configuration preserves original feedback, current chat identity, and comp
   assert.ok(pages.every(value => value.text.length <= 4096));
   assert.match(pages.map(value => value.text).join('\n'), new RegExp(first));
   assert.match(pages.at(-1).text, new RegExp(`${pages.length}/${pages.length} 页`));
+});
+
+test('first Host load imports every legacy field when the new config file is absent', async t => {
+  const legacy = {enabled: false, monitoredChats: ['-1007'], bannedMD5s: {['a'.repeat(32)]: 'ban'}, bannedStickerIds: {'77': 'delete'},
+    defaultAction: 'ban', legacyOnly: '<kept>'};
+  const f = await fixture(t, {setupRoot: async root => {const directory = path.join(root, 'im'); await fs.mkdir(directory, {recursive: true});
+    await fs.writeFile(path.join(directory, 'image_monitor_config.json'), JSON.stringify(legacy));}});
+  const saved = JSON.parse(await fs.readFile(path.join(f.root, 'im', 'config.json'), 'utf8'));
+  assert.equal(saved.enabled, false);
+  assert.deepEqual(saved.monitoredChats, [{id: '-1007', name: '-1007'}]);
+  assert.equal(saved.bannedMD5s['a'.repeat(32)], 'ban');
+  assert.equal(saved.bannedStickerIds['77'], 'delete');
+  assert.equal(saved.defaultAction, 'ban');
+  assert.equal(saved.legacyOnly, '<kept>');
+  assert.equal(saved.importedLegacy, true);
+});
+
+test('explicit V2 fields win, unknown data survives, and completed migration never rereads legacy', async t => {
+  const f = await fixture(t, {setupRoot: async root => {const directory = path.join(root, 'im'); await fs.mkdir(directory, {recursive: true});
+    await fs.writeFile(path.join(directory, 'image_monitor_config.json'), JSON.stringify({enabled: false, monitoredChats: ['legacy'], oldUnknown: 1}));
+    await fs.writeFile(path.join(directory, 'config.json'), JSON.stringify({schemaVersion: 1, importedLegacy: false, enabled: true, monitoredChats: [], v2Unknown: 2}));}});
+  let saved = JSON.parse(await fs.readFile(path.join(f.root, 'im', 'config.json'), 'utf8'));
+  assert.equal(saved.enabled, true);
+  assert.deepEqual(saved.monitoredChats, []);
+  assert.equal(saved.oldUnknown, 1);
+  assert.equal(saved.v2Unknown, 2);
+  await fs.writeFile(path.join(f.root, 'im', 'image_monitor_config.json'), JSON.stringify({enabled: false, monitoredChats: ['changed']}));
+  assert.equal((await f.host.unload('im', 1000)).completed, true);
+  await f.host.load(createIm());
+  saved = JSON.parse(await fs.readFile(path.join(f.root, 'im', 'config.json'), 'utf8'));
+  assert.equal(saved.enabled, true);
+  assert.deepEqual(saved.monitoredChats, []);
+  assert.equal(saved.oldUnknown, 1);
+});
+
+test('a corrupt legacy file or pre-cancelled migration cannot write a success marker', async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mi-box-im-corrupt-')));
+  const directory = path.join(root, 'im'); await fs.mkdir(directory, {recursive: true});
+  await fs.writeFile(path.join(directory, 'image_monitor_config.json'), '{broken');
+  const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}}, telegram: {async edit() {}, async reply() {}, async invoke() {}, async getReply() {}, async withClient() {}}});
+  try {
+    await assert.rejects(host.load(createIm()));
+    const current = JSON.parse(await fs.readFile(path.join(directory, 'config.json'), 'utf8').catch(() => '{}'));
+    assert.notEqual(current.importedLegacy, true);
+  } finally {await host.shutdown(1000); await fs.rm(root, {recursive: true, force: true});}
+
+  let updates = 0;
+  const controller = new AbortController(); controller.abort();
+  const context = {signal: controller.signal, files: {dataPath: name => path.join(directory, name)}, storage: {json: () => ({read: async () => ({...base, importedLegacy: false, schemaVersion: 1}), update: async () => {updates++;}})}};
+  await assert.rejects(artifact.migrate(context), {name: 'AbortError'});
+  assert.equal(updates, 0);
 });
 
 test('reply shortcuts preserve sticker IDs and stream media MD5 through the managed client', async t => {
