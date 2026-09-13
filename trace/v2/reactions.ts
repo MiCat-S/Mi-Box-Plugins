@@ -27,5 +27,6 @@ export async function sendReactions(
     await client.invoke(new Api.messages.SendReaction({
       peer, msgId: message.id, reaction: values, big,
     }));
+    signal.throwIfAborted();
   });
 }

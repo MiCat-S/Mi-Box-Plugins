@@ -1,5 +1,5 @@
 import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext, type MessageEnvelope} from "telebox/sdk";
+import {definePlugin, ui, type PluginContext, type MessageEnvelope} from "telebox/sdk";
 import {Api} from "teleproto";
 import {returnBigInt} from "teleproto/Helpers";
 import {setTimeout as delay} from "node:timers/promises";
@@ -12,7 +12,6 @@ const store = (ctx: PluginContext) => ctx.storage.json<Data>("db.json", defaults
 const standard = new Set<string>();
 const emojiSegments = new Intl.Segmenter(undefined, {granularity: "grapheme"});
 for (const {segment} of emojiSegments.segment("👍👎❤️🔥🥰👏😁🤔🤯😱🤬😢🎉🤩🤮💩🙏👌🕊🤡🥱🥴😍🐳❤️‍🔥🌚🌭💯🤣⚡️🍌🏆💔🤨😐🍓🍾💋🖕😈😎😇😤")) standard.add(segment);
-const help = "<b>自动回应</b>\n回复消息：<code>trace 表情</code> 追踪，<code>trace</code> 取消\n<code>trace kw add 关键词 表情</code>\n<code>trace kw del 关键词</code>\n<code>trace status</code> · <code>trace clean</code> · <code>trace reset</code>\n<code>trace log true/false</code> · <code>trace big true/false</code>";
 function normalize(items: Stored[]): Reaction[] {
   return items.map(item => typeof item === "string" ?
     (/^[1-9]\d*$/.test(item) ? {documentId: item} : {emoticon: item}) : item);
@@ -37,8 +36,14 @@ async function parse(message: MessageEnvelope, text: string, ctx: PluginContext)
   return [...new Map(found.map(item => [JSON.stringify(item), item])).values()];
 }
 async function receipt(ctx: PluginContext, message: MessageEnvelope, text: string) {
-  await ctx.telegram.edit(message, text);
-  if ((await store(ctx).read()).config.keepLog) return;
+  try {
+    await ctx.telegram.edit(message, text);
+    if ((await store(ctx).read()).config.keepLog) return;
+  } catch (error) {
+    if (ctx.signal.aborted) throw error;
+    ctx.log.error("trace.receipt_failed");
+    return;
+  }
   void ctx.tasks.run("trace:receipt", async signal => {
     await delay(10000, undefined, {signal});
     await ctx.telegram.withClient(async (client, active) => {
@@ -48,16 +53,50 @@ async function receipt(ctx: PluginContext, message: MessageEnvelope, text: strin
     });
   }).catch(() => {if (!ctx.signal.aborted) ctx.log.error("trace.receipt_delete_failed");});
 }
+function display(items: readonly Stored[]): string {
+  return items.map(item => {
+    const reaction = typeof item === "string" ? item : "emoticon" in item ? item.emoticon : item.documentId;
+    return /^[1-9]\d*$/.test(reaction) ? `自定义:${reaction}` : reaction;
+  }).join(" ");
+}
+async function showStatus(ctx: PluginContext, message: MessageEnvelope, data: Data): Promise<void> {
+  const lines = [
+    "<b>Trace 追踪状态</b>",
+    `追踪用户：<b>${Object.keys(data.users).length}</b>`,
+    `追踪关键词：<b>${Object.keys(data.keywords).length}</b>`,
+    "",
+    "<b>用户</b>",
+    ...Object.entries(data.users).map(([id, items]) => `<code>${ui.text(id)}</code>：${ui.text(display(items))}`),
+    ...(Object.keys(data.users).length ? [] : ["暂无"]),
+    "",
+    "<b>关键词</b>",
+    ...Object.entries(data.keywords).map(([keyword, items]) => `<code>${ui.text(keyword)}</code>：${ui.text(display(items))}`),
+    ...(Object.keys(data.keywords).length ? [] : ["暂无"]),
+    "",
+    `<b>配置</b>　保留回执：${data.config.keepLog ? "启用" : "禁用"}　大号动画：${data.config.big ? "启用" : "禁用"}`,
+  ];
+  const bodies = await ui.renderRichText(lines.join("\n"), ui.PAGE_LABEL_RESERVE);
+  const pages = bodies.map((page, index, all) => page + ui.pageLabel(index, all.length));
+  const delivery = await ui.deliverPages(pages, ctx.signal, (page, index) => index
+    ? ctx.telegram.reply(message, page, {parseMode: "html"})
+    : ctx.telegram.edit(message, page, {parseMode: "html"}));
+  if (!delivery.interrupted) return;
+  ctx.log.error("trace.status_delivery_interrupted");
+  if (!delivery.published) throw delivery.error;
+  try { await ctx.telegram.reply(message, ui.interruptedNotice(delivery), {parseMode: "html"}); } catch {}
+}
 export default function createTrace() {
   return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "trace", description: "用户与关键词自动回应", commands: {
     trace: {helpArgs: ["help","h"], description: "管理自动回应", async handle(invocation, ctx) {
-      const [sub, action, keyword] = invocation.args;
+      const [rawSub, rawAction, keyword] = invocation.args;
+      const sub = rawSub?.toLowerCase();
+      const action = rawAction?.toLowerCase();
       const db = store(ctx);
       try {
-        if (sub === "help" || sub === "h") {await ctx.telegram.edit(invocation.message, help, {parseMode: "html"}); return;}
+        if (sub === "help" || sub === "h") {await ctx.telegram.edit(invocation.message, renderPluginHelp(invocation.prefix), {parseMode: "html"}); return;}
         if (sub === "status") {
           const data = await db.read();
-          await ctx.telegram.edit(invocation.message, `自动回应\n用户: ${Object.keys(data.users).length}\n关键词: ${Object.keys(data.keywords).length}\n保留回执: ${data.config.keepLog}\n大号动画: ${data.config.big}`);
+          await showStatus(ctx, invocation.message, data);
           return;
         }
         if (sub === "clean" || sub === "reset") {
@@ -81,7 +120,7 @@ export default function createTrace() {
           await receipt(ctx, invocation.message, "关键词追踪已更新"); return;
         }
         const reply = await ctx.telegram.getReply(invocation.message);
-        if (!reply?.senderId) {await ctx.telegram.edit(invocation.message, help, {parseMode: "html"}); return;}
+        if (!reply?.senderId) {await ctx.telegram.edit(invocation.message, renderPluginHelp(invocation.prefix), {parseMode: "html"}); return;}
         const id = reply.senderId;
         const items = sub ? await parse(invocation.message, invocation.args.join(" "), ctx) : [];
         if (sub && !items.length) throw new Error("未找到有效表情");
