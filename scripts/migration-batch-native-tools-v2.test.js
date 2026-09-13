@@ -61,7 +61,7 @@ test('netease sends a direct media response returned by Music163bot', async t =>
   const client = {
     async invoke() { return {}; },
     async sendMessage(peer, value) { sent.push({peer, value}); },
-    async getMessages() { return [{id: 9, out: false, date: Math.floor(Date.now() / 1000), media, message: 'Song via @Music163bot'}]; },
+    async getMessages() { return sent.some(item => item.value.message === '/music 12345') ? [{id: 9, out: false, date: Math.floor(Date.now() / 1000), media, message: 'Song via @Music163bot'}] : []; },
     async sendFile(peer, value) { files.push({peer, value}); },
   };
   const f = await fixture(t, 'netease', client, {raw: {peerId: {}, async delete() { deleted++; }}});
