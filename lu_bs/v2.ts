@@ -46,10 +46,12 @@ async function loadStickerSet(context: PluginContext): Promise<unknown> {
     signal.throwIfAborted();
     const {Api} = await import("teleproto");
     signal.throwIfAborted();
-    return client.invoke(new Api.messages.GetStickerSet({
+    const result=await client.invoke(new Api.messages.GetStickerSet({
       stickerset: new Api.InputStickerSetShortName({shortName: STICKER_SET}),
       hash: 0,
     }));
+    signal.throwIfAborted();
+    return result;
   });
 }
 
@@ -77,8 +79,9 @@ async function permitted(context: PluginContext, message: MessageEnvelope): Prom
   try {
     return await context.telegram.withClient(async (client, signal) => {
       signal.throwIfAborted();
-      const {Api} = await import("teleproto");
-      const entity = await client.getEntity((raw?.peerId ?? message.chatId) as any);
+      const [{Api},{returnBigInt}]=await Promise.all([import("teleproto"),import("teleproto/Helpers.js")]);
+      signal.throwIfAborted();
+      const entity = await client.getEntity((raw?.peerId ?? returnBigInt(message.chatId)) as any);
       signal.throwIfAborted();
       return (entity instanceof Api.Chat || entity instanceof Api.Channel) &&
         (!!entity.creator || entity.adminRights !== undefined);
@@ -205,6 +208,7 @@ export default function createLuBs() {
         timeZone: TIME_ZONE,
         async handle(context, signal) {
           const snapshot = normalizeState(await store(context).read());
+          signal.throwIfAborted();
           if (!snapshot.subscriptions.length) return;
           let set: unknown;
           try {
@@ -223,28 +227,35 @@ export default function createLuBs() {
           await eachConcurrent(snapshot.subscriptions, SEND_CONCURRENCY, chatId => withChatLock(chatId, async () => {
             signal.throwIfAborted();
             const current = normalizeState(await store(context).read());
+            signal.throwIfAborted();
             if (!current.subscriptions.includes(chatId)) return;
             try {
               const sentId = await context.telegram.withClient(async (client, clientSignal) => {
                 clientSignal.throwIfAborted();
+                const {returnBigInt}=await import("teleproto/Helpers.js");
+                clientSignal.throwIfAborted();
+                const target=/^-?\d+$/.test(chatId)?returnBigInt(chatId):chatId;
                 const previous = current.lastMessages[chatId];
                 if (previous) {
                   try {
-                    await client.deleteMessages(chatId, [previous], {revoke: true});
+                    await client.deleteMessages(target, [previous], {revoke: true});
                   } catch {
                     clientSignal.throwIfAborted();
                   }
+                  clientSignal.throwIfAborted();
                 }
-                const sent = await client.sendFile(chatId, {file: sticker as any, attributes: []});
+                const sent = await client.sendFile(target, {file: sticker as any, attributes: []});
                 clientSignal.throwIfAborted();
                 return Number.isSafeInteger(sent?.id) && sent.id > 0 ? sent.id : undefined;
               });
+              signal.throwIfAborted();
               if (sentId !== undefined) {
                 await store(context).update(source => {
                   const state = normalizeState(source);
                   if (state.subscriptions.includes(chatId)) state.lastMessages[chatId] = sentId;
                   return state;
                 });
+                signal.throwIfAborted();
               }
             } catch (error) {
               signal.throwIfAborted();

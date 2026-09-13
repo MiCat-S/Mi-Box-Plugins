@@ -22,20 +22,21 @@ const message = (chatId = '5', raw = {isPrivate: true}) => ({
 function fixture(options = {}) {
   let state = structuredClone(options.state ?? {schemaVersion: 1, subscriptions: [], lastMessages: {}});
   let tail = Promise.resolve();
-  const edits = [], sent = [], deleted = [], invokes = [], logs = [];
+  const edits = [], sent = [], deleted = [], invokes = [], logs = [], controller = new AbortController();
   const client = {
     async getEntity() { return options.entity; },
     async invoke(request) {
       invokes.push(request);
+      if (options.invoke) return options.invoke(request, controller);
       if (options.stickerError) throw options.stickerError;
       return options.stickerSet ?? {documents: Array.from({length: 12}, (_, id) => ({id}))};
     },
-    async deleteMessages(chat, ids) { deleted.push({chat, ids}); },
+    async deleteMessages(chat, ids) { deleted.push({chat, ids}); if(options.deleteMessages)return options.deleteMessages(chat,ids,controller); },
     async sendFile(chat, value) {
       sent.push({chat, value});
       if (options.sendFile) return options.sendFile(chat, value);
       if (options.sendError?.[chat]) throw options.sendError[chat];
-      return {id: Number(chat.replace(/\D/g, '').slice(-6)) || 12};
+      return {id: Number(String(chat).replace(/\D/g, '').slice(-6)) || 12};
     },
   };
   const jsonStore = {
@@ -47,7 +48,7 @@ function fixture(options = {}) {
     },
   };
   const context = {
-    signal: new AbortController().signal,
+    signal: controller.signal,
     log: {info(event, fields) { logs.push({level: 'info', event, fields}); }, error(event, fields) { logs.push({level: 'error', event, fields}); }},
     storage: {json() { return jsonStore; }},
     telegram: {
@@ -57,7 +58,7 @@ function fixture(options = {}) {
   };
   const plugin = create();
   return {
-    plugin, context, edits, sent, deleted, invokes, logs,
+    plugin, context, controller, edits, sent, deleted, invokes, logs,
     state: () => structuredClone(state),
     setup: () => plugin.setup(context),
     run: (text, target = message()) => plugin.commands.lu_bs.handle({
@@ -68,7 +69,7 @@ function fixture(options = {}) {
 }
 
 test('artifact is lazy and declares a stable Shanghai hourly job', () => {
-  assert.deepEqual(manifest.imports, ['telebox/sdk', 'teleproto']);
+  assert.deepEqual(manifest.imports, ['telebox/sdk', 'teleproto', 'teleproto/Helpers.js']);
   const plugin = create();
   assert.deepEqual(Object.keys(plugin.jobs), ['hourly_report']);
   assert.equal(plugin.jobs.hourly_report.cron, '0 * * * *');
@@ -102,6 +103,15 @@ test('private chats subscribe idempotently, list locally, and unsubscribe', asyn
   assert.deepEqual(f.state().subscriptions, []);
 });
 
+test('Chinese aliases and unknown commands preserve the original command matrix',async()=>{
+  const f=fixture();await f.run('.lu_bs 订阅');assert.deepEqual(f.state().subscriptions,['5']);await f.run('.lu_bs 列表');assert.match(f.edits.at(-1).text,/已订阅/);await f.run('.lu_bs 退订');assert.deepEqual(f.state().subscriptions,[]);await f.run('.lu_bs 帮助');assert.match(f.edits.at(-1).text,/鲁小迅整点报时/);await f.run('.lu_bs unknown');assert.match(f.edits.at(-1).text,/鲁小迅整点报时/);
+});
+
+test('reload aliases refresh the sticker set with fixed success and failure feedback',async()=>{
+  const ok=fixture();await ok.run('.lu_bs 重载');assert.match(ok.edits.at(-1).text,/重新加载成功/);assert.equal(ok.invokes.length,1);
+  const failed=fixture({stickerError:Object.assign(new Error('token=/private/path'),{name:'PrivateRpcError'})});await failed.run('.lu_bs reload');assert.match(failed.edits.at(-1).text,/贴纸包加载失败/);assert.doesNotMatch(JSON.stringify({edits:failed.edits,logs:failed.logs}),/PrivateRpcError|token=|private\/path/);
+});
+
 test('group subscription requires the current account to be an administrator', async () => {
   const admin = new Api.Channel({
     id: integer(100), accessHash: integer(1), title: 'admin', megagroup: true,
@@ -125,7 +135,8 @@ test('hourly job deletes the previous post and atomically persists the new id', 
   const f = fixture({state: {schemaVersion: 1, subscriptions: ['5'], lastMessages: {'5': 11}}});
   await f.job();
   assert.equal(f.invokes.length, 1);
-  assert.deepEqual(f.deleted, [{chat: '5', ids: [11]}]);
+  assert.equal(String(f.deleted[0].chat), '5');
+  assert.deepEqual(f.deleted[0].ids, [11]);
   assert.equal(f.sent.length, 1);
   assert.equal(f.state().lastMessages['5'], 5);
 });
@@ -155,7 +166,7 @@ test('hourly fan-out is bounded and one invalid chat does not affect others', as
       active += 1; peak = Math.max(peak, active);
       await new Promise(setImmediate);
       active -= 1;
-      if (chat === '-3') throw Object.assign(new Error('request failed'), {errorMessage: 'CHAT_WRITE_FORBIDDEN'});
+      if (String(chat) === '-3') throw Object.assign(new Error('request failed'), {errorMessage: 'CHAT_WRITE_FORBIDDEN'});
       return {id: 20};
     },
   });
@@ -185,4 +196,20 @@ test('compiled plugin loads and unloads through the real PluginHost', async t =>
   assert.equal(host.snapshot().jobs.jobs, 0);
   const persisted = JSON.parse(await fs.readFile(path.join(dir, 'lu_bs', 'subscriptions.json'), 'utf8'));
   assert.equal(persisted.schemaVersion, 1);
+});
+
+test('cancellation while loading the sticker set starts no media send',async()=>{
+  let release;const blocked=new Promise(resolve=>{release=resolve;});
+  const f=fixture({state:{schemaVersion:1,subscriptions:['5'],lastMessages:{}},invoke:async()=>{await blocked;return{documents:[{id:1}]};}});
+  const running=f.job();while(!f.invokes.length)await new Promise(setImmediate);f.controller.abort(new Error('cancel load'));release();await assert.rejects(running,/cancel load/);assert.equal(f.sent.length,0);assert.deepEqual(f.state().lastMessages,{});
+});
+
+test('cancellation after deleting the previous post prevents replacement send',async()=>{
+  const f=fixture({state:{schemaVersion:1,subscriptions:['5'],lastMessages:{'5':11}},deleteMessages:async(_chat,_ids,controller)=>controller.abort(new Error('cancel delete'))});
+  await assert.rejects(f.job(),/cancel delete/);assert.equal(f.deleted.length,1);assert.equal(f.sent.length,0);assert.deepEqual(f.state().lastMessages,{'5':11});
+});
+
+test('cancellation after a successful media send prevents state persistence',async()=>{
+  const f=fixture({state:{schemaVersion:1,subscriptions:['-1009007199254740993'],lastMessages:{}},sendFile:async(_chat,_value)=>{f.controller.abort(new Error('cancel send'));return{id:22};}});
+  await assert.rejects(f.job(),/cancel send/);assert.equal(f.sent.length,1);assert.deepEqual(f.state().lastMessages,{});assert.equal(f.logs.some(entry=>JSON.stringify(entry).includes('cancel send')),false);
 });
