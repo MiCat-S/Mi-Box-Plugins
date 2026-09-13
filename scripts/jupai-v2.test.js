@@ -9,12 +9,15 @@ const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 const {artifactDir} = buildPlugin({id: 'jupai', packageRoot: path.resolve(__dirname, '../jupai'), entry: 'v2.ts'});
 const create = require(path.join(artifactDir, 'index.cjs')).default;
+const sharp = require(path.join(core, 'node_modules/sharp'));
+const {Api} = require(path.join(core, 'node_modules/teleproto'));
+const PNG = sharp({create: {width: 2, height: 2, channels: 4, background: '#ff0000ff'}}).png().toBuffer();
 
 test('jupai uses reply text and sends bounded image', async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mi-box-jupai-v2-')));
   const edits = []; const sent = [];
   const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}}, http: {
-    fetch: async () => new Response(new Uint8Array([1, 2, 3]), {status: 200}),
+    fetch: async () => new Response(await PNG, {status: 200}),
   }, telegram: {
     async edit(m, text, options) { edits.push({text, options}); }, async reply() {}, async invoke() {},
     async getReply() { return {id: 2, chatId: 'chat', senderId: 'u', outgoing: false, text: '回复文本'}; },
@@ -22,9 +25,10 @@ test('jupai uses reply text and sends bounded image', async t => {
   }});
   await host.load(create());
   t.after(async () => { await host.shutdown(1000); await fs.rm(root, {recursive: true, force: true}); });
-  await host.dispatchPrimary({id: 1, chatId: 'chat', senderId: 'owner', outgoing: true, text: '.jupai'});
+  const peer = new Api.PeerUser({userId: 123});
+  await host.dispatchPrimary({id: 1, chatId: '123', senderId: 'owner', outgoing: true, text: '.jupai', raw: {peerId: peer}});
   assert.equal(sent.length, 1);
-  assert.equal(sent[0][0], 'chat');
+  assert.equal(sent[0][0], peer);
   assert.match(edits.at(-1).text, /已发送/);
 });
 
