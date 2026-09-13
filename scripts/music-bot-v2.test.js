@@ -10,6 +10,8 @@ const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 const {ResourceScope} = require(path.join(core, 'dist/v2/lifecycle.js'));
+const {Api,utils}=require(path.join(core,'node_modules/teleproto'));
+const {returnBigInt}=require(path.join(core,'node_modules/teleproto/Helpers.js'));
 const {artifactDir} = buildPlugin({id: 'music_bot', packageRoot: path.resolve(__dirname, '../music_bot'), entry: 'v2.ts'});
 const create = require(path.join(artifactDir, 'index.cjs')).default;
 
@@ -68,12 +70,12 @@ function responsiveClient(options = {}) {
 
 async function hostFixture(t, client, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'telebox-music-bot-')));
-  const edits = [], errors = [], operationSignals = options.operationSignals ?? [];
+  const edits = [], errors = [], infos = [], operationSignals = options.operationSignals ?? [];
   let nativeCalls = 0, messageId = 0;
   const host = new PluginHost({
     storageRoot: root,
     concurrency: 8,
-    logger: {info() {}, error(event) { errors.push(event); }},
+    logger: {info(event) {infos.push(event);}, error(event) { errors.push(event); }},
     telegram: {
       async edit(message, text, editOptions) { edits.push({message, text, options: editOptions}); },
       async reply() { assert.fail('unexpected reply'); },
@@ -95,7 +97,7 @@ async function hostFixture(t, client, options = {}) {
     await fs.rm(root, {recursive: true, force: true});
   });
   return {
-    host, edits, errors,
+    host, edits, errors, infos,
     run(text, raw = {}) {
       const id = ++messageId;
       return host.dispatchPrimary({id, chatId: String(10_000 + id), senderId: '42', outgoing: true, text,
@@ -118,7 +120,7 @@ test('music_bot preserves every command, source mapping, button selection, and y
     ['.mbqq qq', '@music_v1bot', '/qq qq', '🎵 qq'],
     ['.mbne netease', '@music_v1bot', '/netease netease', '🎵 netease'],
     ['.mbvk vk', '@vkmusic_bot', 'vk', '🎵 vk'],
-    ['.mbym youtube', '@ttaudiobot', 'youtube', undefined],
+    ['.mbym youtube', '@ttaudiobot', 'youtube lyric】', undefined],
   ];
   for (const [command, bot, request, caption] of cases) {
     assert.equal(await runtime.run(command), true);
@@ -135,6 +137,14 @@ test('music_bot validates nested actions locally', async t => {
   assert.equal(f.sent.length, 0);
   assert.match(runtime.edits.at(-1).text, /多音源音乐搜索/);
 });
+
+test('search progress safely renders while preserving the bot query',async t=>{const f=responsiveClient();const runtime=await hostFixture(t,f.client);await runtime.run('.mbvk A&B');assert.equal(runtime.edits[0].text,'🔎 搜索中：<code>A%26B</code>');assert.deepEqual(f.sent.find(value=>value.message!=='/start'),{bot:'@vkmusic_bot',message:'A&B'});});
+
+test('setup RPCs use resolvable native TL requests',async t=>{const requests=[];const f=responsiveClient();f.client.getInputEntity=async()=>new Api.InputPeerUser({userId:returnBigInt('9007199254741999'),accessHash:returnBigInt('-9007199254742999')});f.client._getInputNotify=async value=>value;f.client.invoke=async request=>{await request.resolve(f.client,utils);assert.ok(request.getBytes().length>0);requests.push(request);};const runtime=await hostFixture(t,f.client);await runtime.run('.mbvk protocol');assert.ok(requests[0] instanceof Api.contacts.Unblock);assert.ok(requests[1] instanceof Api.account.UpdateNotifySettings);assert.ok(requests[1].peer instanceof Api.InputNotifyPeer);});
+
+test('successful media delivery is not reported failed when command cleanup fails',async t=>{const f=responsiveClient();const runtime=await hostFixture(t,f.client);await runtime.run('.mbvk cleanup',{async delete(){throw Object.assign(new Error('token=/private/path'),{name:'PrivateDeleteError'});}});assert.equal(f.files.length,1);assert.equal(runtime.errors.includes('music_bot_failed'),false);assert.equal(runtime.infos.includes('music_bot_command_cleanup_failed'),true);assert.doesNotMatch(JSON.stringify(runtime.edits),/PrivateDeleteError|token=|private\/path/);});
+
+test('transport failures disclose neither error names nor messages',async t=>{const error=Object.assign(new Error('token=/private/path'),{name:'PrivateTransportError'});const client={async invoke(){throw error;},async getInputEntity(){throw error;},async getMessages(){throw error;}};const runtime=await hostFixture(t,client);await runtime.run('.mbvk secret');assert.deepEqual(runtime.errors,['music_bot_failed']);assert.match(runtime.edits.at(-1).text,/音乐搜索失败/);assert.doesNotMatch(JSON.stringify({edits:runtime.edits,errors:runtime.errors,infos:runtime.infos}),/PrivateTransportError|token=|private\/path/);});
 
 test('same-second choices and media at or below the request boundaries are never consumed', async t => {
   const now = 1_900_000_000, clicks = [], files = [];
@@ -160,6 +170,8 @@ test('same-second choices and media at or below the request boundaries are never
   assert.deepEqual(clicks, ['new']);
   assert.deepEqual(files, ['new']);
 });
+
+test('watermarks preserve ids above the safe integer range',async t=>{const files=[];const history=[{id:'9007199254741999',out:false,buttonCount:1,async click(){assert.fail('stale choice');}}];const choice={id:'9007199254742001',out:false,buttonCount:1,async click(){history.unshift({id:'9007199254742002',out:false,media:{request:'fresh-large'}});}};const client={async invoke(){},async getInputEntity(value){return value;},async getMessages(){return history.slice();},async sendMessage(){history.unshift(choice);return{id:'9007199254742000',out:true};},async sendFile(_peer,value){files.push(value.file.request);}};const runtime=await hostFixture(t,client);await runtime.run('.mbvk large-id');assert.deepEqual(files,['fresh-large']);});
 
 test('choices and media with missing or nonpositive IDs are rejected', async t => {
   const now = 1_900_000_000, clicks = [], files = [];
@@ -244,10 +256,10 @@ test('same-bot requests serialize across chats while another bot proceeds indepe
   await secondNative.promise;
   const other = runtime.run('.mbym other');
   await other;
-  assert.deepEqual(f.sent.map(value => value.message), ['first', 'other']);
+  assert.deepEqual(f.sent.map(value => value.message), ['first', 'other lyric】']);
   releaseFirst.resolve();
   await Promise.all([first, second]);
-  assert.deepEqual(f.sent.map(value => value.message), ['first', 'other', 'second']);
+  assert.deepEqual(f.sent.map(value => value.message), ['first', 'other lyric】', 'second']);
 });
 
 test('an explicitly cancelled middle waiter never sends and cannot let its successor pass the predecessor', async t => {
@@ -278,6 +290,10 @@ test('an explicitly cancelled middle waiter never sends and cannot let its succe
   assert.deepEqual(f.sent.map(value => value.message), ['first', 'third']);
   assert.ok(f.events.indexOf('file:first') < f.events.indexOf('send:third'));
 });
+
+test('cancellation while forwarding media performs no command deletion or failure feedback',async t=>{const entered=deferred(),release=deferred();let deleted=0;const f=responsiveClient({onFile:async()=>{entered.resolve();await release.promise;}});const runtime=await hostFixture(t,f.client);const running=runtime.run('.mbvk cancel-file',{async delete(){deleted++;}});await entered.promise;const unloading=runtime.host.unload('music_bot',2000);release.resolve();assert.equal((await unloading).completed,true);await running;assert.equal(deleted,0);assert.equal(runtime.errors.includes('music_bot_failed'),false);assert.doesNotMatch(runtime.edits.map(x=>x.text).join('\n'),/失败/);});
+
+test('missing raw peer uses the precise envelope chat id',async t=>{const f=responsiveClient();const runtime=await hostFixture(t,f.client);await runtime.run('.mbvk peer',{peerId:undefined,async delete(){}});assert.equal(String(f.files[0].peer),'10001');assert.equal(typeof f.files[0].peer,'object');});
 
 test('a failed operation releases the next same-bot request', async t => {
   let fileCalls = 0;

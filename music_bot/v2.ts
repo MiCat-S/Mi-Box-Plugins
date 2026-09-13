@@ -7,7 +7,7 @@ const ACTIONS = new Set(["search", "kugou", "kuwo", "qq", "netease", "vk", "ym"]
 
 class MusicBotState {
   readonly ready = new Set<string>();
-  readonly cursors = new Map<string, number>();
+  readonly cursors = new Map<string, bigint>();
   private readonly controller = new AbortController();
   private readonly tails = new Map<string, Promise<void>>();
 
@@ -46,9 +46,10 @@ class MusicBotState {
     });
   }
 
-  boundary(bot: string, observed = 0): number {
-    const boundary = Math.max(this.cursors.get(bot) ?? 0, observed);
-    if (boundary > 0) this.cursors.set(bot, boundary);
+  boundary(bot: string, observed = 0n): bigint {
+    const previous=this.cursors.get(bot)??0n;
+    const boundary=previous>observed?previous:observed;
+    if (boundary > 0n) this.cursors.set(bot, boundary);
     return boundary;
   }
 
@@ -77,27 +78,27 @@ async function messages(client: TelegramClient, bot: string, limit: number): Pro
   return Array.isArray(values) ? values : [];
 }
 
-function validMessageId(message: any): number | undefined {
-  const id = message?.id;
-  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+function validMessageId(message: any): bigint | undefined {
+  try{const id=BigInt(String(message?.id));return id>0n?id:undefined;}catch{return;}
 }
 
 async function captureBoundary(state: MusicBotState, client: TelegramClient, bot: string,
-  signal: AbortSignal): Promise<number> {
+  signal: AbortSignal): Promise<bigint> {
   signal.throwIfAborted();
   const history = await messages(client, bot, 8);
   signal.throwIfAborted();
-  let maximum = 0;
-  for (const message of history) maximum = Math.max(maximum, validMessageId(message) ?? 0);
+  let maximum = 0n;
+  for (const message of history){const id=validMessageId(message)??0n;if(id>maximum)maximum=id;}
   return state.boundary(bot, maximum);
 }
 
-function raiseBoundary(state: MusicBotState, bot: string, boundary: number, message: any): number {
-  return state.boundary(bot, Math.max(boundary, validMessageId(message) ?? 0));
+function raiseBoundary(state: MusicBotState, bot: string, boundary: bigint, message: any): bigint {
+  const observed=validMessageId(message)??0n;
+  return state.boundary(bot,boundary>observed?boundary:observed);
 }
 
 async function waitFor(state: MusicBotState, client: TelegramClient, bot: string, signal: AbortSignal,
-  boundary: number, attempts: number, accept: (message: any) => boolean): Promise<any | undefined> {
+  boundary: bigint, attempts: number, accept: (message: any) => boolean): Promise<any | undefined> {
   for (let index = 0; index < attempts; index++) {
     signal.throwIfAborted();
     const values = await messages(client, bot, 8);
@@ -105,7 +106,7 @@ async function waitFor(state: MusicBotState, client: TelegramClient, bot: string
     const found = values.filter(message => {
       const id = validMessageId(message);
       return id !== undefined && id > boundary && message?.out === false && accept(message);
-    }).sort((left, right) => validMessageId(left)! - validMessageId(right)!)[0];
+    }).sort((left,right)=>validMessageId(left)!<validMessageId(right)!?-1:validMessageId(left)!>validMessageId(right)!?1:0)[0];
     if (found) {
       state.boundary(bot, validMessageId(found));
       return found;
@@ -125,7 +126,7 @@ async function initialize(state: MusicBotState, client: TelegramClient, bot: str
 }
 
 async function sendOnce(state: MusicBotState, client: TelegramClient, bot: string, request: string,
-  signal: AbortSignal): Promise<number> {
+  signal: AbortSignal): Promise<bigint> {
   const boundary = await captureBoundary(state, client, bot, signal);
   signal.throwIfAborted();
   const sent = await client.sendMessage(bot, {message: request});
@@ -134,7 +135,7 @@ async function sendOnce(state: MusicBotState, client: TelegramClient, bot: strin
 }
 
 async function sendRequest(state: MusicBotState, client: TelegramClient, bot: string, request: string,
-  signal: AbortSignal): Promise<number> {
+  signal: AbortSignal): Promise<bigint> {
   const boundary = await captureBoundary(state, client, bot, signal);
   try {
     signal.throwIfAborted();
@@ -150,15 +151,15 @@ async function sendRequest(state: MusicBotState, client: TelegramClient, bot: st
 }
 
 async function search(state: MusicBotState, context: PluginContext, invocation: any,
-  action: string, query: string, bot: string): Promise<void> {
-  if (!ACTIONS.has(action) || !query.trim() || query.length > 300) {
+  action: string, query: string, bot: string, displayQuery=query): Promise<void> {
+  if (!ACTIONS.has(action) || !displayQuery.trim() || displayQuery.length > 300) {
     await context.telegram.edit(invocation.message,
-      `<b>多音源音乐搜索</b>\n<code>${invocation.prefix}music_bot search 关键词</code>\n` +
-      `<code>${invocation.prefix}mbvk 关键词</code> · <code>${invocation.prefix}mbym 关键词</code>\n` +
+      `<b>多音源音乐搜索</b>\n<code>${escape(invocation.prefix)}music_bot search 关键词</code>\n` +
+      `<code>${escape(invocation.prefix)}mbvk 关键词</code> · <code>${escape(invocation.prefix)}mbym 关键词</code>\n` +
       `支持 search、kugou、kuwo、qq、netease、vk、ym。`, {parseMode: "html"});
     return;
   }
-  await context.telegram.edit(invocation.message, `正在搜索：${query}`);
+  await context.telegram.edit(invocation.message, `🔎 搜索中：<code>${escape(displayQuery)}</code>`,{parseMode:"html"});
   let operationSignal: AbortSignal | undefined;
   try {
     await context.telegram.withClient(async (client, clientSignal) => {
@@ -166,13 +167,14 @@ async function search(state: MusicBotState, context: PluginContext, invocation: 
       operationSignal = signal;
       return state.serial(bot, signal, async () => {
         signal.throwIfAborted();
-        const {Api} = await import("teleproto");
-        try { await client.invoke(new Api.contacts.Unblock({id: bot})); } catch {}
+          const [{Api},{returnBigInt}]=await Promise.all([import("teleproto"),import("teleproto/Helpers.js")]);
+          signal.throwIfAborted();
+          try { await client.invoke(new Api.contacts.Unblock({id: bot})); } catch {}
         signal.throwIfAborted();
         try {
           const peer = await client.getInputEntity(bot);
           signal.throwIfAborted();
-          await client.invoke(new Api.account.UpdateNotifySettings({peer,
+          await client.invoke(new Api.account.UpdateNotifySettings({peer:new Api.InputNotifyPeer({peer}) as any,
             settings: new Api.InputPeerNotifySettings({silent: true, muteUntil: 2_147_483_647})}));
         } catch {}
         signal.throwIfAborted();
@@ -199,12 +201,12 @@ async function search(state: MusicBotState, context: PluginContext, invocation: 
         const media = await waitFor(state, client, bot, signal, mediaBoundary, 20, message => Boolean(message.media));
         if (!media?.media) throw new Error("No media");
         const raw = invocation.message.raw as ApiTypes.Message | undefined;
-        if (!raw?.peerId) throw new Error("Missing peer");
         signal.throwIfAborted();
-        await client.sendFile(raw.peerId, {file: media.media, replyTo: invocation.message.replyToId,
-          ...(action === "ym" ? {} : {caption: `🎵 ${query}`})});
+        const target=raw?.peerId??returnBigInt(invocation.message.chatId);
+        await client.sendFile(target, {file: media.media, replyTo: invocation.message.replyToId,
+          ...(action === "ym" ? {} : {caption: `🎵 ${displayQuery}`})});
         signal.throwIfAborted();
-        if (typeof raw.delete === "function") await raw.delete({revoke: true});
+        if (typeof raw?.delete === "function") {try{await raw.delete({revoke:true});}catch{context.log.info("music_bot_command_cleanup_failed");}}
       });
     });
   } catch (error) {
@@ -230,7 +232,7 @@ export default function createMusicBot() {
       const action = binding.nested ? (invocation.args[0]?.toLowerCase() ?? "") : binding.action;
       const query = invocation.args.slice(binding.nested ? 1 : 0).join(" ").trim();
       const bot = action === "vk" ? BOTS.vk : action === "ym" ? BOTS.ym : binding.bot;
-      await search(state, context, invocation, action, query, bot);
+      await search(state, context, invocation, action,action==="ym"?`${query} lyric】`:query,bot,query);
     },
   }]));
   return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "music_bot", description: "通过多个 Telegram 音乐机器人搜索歌曲",
