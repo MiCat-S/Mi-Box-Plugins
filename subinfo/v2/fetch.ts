@@ -1,8 +1,7 @@
 import type {PluginContext} from "telebox/sdk";
 
-export async function fetchSubscription(ctx: PluginContext, url: string) {
-  return ctx.http.withResponse(url, {headers: {"user-agent": "Mi Box"}}, async (response, signal) => {
-    if (!response.ok || !response.body) throw new Error("Subscription unavailable");
+async function readBody(response: Response, signal: AbortSignal, maximum: number): Promise<string> {
+    if (!response.body) return "";
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let text = "", total = 0, done = false;
@@ -17,16 +16,27 @@ export async function fetchSubscription(ctx: PluginContext, url: string) {
         signal.throwIfAborted();
         if (chunk.done) {done = true; break;}
         total += chunk.value.byteLength;
-        if (total > 2 * 1024 * 1024) throw new Error("Subscription too large");
+        if (total > maximum) throw new Error("Response too large");
         text += decoder.decode(chunk.value, {stream: true});
       }
       text += decoder.decode();
-      return {text, traffic: trafficSummary(response.headers.get("subscription-userinfo"))};
+      return text;
     } finally {
       signal.removeEventListener("abort", onAbort);
       try {if (!done) await cancel();} finally {reader.releaseLock();}
     }
-  }, {timeoutMs: 15_000});
+}
+
+export async function fetchBoundedText(ctx: PluginContext, url: string, maximum: number, timeoutMs: number, allowedHosts: readonly string[], headers: Record<string,string> = {}) {
+  return ctx.http.withResponse(url, {headers}, async (response, signal) => ({response,text:await readBody(response,signal,maximum)}),
+    {timeoutMs,redirects:{allowedHosts,maxRedirects:5},denyPrivateAddresses:true});
+}
+
+export async function fetchSubscription(ctx: PluginContext, url: string) {
+  const target=new URL(url);
+  const {response,text}=await fetchBoundedText(ctx,url,2*1024*1024,15_000,[target.hostname],{"user-agent":"Mi Box"});
+  if (!response.ok) throw new Error("Subscription unavailable");
+  return {text, traffic: trafficSummary(response.headers.get("subscription-userinfo")), contentDisposition:response.headers.get("content-disposition"), profileUrl:response.headers.get("profile-web-page-url")};
 }
 
 function bytes(value: bigint): string {

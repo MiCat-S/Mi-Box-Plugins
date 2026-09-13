@@ -8,7 +8,11 @@ export function renderHelp(prefix: string): string {
 
 <b>使用方法：</b>
 • <code>${p}subinfo 订阅链接</code> - 查询一个 HTTP/HTTPS 订阅
+• <code>${p}subinfo txt 订阅链接</code> - 以 TXT 文件输出详细结果
+• <code>${p}cha 订阅链接</code> - 简洁查询订阅
+• <code>${p}cha txt 订阅链接</code> - 以 TXT 文件输出简洁结果
 • 回复包含订阅链接的消息后发送 <code>${p}subinfo</code>
+• 命令后可提供多个链接进行批量查询
 
 <b>支持内容：</b>
 • Clash YAML/JSON 的 <code>proxies</code> 列表
