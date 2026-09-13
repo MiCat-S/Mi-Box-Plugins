@@ -11,7 +11,7 @@ const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
 const {artifactDir} = buildPlugin({id: 'whois', packageRoot: path.resolve(__dirname, '../whois'), entry: 'v2.ts'});
 const create = require(path.join(artifactDir, 'index.cjs')).default;
 
-async function fixture(t, initial, legacy) {
+async function fixture(t, initial, legacy, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mi-box-whois-v2-')));
   if (initial) {
     await fs.mkdir(path.join(root, 'whois'));
@@ -21,19 +21,20 @@ async function fixture(t, initial, legacy) {
     await fs.mkdir(path.join(root, 'whois'), {recursive: true});
     await fs.writeFile(path.join(root, 'whois/whois_data.json'), JSON.stringify(legacy));
   }
-  const edits = [], requests = [];
-  let reply;
-  const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}}, http: {
-    fetch: async url => {requests.push(String(url)); return new Response('data: {"type":"check","data":{"whois":{"whois":"Registrar: Example"}}}\n\n', {status: 200});},
+  const edits = [], requests = [], logs = [];
+  let reply, replyAttempts = 0;
+  const host = new PluginHost({storageRoot: root, logger: {info() {}, error(event, fields) {logs.push({event, fields});}}, http: {
+    fetch: async (url, init) => {requests.push(String(url)); if (options.fetch) return options.fetch(url, init);
+      return new Response(options.responseText ?? 'data: {"type":"check","data":{"whois":{"whois":"Registrar: Example"}}}\n\n', {status: 200});},
   }, telegram: {
-    async edit(message, text, options) { edits.push({text, options}); }, async reply(message, text, options) {edits.push({text, options});},
+    async edit(message, text, settings) {if(options.editFailsOn&&String(text).includes(options.editFailsOn))throw new Error('secret receipt');edits.push({text, options:settings, kind:'edit'});}, async reply(message, text, settings) {replyAttempts++;if(replyAttempts===options.replyFailsAt)throw new Error('secret delivery');edits.push({text, options:settings, kind:'reply'});},
     async invoke() {}, async getReply() {return reply;}, async withClient() {},
   }});
   await host.load(create());
   t.after(async () => { await host.shutdown(1000); await fs.rm(root, {recursive: true, force: true}); });
   const sql = new SqliteStore(path.join(root, 'whois/records.sqlite'));
   t.after(() => sql.close());
-  return {root, sql, edits, requests, setReply(value) {reply = value;},
+  return {root, sql, edits, requests, logs, host, setReply(value) {reply = value;},
     read: () => sql.read(db => ({...JSON.parse(db.prepare('SELECT value FROM metadata WHERE id = 1').get().value),
       history: db.prepare('SELECT value FROM history ORDER BY id DESC').all().map(row => JSON.parse(row.value)),
       cache: Object.fromEntries(db.prepare('SELECT domain, value FROM cache').all().map(row => [row.domain, JSON.parse(row.value)])),
@@ -201,4 +202,49 @@ test('whois normal commands and reload do not read migrated JSON snapshots', asy
   await f.run('.whois example.com');
   assert.equal(f.requests.length, 1);
   assert.equal((await f.read()).history.length, 1);
+});
+
+test('whois ordinary lookup prefers the replied message domain over command text', async t => {
+  const f = await fixture(t);f.setReply({id:2,chatId:'chat',text:'source https://www.replied-example.com/path'});
+  await f.run('.whois argument-example.com');
+  assert.equal(f.requests.length,1);assert.match(f.requests[0],/replied-example\.com/);assert.doesNotMatch(f.requests[0],/argument-example/);
+});
+
+test('whois preserves published raw pages and emits a fixed interruption notice', async t => {
+  const raw='Registrar: Example\n'+('<secret&😀>'.repeat(1600));
+  const responseText=`data: ${JSON.stringify({type:'check',data:{whois:{whois:raw}}})}\n\n`;
+  const f = await fixture(t,undefined,undefined,{responseText,replyFailsAt:1});await f.run('.whois example.com');
+  assert.equal(f.requests.length,1);assert.ok(f.edits.some(item=>item.kind==='edit'&&item.text.includes('WHOIS 结果')));
+  assert.match(f.edits.at(-1).text,/已发送 \d+\/\d+ 页/);assert.doesNotMatch(f.edits.at(-1).text,/查询失败/);
+  assert.ok(f.logs.some(item=>item.event==='whois:output-failed'));assert.doesNotMatch(JSON.stringify(f.logs),/secret delivery/);
+});
+
+test('whois paginates a complete long history', async t => {
+  const history=Array.from({length:20},(_,i)=>({domain:`${'a'.repeat(220)}${i}.com`,rawData:'body',queryTime:'2026-09-01T12:34:56Z'}));
+  const f=await fixture(t,{history,cache:{}});await f.run('.whois history');
+  assert.ok(f.edits.some(item=>item.kind==='reply'));const output=f.edits.map(item=>item.text).join('');
+  assert.match(output,new RegExp(`${'a'.repeat(220)}0\\.com`));assert.match(output,new RegExp(`${'a'.repeat(220)}19\\.com`));
+  assert.ok(f.edits.every(item=>item.text.length<4096));
+});
+
+test('whois cancellation aborts an in-flight managed HTTP request without an error reply', async t => {
+  let startedResolve;const started=new Promise(resolve=>{startedResolve=resolve;});
+  const f=await fixture(t,undefined,undefined,{fetch:async(_url,init)=>{startedResolve();return new Promise((_resolve,reject)=>init.signal.addEventListener('abort',()=>reject(init.signal.reason),{once:true}));}});
+  const pending=f.run('.whois example.com');await started;await f.host.unload('whois',1000);await pending;
+  assert.equal(f.edits.some(item=>String(item.text).includes('WHOIS 查询失败')),false);
+});
+
+test('whois HELP and H with extra arguments render complete dynamic-prefix help',async t=>{
+  const f=await fixture(t);f.host.replacePrefixes(['<>']);
+  await f.run('<>whois HELP ignored');await f.run('<>whois H extra');
+  for(const output of f.edits.slice(-2).map(item=>item.text)){
+    assert.match(output,/批量查询多个域名/);assert.match(output,/&lt;&gt;whois batch/);assert.doesNotMatch(output,/<code>whois example\.com<\/code>/);
+  }
+});
+
+test('whois keeps a completed clear successful when its receipt edit fails',async t=>{
+  const f=await fixture(t,undefined,undefined,{editFailsOn:'已清除历史'});await f.run('.whois example.com');await f.run('.whois clear');
+  const state=await f.read();assert.deepEqual(state.history,[]);assert.deepEqual(state.cache,{});
+  assert.ok(f.logs.some(item=>item.event==='whois:receipt-failed'));assert.doesNotMatch(JSON.stringify(f.logs),/secret receipt/);
+  assert.equal(f.edits.some(item=>String(item.text).includes('记录清除失败')),false);
 });
