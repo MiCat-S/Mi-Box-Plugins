@@ -7,12 +7,12 @@ const os = require('node:os');
 const core = path.resolve(__dirname, '../../TeleBox-Core');
 const {buildPlugin} = require(path.join(core, 'scripts/build-v2-plugin.cjs'));
 const {PluginHost} = require(path.join(core, 'dist/v2/host.js'));
-const {artifactDir} = buildPlugin({id: 'oxost', packageRoot: path.resolve(__dirname, '../oxost'), entry: 'v2.ts'});
+const {artifactDir} = buildPlugin({id: 'oxost', packageRoot: process.env.OXOST_TEST_SOURCE || path.resolve(__dirname, '../oxost'), entry: 'v2.ts'});
 const create = require(path.join(artifactDir, 'index.cjs')).default;
 
 async function fixture(t, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-upload-')));
-  const edits = [], requests = [], downloads = [];
+  const edits = [], replies = [], logs = [], requests = [], downloads = [];
   const raw = {media: {}, document: {size: 8, attributes: [{fileName: 'report.pdf'}], ...options.document},
     ...(options.raw ?? {}),
     async downloadMedia(params) {
@@ -21,20 +21,20 @@ async function fixture(t, options = {}) {
       if (params?.outputFile) { await fs.writeFile(params.outputFile, 'document'); return params.outputFile; }
       return Buffer.from('document');
     }};
-  const host = new PluginHost({storageRoot: root, logger: {info() {}, error() {}},
+  const host = new PluginHost({storageRoot: root, logger: {info(event) {logs.push(event);}, error(event) {logs.push(event);}},
     http: {fetch: async (url, init) => {
       requests.push({url, init});
       if (options.fetch) return options.fetch(url, init, downloads.at(-1));
       return new Response('https://0x0.st/report.pdf');
     }}, telegram: {
-      async edit(_message, text) { edits.push(text); }, async reply() {}, async invoke() {},
+      async edit(_message, text) { edits.push(text); }, async reply(_message, text) {replies.push(text);}, async invoke() {},
       async getReply() { return {raw}; },
       async withClient(operation, signal) { return operation({}, signal); },
     }});
   await host.load(create());
   t.after(async () => { assert.equal((await host.shutdown(1000)).completed, true); await fs.rm(root, {recursive: true, force: true}); });
-  return {host, root, requests, downloads, edits,
-    run: () => host.dispatchPrimary({id: 1, chatId: '1', senderId: '1', outgoing: true, replyToId: 2, text: '.0x0 expires=72 secret'})};
+  return {host, root, requests, downloads, edits, replies, logs,
+    run: (text='.0x0 expires=72 secret', patch={}) => host.dispatchPrimary({id: 1, chatId: '1', senderId: '1', outgoing: true, replyToId: 2, text, ...patch})};
 }
 
 test('oxost uploads a file-backed blob and retains the temporary file through response consumption', async t => {
@@ -172,6 +172,11 @@ test('oxost derives photo file names from a 12-byte header', async t => {
     assert.match(f.edits.at(-1), /0x0\.st\/photo/, name);
   }
 });
+test('oxost preserves the original sanitized caption filename fallback', async t => {
+  const f=await fixture(t,{raw:{document:undefined,message:'caption name?.txt',video:true},fetch:async(_url,init)=>{
+    assert.equal(init.body.get('file').name,'caption_name_.txt');return new Response('https://0x0.st/caption');}});
+  await f.run();assert.match(f.edits.at(-1),/0x0\.st\/caption/);
+});
 
 test('oxost unload during upload request body consumption cleans the temporary file', async t => {
   let started, file;
@@ -195,19 +200,57 @@ test('oxost unload during upload request body consumption cleans the temporary f
 });
 
 test('oxost unload during upload response consumption cleans the temporary file', async t => {
-  let started, file;
+  let started, cancelStarted, releaseCleanup, file;
   const ready = new Promise(resolve => {started = resolve;});
+  const cancelling = new Promise(resolve => {cancelStarted = resolve;});
+  const cleanup = new Promise(resolve => {releaseCleanup = resolve;});
   const f = await fixture(t, {fetch: async (_url, _init, download) => {
     file = download.outputFile;
     return new Response(new ReadableStream({start(controller) {
       controller.enqueue(new TextEncoder().encode('https://0x0.st/'));
       started();
-    }}));
+    },cancel(){cancelStarted();return cleanup;}}));
   }});
   const running = f.run();
   await ready;
-  assert.equal((await f.host.unload('oxost', 1000)).completed, true);
+  assert.equal((await f.host.unload('oxost', 5)).completed, false);
+  await cancelling;
+  assert.equal((await fs.stat(file)).isFile(),true);
+  releaseCleanup();
   await running;
+  assert.equal((await f.host.unload('oxost', 1000)).completed, true);
   assert.equal(f.edits.length, 1);
   await assert.rejects(fs.stat(file), {code: 'ENOENT'});
+});
+
+test('oxost keeps the complete active-prefix help and validates parameters before reply access', async t => {
+  const f=await fixture(t);
+  for(const text of ['.0x0 help','.0x0 secret h','.0x0 expires=0','.0x0 unknown']){
+    const before=f.downloads.length;await f.run(text);
+    assert.equal(f.downloads.length,before);
+    assert.match(f.edits.at(-1),/<code>\.0x0 \[expires=小时\] \[secret\]<\/code>/);
+    assert.match(f.edits.at(-1),/expires=72 secret/);
+  }
+});
+
+test('oxost paginates a long validated result without losing its tail', async t => {
+  const suffix='a'.repeat(8000);
+  const f=await fixture(t,{fetch:async()=>new Response(`https://0x0.st/${suffix}`)});
+  await f.run();
+  assert.ok(f.replies.length>0);
+  assert.ok([f.edits.at(-1),...f.replies].join('').includes(suffix.slice(-100)));
+});
+
+test('oxost reports a completed upload when temporary cleanup later fails', async t => {
+  const directory=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'oxost-cleanup-')));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const edits=[],logs=[];const signal=new AbortController().signal;
+  await create().commands['0x0'].handle({command:'0x0',prefix:'.',args:[],message:{id:1,chatId:'1',outgoing:true,text:'.0x0',replyToId:2}}, {
+    signal,log:{info:event=>logs.push(event),error:event=>logs.push(event)},
+    telegram:{edit:async(_m,text)=>edits.push(text),reply:async()=>{},getReply:async()=>({raw:{media:{},document:{size:8,attributes:[{fileName:'a.txt'}]},async downloadMedia({outputFile}){await fs.writeFile(outputFile,'document');}}}),withClient:async use=>use({},signal)},
+    files:{withTemp:async use=>{await use(directory,signal);throw new Error('private cleanup failure');}},
+    http:{text:async()=> 'https://0x0.st/done'},
+  });
+  assert.match(edits.at(-1),/https:\/\/0x0\.st\/done/);
+  assert.ok(logs.includes('oxost_temp_cleanup_failed'));
+  assert.ok(!edits.some(text=>text.includes('上传失败')));
 });
