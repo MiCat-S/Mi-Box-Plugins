@@ -32,3 +32,34 @@ test('pmcaptcha ignores an old timeout after a replacement session is created',a
 test('pmcaptcha native requests serialize through current Teleproto types',async t=>{const f=await fixture(t);await f.command('.pmc captcha on');await f.message('707','hello');assert.ok(f.invoked.length>=2);for(const request of f.invoked){const peer=request.peer?.peer??request.folderPeers?.[0]?.peer;if(peer?.className==='InputPeerUser'){const actual=new Api.InputPeerUser({userId:peer.id,accessHash:0n});if(request.peer?.peer)request.peer.peer=actual;else request.folderPeers[0].peer=actual;}assert.ok(request.getBytes().length>4);}});
 
 test('pmcaptcha cancellation after a native RPC prevents every later RPC and captcha send',async t=>{const started=Promise.withResolvers(),release=Promise.withResolvers();let first=true;const f=await fixture(t,{invoke:async()=>{if(first){first=false;started.resolve();await release.promise;}return{};}});await f.command('.pmc captcha on');const running=f.message('909','hello');await started.promise;const unloading=f.host.unload('pmcaptcha',1000);release.resolve();assert.equal((await unloading).completed,true);await running.catch(()=>undefined);assert.equal(f.invoked.length,1);assert.equal(f.sent.length,0);assert.deepEqual(f.logs,[]);});
+
+const {messageEnvelope}=require(path.join(core,'dist/v2/telegram.js'));
+test('pmcaptcha never archives broadcast posts, send-as groups or Saved Messages',async t=>{
+ const f=await fixture(t);await f.command('.pmc captcha on');
+ for(const raw of [
+  new Api.Message({id:80,peerId:new Api.PeerChannel({channelId:30n}),fromId:new Api.PeerChannel({channelId:30n}),post:true,message:'post',date:1}),
+  new Api.Message({id:81,peerId:new Api.PeerChannel({channelId:31n}),fromId:new Api.PeerChannel({channelId:31n}),post:false,out:true,message:'send-as',date:1}),
+  new Api.Message({id:82,peerId:new Api.PeerUser({userId:1n}),fromId:new Api.PeerUser({userId:1n}),out:false,message:'saved',date:1}),
+ ])await f.host.dispatchListeners(messageEnvelope(raw,{selfId:'1'}));
+ assert.equal(f.invoked.length,0);assert.equal(f.sent.length,0);assert.deepEqual((await f.read()).sessions,{});assert.deepEqual((await f.read()).config.whitelist,[]);
+});
+test('pmcaptcha accepts Saved Messages commands even when wire out is false',async t=>{
+ const f=await fixture(t);
+ const raw=new Api.Message({id:90,peerId:new Api.PeerUser({userId:1n}),fromId:new Api.PeerUser({userId:1n}),out:false,message:'.pmc off',date:1});
+ assert.equal(await f.host.dispatchPrimary(messageEnvelope(raw,{selfId:'1'})),true);
+ assert.equal((await f.read()).config.enabled,false);assert.match(f.edits.at(-1).text,/停用/);
+});
+test('pmcaptcha private commands reply and own messages whitelist only the peer',async t=>{
+ const f=await fixture(t);
+ const make=(id,peer,sender,out,text)=>messageEnvelope(new Api.Message({id,peerId:new Api.PeerUser({userId:peer}),fromId:new Api.PeerUser({userId:sender}),out,message:text,date:1}),{selfId:'1'});
+ await f.host.dispatchPrimary(make(91,2n,1n,true,'.pmc status'));assert.match(f.edits.at(-1).text,/状态/);
+ await f.host.dispatchListeners(make(92,2n,1n,true,'hello'));assert.deepEqual((await f.read()).config.whitelist,['2']);assert.equal(f.invoked.length,0);
+ await f.command('.pmc captcha on');await f.host.dispatchListeners(make(93,3n,3n,false,'hello'));assert.ok((await f.read()).sessions['3']);assert.equal(f.sent.length,1);
+});
+test('pmcaptcha recognizes scalar private envelopes and skips restored channel sessions',async t=>{
+ const f=await fixture(t);await f.command('.pmc captcha on');
+ await f.message('4','hello',{raw:null,chatType:'private'});assert.ok((await f.read()).sessions['4']);
+ await f.host.unload('pmcaptcha');const state=await f.read();state.sessions={'-10030':{...state.sessions['4'],userId:'-10030',deadline:Date.now()-1}};
+ await fs.writeFile(path.join(f.root,'pmcaptcha/state.json'),JSON.stringify(state));f.invoked.length=0;f.sent.length=0;
+ await f.host.load(create());await new Promise(resolve=>setTimeout(resolve,30));assert.equal(f.invoked.length,0);assert.deepEqual((await f.read()).sessions,{});
+});

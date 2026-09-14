@@ -70,7 +70,7 @@ test('lottery persists warehouse, activity and participants with string ids',asy
 test('pmcaptcha applies whitelist words before premium blocking and stores ids as strings',async()=>{
   const state={schemaVersion:1,importedLegacy:true,sessions:{},config:{enabled:true,captchaEnabled:true,mode:'text',timeout:0,maxTries:3,keyword:'agree',prompt:'',failActions:['archive','mute'],passActions:['whitelist'],whitelist:[],verified:[],failed:[],initiative:true,historyCount:-1,groupsInCommon:-1,wlWords:['trusted'],blWords:['spam'],premium:'ban'}};
   const invokes=[];const client={async getInputEntity(id){return id;},async invoke(req){invokes.push(req);},async getEntity(){return{id:'9007199254740995'};}};const f=context(state,client),plugin=createCaptcha();
-  await plugin.setup(f.ctx);await plugin.listeners[0].handle({...message('trusted'),outgoing:false,raw:{isPrivate:true,sender:{premium:true,firstName:'Alice'}}},f.ctx);
+  await plugin.setup(f.ctx);await plugin.listeners[0].handle({...message('trusted'),chatId:'9007199254740995',chatType:'private',outgoing:false,raw:{isPrivate:true,sender:{premium:true,firstName:'Alice'}}},f.ctx);
   const saved=f.json.value();assert.ok(saved.config.verified.some(x=>x.id==='9007199254740995'));assert.ok(saved.config.whitelist.includes('9007199254740995'));assert.equal(saved.sessions['9007199254740995'],undefined);assert.equal(invokes.length,0);
 });
 
@@ -78,7 +78,7 @@ test('pmcaptcha emits a real PNG challenge when canvas is available',async()=>{
   const state={schemaVersion:1,importedLegacy:true,sessions:{},config:{enabled:true,captchaEnabled:true,mode:'img_digit',timeout:0,maxTries:3,keyword:'agree',prompt:'',failActions:[],passActions:[],whitelist:[],verified:[],failed:[],initiative:true,historyCount:-1,groupsInCommon:-1,wlWords:[],blWords:[],premium:'none'}};
   const sent=[];const client={async getInputEntity(id){return id;},async invoke(){},async sendMessage(_peer,options){sent.push(options);return{id:42};}};
   const f=context(state,client),plugin=createCaptcha();await plugin.setup(f.ctx);
-  await plugin.listeners[0].handle({...message('hello'),outgoing:false,raw:{isPrivate:true,sender:{firstName:'Alice'}}},f.ctx);
+  await plugin.listeners[0].handle({...message('hello'),chatId:'9007199254740995',chatType:'private',outgoing:false,raw:{isPrivate:true,sender:{firstName:'Alice'}}},f.ctx);
   assert.equal(sent.length,1);assert.equal(sent[0].file.name,'captcha.png');assert.ok(sent[0].file.size>100);
   const session=f.json.value().sessions['9007199254740995'];assert.equal(session.mode,'img_digit');assert.match(session.answer,/^\d{5}$/);
 });
