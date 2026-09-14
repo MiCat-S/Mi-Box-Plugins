@@ -7,17 +7,29 @@ type Target = {id: string; target: string; chatId?: string; topicId?: string; di
 type State = {schemaVersion: number; seq: string; mode: "sequence" | "broadcast"; targets: Target[]; [key: string]: unknown};
 class FloodRetryError extends Error {}
 class ForwardRestrictedError extends Error {}
+class SourceMissingError extends Error {}
+class NoMessagesError extends Error {}
 const MAX_FLOOD_WAIT_MS=60_000;
+const MAX_SEARCH=500;
 const defaults = (): State => ({schemaVersion: 1, seq: "0", mode: "sequence", targets: []});
 const store = (context: PluginContext) => context.storage.json<State>("config.json", defaults());
 const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
   character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
+const ENTITIES: Record<string, string> = {"&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&#x27;": "'", "&#39;": "'"};
+// 旧版把已转义的 HTML 存进 display，这里还原成纯文本，展示时统一转义
+const plainText = (value: unknown): string => {
+  const text = String(value ?? "");
+  if (!/<\/?(?:a|b|i|u|s|code|pre)\b[^>]*>/i.test(text)) return text.trim();
+  return text.replace(/<[^>]*>/g, "").replace(/&(?:amp|lt|gt|quot|#x27|#39);/g, entity => ENTITIES[entity] ?? entity).replace(/\s+/g, " ").trim();
+};
 
 function normalize(source: State): State {
   const targets = Array.isArray(source.targets) ? source.targets.filter(value => value && typeof value.target === "string").map(value => {
     const normalized={...value,id:String(value.id),target:String(value.target),createdAt:String(value.createdAt??Date.now())};
     if(value.chatId===undefined)delete normalized.chatId;else normalized.chatId=String(value.chatId);
     if(value.topicId===undefined)delete normalized.topicId;else normalized.topicId=String(value.topicId);
+    const display=value.display===undefined?"":plainText(value.display);
+    if(display)normalized.display=display;else delete normalized.display;
     return normalized;
   }) : [];
   const maximum = targets.reduce((max, value) => Math.max(max, Number(value.id) || 0), 0);
@@ -31,8 +43,8 @@ function lookup(target: Target): string | ReturnType<typeof returnBigInt> {
   return value;
 }
 
-function entityName(entity: any): string {
-  return entity?.title || [entity?.firstName, entity?.lastName].filter(Boolean).join(" ") || entity?.username && `@${entity.username}` || "来源对话";
+function entityName(entity: any, fallback: string): string {
+  return entity?.title || [entity?.firstName, entity?.lastName].filter(Boolean).join(" ") || entity?.username && `@${entity.username}` || fallback;
 }
 
 function entityId(entity: any): string | undefined {
@@ -64,6 +76,14 @@ function restrictedError(error:unknown):boolean {
   const text=String((error as any)?.errorMessage??(error as any)?.message??"");
   return text.includes("CHAT_FORWARDS_RESTRICTED");
 }
+// 只透出形如 CHAT_WRITE_FORBIDDEN 的 RPC 码，避免把异常原文渲染给用户
+function rpcCode(error:unknown):string|undefined {
+  const text=String((error as any)?.errorMessage??"");
+  return /^[A-Z][A-Z0-9_]{2,63}$/.test(text)?text:undefined;
+}
+function failureLabel(name:string,error:unknown):string {
+  const code=rpcCode(error);return code?`${name} (<code>${escape(code)}</code>)`:name;
+}
 function wait(ms:number,signal:AbortSignal):Promise<void>{return new Promise((resolve,reject)=>{
   if(signal.aborted){reject(signal.reason);return;}const timer=setTimeout(done,ms);
   function done(){signal.removeEventListener("abort",abort);resolve();}
@@ -73,7 +93,7 @@ function wait(ms:number,signal:AbortSignal):Promise<void>{return new Promise((re
 
 function list(state: State): string {
   const rows = state.targets.slice().sort((a, b) => Number(a.id) - Number(b.id)).map(value =>
-    `${value.status === "0" ? "⏹" : "🔛"} [<code>${escape(value.id)}</code>] ${value.display || `<code>${escape(value.target)}</code>`}` +
+    `${value.status === "0" ? "⏹" : "🔛"} [<code>${escape(value.id)}</code>] ${value.display ? escape(value.display) : `<code>${escape(value.target)}</code>`}` +
     (value.topicId ? ` | 话题 <code>${escape(value.topicId)}</code>` : ""));
   return `<b>保送目标</b>\n模式：<b>${state.mode === "broadcast" ? "群发" : "顺序"}</b>\n\n${rows.join("\n") || "暂无目标"}`;
 }
@@ -101,20 +121,25 @@ async function forward(invocation: any, context: PluginContext, count: number): 
     const successes: {target:Target;entity:any;messages:any[]}[] = [];
     const failures: string[] = [];
     const throttled: string[] = [];
+    let collected = 0;
     await context.telegram.withClient(async (client, signal) => {
       const {Api} = await import("teleproto");
       const raw = invocation.message.raw as ApiTypes.Message | undefined;
       const replied = reply.raw as ApiTypes.Message | undefined;
-      if (!replied) throw new Error("Missing source");
+      if (!replied) throw new SourceMissingError();
       const sourcePeer=raw?.peerId??returnBigInt(invocation.message.chatId);
       const values: any[] = [];
-      for (let id = replied.id; values.length < count && id < replied.id + count * 3; id++) {
+      const limit=Math.min(count*3,MAX_SEARCH);
+      for (let id = replied.id; values.length < count && id < replied.id + limit; id++) {
         signal.throwIfAborted();
-        const result = await client.getMessages(sourcePeer, {ids: [id]});
-        const message = Array.isArray(result) ? result[0] : result;
-        if (message?.id) values.push(message.id);
+        try{
+          const result = await client.getMessages(sourcePeer, {ids: [id]});
+          const message = Array.isArray(result) ? result[0] : result;
+          if (message?.id) values.push(message.id);
+        }catch(error){signal.throwIfAborted();context.log.info("bs_source_message_skipped");}
       }
-      if (!values.length) throw new Error("No messages");
+      if (!values.length) throw new NoMessagesError();
+      collected = values.length;
       for (const target of targets) {
         signal.throwIfAborted();
         try {
@@ -137,9 +162,19 @@ async function forward(invocation: any, context: PluginContext, count: number): 
           if (state.mode === "sequence") break;
         } catch(error) {signal.throwIfAborted();if(error instanceof ForwardRestrictedError)throw error;
           const name=target.display||target.target;
-          if(error instanceof FloodRetryError)throttled.push(name);else failures.push(name);}
+          if(error instanceof FloodRetryError)throttled.push(name);else failures.push(failureLabel(name,error));}
       }
       if(successes.length){
+        // 目标改名或重新解析到标记 ID 后回写，避免列表长期显示陈旧信息
+        const changes=new Map(successes.map(success=>[success.target.id,success]));
+        await store(context).update(source=>{const value=normalize(source);
+          for(const target of value.targets){
+            const success=changes.get(target.id);if(!success)continue;
+            const entity=success.entity;if(entity?.id===undefined||entity?.id===null)continue;
+            const chatId=String(entity.id);const display=entityName(entity,target.display||target.target);
+            if(target.chatId!==chatId||target.display!==display){target.chatId=chatId;target.display=display;target.updatedAt=String(Date.now());}
+          }
+          return value;});
         let sourceEntity:any;
         signal.throwIfAborted();
         try{sourceEntity=await client.getEntity(sourcePeer);signal.throwIfAborted();}
@@ -147,7 +182,7 @@ async function forward(invocation: any, context: PluginContext, count: number): 
         for(const success of successes){
           signal.throwIfAborted();
           const first=success.messages[0];if(!first?.id)continue;
-          const sourceName=escape(entityName(sourceEntity));
+          const sourceName=escape(entityName(sourceEntity,"来源对话"));
           const sourceUrl=entityLink(sourceEntity);
           const source=sourceUrl?`<a href="${escape(sourceUrl)}">${sourceName}</a>`:sourceName;
           const sentIds=success.messages.map(message=>message?.id).filter((id):id is number=>typeof id==="number");
@@ -159,11 +194,14 @@ async function forward(invocation: any, context: PluginContext, count: number): 
         }
       }
     });
-    if (!successes.length) { await context.telegram.edit(invocation.message, throttled.length ? `操作频繁，请稍后重试：${throttled.map(escape).join("、")}` : `保送失败${failures.length ? `：${failures.map(escape).join("、")}` : ""}`); return; }
+    if (!successes.length) { await context.telegram.edit(invocation.message,
+      throttled.length ? `操作频繁，请稍后重试：${throttled.map(escape).join("、")}`
+        : failures.length ? `保送失败：${failures.join("、")}` : "保送失败",
+      {parseMode: "html"}); return; }
     const responses = successes.map(value => {
       const forwardedCount = value.messages.filter(message => typeof message?.id === "number").length;
-      const countText = forwardedCount > 0 ? forwardedCount : count;
-      const targetName = escape(entityName(value.entity));
+      const countText = forwardedCount > 0 ? forwardedCount : collected || count;
+      const targetName = escape(entityName(value.entity,value.target.display || value.target.target));
       const targetUrl = entityLink(value.entity);
       const targetHtml = targetUrl ? `<a href="${escape(targetUrl)}">${targetName}</a>` : targetName;
       return `${countText} 条消息已被保送到频道 ${targetHtml}`;
@@ -174,7 +212,10 @@ async function forward(invocation: any, context: PluginContext, count: number): 
     if (context.signal.aborted) return;
     context.log.error("bs_forward_failed");
     await context.telegram.edit(invocation.message, error instanceof ForwardRestrictedError ? "该消息不允许被转发"
-      : error instanceof FloodRetryError ? "操作频繁，请稍后重试" : "保送失败，请检查目标权限或稍后重试");
+      : error instanceof FloodRetryError ? "操作频繁，请稍后重试"
+      : error instanceof SourceMissingError ? "无法获取被回复的消息"
+      : error instanceof NoMessagesError ? "未找到可转发的消息\n请确认消息未被删除"
+      : "保送失败，请检查目标权限或稍后重试");
   }
 }
 

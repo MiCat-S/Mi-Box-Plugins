@@ -28,7 +28,8 @@ async function floodFixture(t, invoke, config = {}, hooks = {}) {
   await fs.writeFile(path.join(storageRoot, 'bs', 'config.json'), JSON.stringify({schemaVersion: 1, seq: '1', mode: 'sequence',
     targets: [{id: '1', target: '@target', createdAt: '1'}], ...config}));
   const edits = [];
-  const client = {async getMessages(_peer, {ids}) {return [{id: ids[0]}];}, async getEntity(value) {
+  const client = {async getMessages(peer, {ids}) {
+      return hooks.getMessages ? hooks.getMessages(peer, ids[0]) : [{id: ids[0]}];}, async getEntity(value) {
     return hooks.getEntity ? hooks.getEntity(value) : {id: returnBigInt(9), title: String(value)};},
     async getInputEntity(value) {return value;}, invoke, async sendMessage(...args) {return hooks.sendMessage?.(...args);}};
   const host = new PluginHost({storageRoot, logger: {info() {}, error() {}}, telegram: {
@@ -238,4 +239,74 @@ test('bs reports forwards-restricted sources with the original fixed message', a
   assert.equal(calls, 1);
   assert.match(fixture.edits.at(-1), /^该消息不允许被转发$/);
   assert.doesNotMatch(fixture.edits.join('\n'), /private detail|CHAT_FORWARDS_RESTRICTED|保送失败/);
+});
+
+test('bs skips deleted messages while collecting and still forwards', async t => {
+  const scanned = [];
+  let requested;
+  const fixture = await floodFixture(t, async request => {
+    requested = request.id;
+    return {updates: []};
+  }, {}, {
+    getMessages(_peer, id) {
+      scanned.push(id);
+      if (id === 42 || id === 44) throw new Error('MESSAGE_ID_INVALID');
+      return [{id}];
+    },
+  });
+  const items = [
+    {id: 42, chatId: '-1009', senderId: '7', outgoing: true, replyToId: 41, text: '.bs 3', raw: {peerId: returnBigInt('-1009')}},
+  ];
+  await fixture.host.dispatchPrimary(items[0]);
+  assert.deepEqual(scanned, [41, 42, 43, 44, 45]);
+  assert.deepEqual(requested, [41, 43, 45]);
+  assert.match(fixture.edits.at(-1), /已被保送到频道/);
+  assert.match(fixture.edits.at(-1), /3 条消息/);
+  assert.doesNotMatch(fixture.edits.join('\n'), /保送失败|MESSAGE_ID_INVALID/);
+});
+
+test('bs bounds its source scan by the search limit', async t => {
+  let scanned = 0;
+  const fixture = await floodFixture(t, async () => ({updates: []}), {}, {
+    getMessages() {scanned += 1; throw new Error('MESSAGE_ID_INVALID');},
+  });
+  await fixture.host.dispatchPrimary({id: 42, chatId: '-1009', senderId: '7', outgoing: true, replyToId: 41,
+    text: '.bs 100000', raw: {peerId: returnBigInt('-1009')}});
+  assert.equal(scanned, 500);
+  assert.match(fixture.edits.at(-1), /未找到可转发的消息/);
+});
+
+test('bs escapes hostile target titles in list output', async t => {
+  const fixture = await floodFixture(t, async () => ({updates: []}), {
+    targets: [{id: '1', target: '@evil', display: '<b>x</b>&amp;<script>', createdAt: '1'}],
+  });
+  await fixture.host.dispatchPrimary({id: 42, chatId: '-1009', senderId: '7', outgoing: true, text: '.bs list', raw: {peerId: returnBigInt('-1009')}});
+  const text = fixture.edits.at(-1);
+  assert.doesNotMatch(text, /<script>|<b>x<\/b>/);
+  // 旧版把转义后的 HTML 存进 display，展示时应还原成纯文本再转义一次，而不是二次转义
+  assert.match(text, /x&amp;$/);
+  assert.doesNotMatch(text, /&amp;amp;/);
+  assert.doesNotMatch(text, /&lt;script&gt;/);
+});
+
+test('bs reports per-target RPC failures with the code but not the raw error', async t => {
+  const fixture = await floodFixture(t, async () => ({updates: []}), {}, {
+    getEntity() {throw Object.assign(new Error('private detail'), {errorMessage: 'CHAT_WRITE_FORBIDDEN'});},
+  });
+  await fixture.run();
+  const text = fixture.edits.at(-1);
+  assert.match(text, /保送失败/);
+  assert.match(text, /CHAT_WRITE_FORBIDDEN/);
+  assert.doesNotMatch(text, /private detail/);
+});
+
+test('bs reports the collected count when the target name is unavailable', async t => {
+  const fixture = await floodFixture(t, async () => ({updates: []}), {}, {
+    getEntity(value) {return {id: returnBigInt(9)};},
+  });
+  await fixture.host.dispatchPrimary({id: 42, chatId: '-1009', senderId: '7', outgoing: true, replyToId: 41,
+    text: '.bs 3', raw: {peerId: returnBigInt('-1009')}});
+  const text = fixture.edits.at(-1);
+  assert.match(text, /3 条消息已被保送到频道/);
+  assert.doesNotMatch(text, /来源对话/);
 });
