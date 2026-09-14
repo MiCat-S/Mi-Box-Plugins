@@ -94,7 +94,7 @@ test('bs uses exact Teleproto peers and posts linked feedback in the target topi
   assert.match(sends[0].options.message, /来源：.*Source/);
   assert.match(sends[0].options.message, /https:\/\/t\.me\/c\/9007199254740993\/41/);
   assert.match(sends[0].options.message, /https:\/\/t\.me\/c\/9007199254740995\/501/);
-  assert.match(edits.at(-1).text, /已保送至/);
+  assert.match(edits.at(-1).text, /已被保送到频道/);
 });
 
 test('bs cancellation during target resolution prevents later native side effects', async t => {
@@ -151,7 +151,7 @@ test('bs waits once for FLOOD_WAIT and then retries successfully', async t => {
   });
   await fixture.run();
   assert.equal(calls, 2);
-  assert.match(fixture.edits.at(-1), /已保送至/);
+  assert.match(fixture.edits.at(-1), /已被保送到频道/);
   assert.doesNotMatch(fixture.edits.join('\n'), /private detail|FLOOD_WAIT/);
 });
 
@@ -197,7 +197,7 @@ test('bs broadcast keeps surrounding successes when the middle target is throttl
   ]});
   await fixture.run();
   assert.deepEqual(calls, ['@one', '@two', '@three']);
-  assert.match(fixture.edits.at(-1), /已保送至：@one.*@three/);
+  assert.match(fixture.edits.at(-1), /亲爱的被观察者[\s\S]*@one[\s\S]*@three/);
   assert.match(fixture.edits.at(-1), /限流：@two/);
   assert.doesNotMatch(fixture.edits.join('\n'), /private detail|FLOOD_WAIT/);
 });
@@ -226,4 +226,16 @@ test('bs cancellation while forwarding prevents source resolution and feedback',
   assert.equal(entityCalls, 1);
   assert.equal(feedback, 0);
   assert.doesNotMatch(fixture.edits.join('\n'), /保送失败/);
+});
+
+test('bs reports forwards-restricted sources with the original fixed message', async t => {
+  let calls = 0;
+  const fixture = await floodFixture(t, async () => {
+    calls += 1;
+    throw Object.assign(new Error('private detail'), {errorMessage: 'CHAT_FORWARDS_RESTRICTED'});
+  });
+  await fixture.run();
+  assert.equal(calls, 1);
+  assert.match(fixture.edits.at(-1), /^该消息不允许被转发$/);
+  assert.doesNotMatch(fixture.edits.join('\n'), /private detail|CHAT_FORWARDS_RESTRICTED|保送失败/);
 });

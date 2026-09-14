@@ -6,6 +6,7 @@ import {returnBigInt} from "teleproto/Helpers.js";
 type Target = {id: string; target: string; chatId?: string; topicId?: string; display?: string; status?: "0"; createdAt: string; updatedAt?: string; [key: string]: unknown};
 type State = {schemaVersion: number; seq: string; mode: "sequence" | "broadcast"; targets: Target[]; [key: string]: unknown};
 class FloodRetryError extends Error {}
+class ForwardRestrictedError extends Error {}
 const MAX_FLOOD_WAIT_MS=60_000;
 const defaults = (): State => ({schemaVersion: 1, seq: "0", mode: "sequence", targets: []});
 const store = (context: PluginContext) => context.storage.json<State>("config.json", defaults());
@@ -59,6 +60,10 @@ function floodWait(error:unknown):number|undefined {
   const match=text.match(/(?:^|\b)FLOOD_WAIT_(\d+)(?:\b|$)/);if(!match)return;
   return (Number(match[1])+1)*1000;
 }
+function restrictedError(error:unknown):boolean {
+  const text=String((error as any)?.errorMessage??(error as any)?.message??"");
+  return text.includes("CHAT_FORWARDS_RESTRICTED");
+}
 function wait(ms:number,signal:AbortSignal):Promise<void>{return new Promise((resolve,reject)=>{
   if(signal.aborted){reject(signal.reason);return;}const timer=setTimeout(done,ms);
   function done(){signal.removeEventListener("abort",abort);resolve();}
@@ -87,7 +92,7 @@ function forwarded(result: any): any[] {
 async function forward(invocation: any, context: PluginContext, count: number): Promise<void> {
   const reply = await context.telegram.getReply(invocation.message);
   if (!reply) { await context.telegram.edit(invocation.message, "请回复需要保送的消息"); return; }
-  if (!Number.isSafeInteger(count) || count < 1 || count > 100) { await context.telegram.edit(invocation.message, "消息数必须是 1 到 100 的整数"); return; }
+  if (!Number.isSafeInteger(count) || count < 1) { await context.telegram.edit(invocation.message, `❌ <b>消息数必须是正整数</b>\n示例：<code>${escape(invocation.prefix)}bs 3</code>`, {parseMode: "html"}); return; }
   const state = normalize(await store(context).read());
   const targets = state.targets.filter(value => value.status !== "0");
   if (!targets.length) { await context.telegram.edit(invocation.message, "尚未配置可用目标"); return; }
@@ -122,14 +127,16 @@ async function forward(invocation: any, context: PluginContext, count: number): 
             signal.throwIfAborted();
             try{result=await client.invoke(new Api.messages.ForwardMessages({fromPeer: sourcePeer, id: values, toPeer: input,
               ...(target.topicId && /^\d+$/.test(target.topicId) ? {topMsgId: Number(target.topicId)} : {})}));break;}
-            catch(error){const delay=floodWait(error);if(delay===undefined)throw error;
+            catch(error){if(restrictedError(error))throw new ForwardRestrictedError();
+              const delay=floodWait(error);if(delay===undefined)throw error;
               if(delay>MAX_FLOOD_WAIT_MS||attempt===1)throw new FloodRetryError();await wait(delay,signal);}
           }
           signal.throwIfAborted();
           const messages = forwarded(result);
           successes.push({target,entity,messages});
           if (state.mode === "sequence") break;
-        } catch(error) {signal.throwIfAborted();const name=target.display||target.target;
+        } catch(error) {signal.throwIfAborted();if(error instanceof ForwardRestrictedError)throw error;
+          const name=target.display||target.target;
           if(error instanceof FloodRetryError)throttled.push(name);else failures.push(name);}
       }
       if(successes.length){
@@ -153,12 +160,21 @@ async function forward(invocation: any, context: PluginContext, count: number): 
       }
     });
     if (!successes.length) { await context.telegram.edit(invocation.message, throttled.length ? `操作频繁，请稍后重试：${throttled.map(escape).join("、")}` : `保送失败${failures.length ? `：${failures.map(escape).join("、")}` : ""}`); return; }
-    await context.telegram.edit(invocation.message, `已保送至：${successes.map(value=>escape(`${value.target.display || value.target.target}（${value.messages.length || count} 条）`)).join("、")}`+
-      (throttled.length?`；限流：${throttled.map(escape).join("、")}`:""));
+    const responses = successes.map(value => {
+      const forwardedCount = value.messages.filter(message => typeof message?.id === "number").length;
+      const countText = forwardedCount > 0 ? forwardedCount : count;
+      const targetName = escape(entityName(value.entity));
+      const targetUrl = entityLink(value.entity);
+      const targetHtml = targetUrl ? `<a href="${escape(targetUrl)}">${targetName}</a>` : targetName;
+      return `${countText} 条消息已被保送到频道 ${targetHtml}`;
+    });
+    await context.telegram.edit(invocation.message, `亲爱的被观察者 您的 ${responses.join("\n")}`+
+      (throttled.length?`\n限流：${throttled.map(escape).join("、")}`:""), {parseMode: "html", linkPreview: false});
   } catch(error) {
     if (context.signal.aborted) return;
     context.log.error("bs_forward_failed");
-    await context.telegram.edit(invocation.message, error instanceof FloodRetryError ? "操作频繁，请稍后重试" : "保送失败，请检查目标权限或稍后重试");
+    await context.telegram.edit(invocation.message, error instanceof ForwardRestrictedError ? "该消息不允许被转发"
+      : error instanceof FloodRetryError ? "操作频繁，请稍后重试" : "保送失败，请检查目标权限或稍后重试");
   }
 }
 

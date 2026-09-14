@@ -77,7 +77,7 @@ test('bs migrates legacy state, adds targets, and forwards replied messages', as
   await definition.commands.bs.handle(invocation('bs', ['1']), f.context);
   const state = storage.documents.get('config.json');
   assert.equal(state.schemaVersion, 1); assert.equal(state.unknown, 'keep'); assert.equal(state.targets[0].chatId, '77');
-  assert.equal(calls.length, 1); assert.match(f.edits.at(-1).text, /已保送至/);
+  assert.equal(calls.length, 1); assert.match(f.edits.at(-1).text, /已被保送到频道/);
 });
 
 test('cosplay accepts only bounded same-domain media and streams temp files to Telegram', async () => {
