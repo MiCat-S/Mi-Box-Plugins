@@ -19,26 +19,14 @@ function entityName(entity: any, fallback: string): string {
   return entity?.title || [entity?.firstName, entity?.lastName].filter(Boolean).join(" ") || entity?.username && `@${entity.username}` || fallback;
 }
 
-function entityId(entity:any): string | undefined {
-  const raw=entity?.id??entity?.channelId??entity?.chatId??entity?.userId;
-  if(raw===undefined)return;
-  return String(raw).replace(/^-100/,"").replace(/^-/g,"");
-}
-
-function messageLink(entity:any,id:number):string|undefined {
-  const username=typeof entity?.username==="string"&&entity.username.trim();
-  if(username)return `https://t.me/${username}/${id}`;
-  const value=entityId(entity);if(!value)return;
-  return entity?.className==="User"?`tg://user?id=${value}`:`https://t.me/c/${value}/${id}`;
-}
 function entityLink(entity:any):string|undefined {
   const username=typeof entity?.username==="string"&&entity.username.trim();if(username)return `https://t.me/${username}`;
-  const value=entityId(entity);if(!value)return;
+  const raw=entity?.id??entity?.channelId??entity?.chatId??entity?.userId;
+  if(raw===undefined)return;
+  const value=String(raw).replace(/^-100/,"").replace(/^-/g,"");
   return entity?.className==="User"?`tg://user?id=${value}`:`https://t.me/c/${value}`;
 }
-function linkTags(entity:any,ids:number[]):string {
-  return ids.map((id,index)=>{const url=messageLink(entity,id);return url?`<a href="${escape(url)}">#${index+1}</a>`:`#${index+1}`;}).join(" ");
-}
+
 function floodWait(error:unknown):number|undefined {
   const text=String((error as any)?.errorMessage??(error as any)?.message??"");
   const match=text.match(/(?:^|\b)FLOOD_WAIT_(\d+)(?:\b|$)/);if(!match)return;
@@ -111,20 +99,6 @@ async function forward(invocation: any, context: PluginContext, count: number): 
       }
       if (!messages.length||!targetEntity||!targetChannel) {
         await context.telegram.edit(invocation.message, "没有找到有发送权限的频道"); return; }
-      signal.throwIfAborted();
-      let sourceEntity:any;
-      try{sourceEntity=await client.getEntity(sourcePeer);signal.throwIfAborted();}
-      catch{signal.throwIfAborted();context.log.error("bs_source_entity_failed");}
-      // 在目标频道回复第一条转发的消息
-      const first=messages[0];if(first?.id){
-        const sourceName=escape(entityName(sourceEntity,"来源对话"));
-        const sourceUrl=entityLink(sourceEntity);
-        const source=sourceUrl?`<a href="${escape(sourceUrl)}">${sourceName}</a>`:sourceName;
-        const sentIds=messages.map(message=>message?.id).filter((id):id is number=>typeof id==="number");
-        const sent=linkTags(targetEntity,sentIds);
-        try{await client.sendMessage(targetEntity,{message:`来源：${source}<br>消息：${sent}`,parseMode:"html",linkPreview:false,replyTo:first.id});}
-        catch{signal.throwIfAborted();context.log.error("bs_target_feedback_failed");}
-      }
       // 回执消息
       const forwardedCount = messages.filter(message => typeof message?.id === "number").length;
       const targetName = escape(entityName(targetEntity,targetChannel));
