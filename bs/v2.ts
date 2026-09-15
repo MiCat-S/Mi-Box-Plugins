@@ -233,7 +233,7 @@ export default function createBs() {
         if (!target) { await context.telegram.edit(invocation.message, "请提供目标对话"); return; }
         try {
           let resolved: any;
-          await context.telegram.withClient(async client => { resolved = await client.getEntity(/^-?\d+$/.test(target) ? BigInt(target) : target); });
+          await context.telegram.withClient(async client => { resolved = await client.getEntity(/^-?\d+$/.test(target) ? returnBigInt(target) : target); });
           const state = await store(context).update(source => {
             const value = normalize(source); const id = String(Number(value.seq) + 1); value.seq = id;
             value.targets.push({id, target, chatId: resolved?.id?.toString(), topicId: /^\d+$/.test(topicId ?? "") ? topicId : undefined,
