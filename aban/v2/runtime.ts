@@ -2,12 +2,44 @@ import type {Api, TelegramClient} from "teleproto";
 import type {CommandInvocation, PluginContext} from "telebox/sdk";
 import {setTimeout as delay} from "node:timers/promises";
 
+// p-limit 已不再使用：跨群扇出统一走 createLaneQueue，遇到 FLOOD_WAIT 会让出车道而不是占着并发槽睡
+
+const CONCURRENCY = {
+  /**
+   * 跨群扇出（封禁/解封）的并发车道数。
+   *
+   * 保持 4：车道数和原版 p-limit 一致，扇出的落点由此确定 —— 提到 8 会让同一批请求
+   * 落在不同的群上，用户看到的结果一样但复现路径变了。真正的提速来自
+   * FLOOD_WAIT 让出车道，而不是把并发堆高。
+   */
+  LANES: 4,
+  /** 单个请求遇到 FLOOD_WAIT 后最多重新排队几次 */
+  FLOOD_RETRIES: 2,
+  /** 超过这个秒数的 FLOOD_WAIT 直接判定失败，不再重试 */
+  FLOOD_MAX_WAIT_SECONDS: 8,
+};
+
+/** 管理群缓存在这个时间内直接返回，不刷新 */
+const FRESH_TTL_MS = 30 * 60_000;
+/** 超过新鲜期但在这个时间内，先返回旧的、后台异步刷新 */
+const STALE_TTL_MS = 24 * 60 * 60_000;
+
+// teleproto 命名空间在模块级只加载一次；原来是每次命令都 `await import("teleproto")`
+let teleprotoPromise: Promise<any> | null = null;
+function ensureTeleproto(): Promise<any> {
+  teleprotoPromise ??= import("teleproto").then((module: any) => module);
+  return teleprotoPromise;
+}
+
+let bigIntPromise: Promise<(value: any) => any> | null = null;
+function ensureBigInt(): Promise<(value: any) => any> {
+  bigIntPromise ??= import("teleproto/Helpers.js").then((module: any) => module.returnBigInt);
+  return bigIntPromise;
+}
+
 export async function createAbanRuntime(ctx: PluginContext, inv: CommandInvocation) {
-  const {Api} = await import("teleproto");
-  const {returnBigInt: bigInt} = await import("teleproto/Helpers.js");
-  const limitModule = "p-limit";
-  const ensurePLimit = async () => (await import(limitModule)).default as
-    (concurrency: number) => <T>(operation: () => Promise<T>) => Promise<T>;
+  const {Api} = await ensureTeleproto();
+  const bigInt = await ensureBigInt();
   const sleep = (ms: number) => delay(ms, undefined, {signal: ctx.signal});
   const safeGetMe = (client: TelegramClient) => client.getMe();
   const safeGetReplyMessage = async (_message: Api.Message) => {
@@ -19,6 +51,92 @@ export async function createAbanRuntime(ctx: PluginContext, inv: CommandInvocati
   };
   const htmlEscape = (value: string) => value.replace(/[&<>"']/g,
     char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[char]!);
+
+/**
+ * 固定车道的任务队列。
+ *
+ * 和 p-limit 的区别：任务遇到 FLOOD_WAIT 时可以 `release()` 让出车道、睡完之后通过 `waitIdle()`
+ * 确认没有积压再继续，而不是霸占一个并发槽干等。原来是 4 条车道里有一条在 sleep 9 秒，整批被它拖慢。
+ */
+function createLaneQueue(lanes: number, signal: AbortSignal) {
+  let active = 0;
+  // outstanding 包含正在 release 中睡着的任务，所以它比 active + queue 更能代表“这一批还没完”
+  let outstanding = 0;
+  const queue: Array<() => void> = [];
+  const idleWaiters: Array<() => void> = [];
+  const drainWaiters: Array<() => void> = [];
+
+  const wake = (waiters: Array<() => void>) => {
+    while (waiters.length) waiters.shift()!();
+  };
+
+  /** active 与 queue 同时空出来时唤醒 waitIdle() */
+  const checkIdle = () => {
+    if (active === 0 && queue.length === 0) wake(idleWaiters);
+  };
+
+  const settle = () => {
+    outstanding--;
+    if (outstanding <= 0) wake(drainWaiters);
+  };
+
+  const pump = () => {
+    while (active < lanes && queue.length) {
+      const start = queue.shift()!;
+      active++;
+      start();
+    }
+  };
+
+  /**
+   * 等当前这一轮跑空。
+   *
+   * 唤醒条件必须写成「active 与 queue 同时为空」并每次重新检查：只挂一个 idleResolve，
+   * 后来的等待者会把它覆盖掉，前一个就永远收不到通知（FLOOD_WAIT 重试会走到这里）。
+   */
+  const waitIdle = (): Promise<void> => {
+    if (active === 0 && queue.length === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      idleWaiters.push(resolve);
+    });
+  };
+
+  return {
+    /** 提交一个任务 */
+    run<T>(task: () => Promise<T>): Promise<T> {
+      outstanding++;
+      return new Promise<T>((resolve, reject) => {
+        queue.push(() => {
+          task().then(resolve, reject).finally(() => {
+            active--;
+            settle();
+            checkIdle();
+            pump();
+          });
+        });
+        pump();
+      });
+    },
+    /**
+     * 让出当前车道并等待 `ms`，睡完之后如果队列还有积压就继续等。
+     * 注意：让出的这段时间不再计入并发，这正是要的效果。
+     */
+    async release(ms: number): Promise<void> {
+      active--;
+      pump();
+      await delay(ms, undefined, {signal});
+      await waitIdle();
+    },
+    /** 等待所有已提交任务真正结束（含正在 release 中的） */
+    async drain(): Promise<void> {
+      while (outstanding > 0) {
+        await new Promise<void>((resolve) => {
+          drainWaiters.push(resolve);
+        });
+      }
+    },
+  };
+}
 
 function getFloodWaitSeconds(error: unknown): number | null {
   const msg = error instanceof Error ? error.message : String(error || "");
@@ -368,12 +486,12 @@ class UserResolver {
       ...groups.filter((g) => g.kind === "chat"),
     ];
 
-    const limit = (await ensurePLimit())(6);
+    const queue = createLaneQueue(CONCURRENCY.LANES, ctx.signal);
     let found: { participant?: any; entity?: any } = {};
 
     await Promise.all(
       ordered.map((group) =>
-        limit(async () => {
+        queue.run(async () => {
           if (found.participant) return;
           if (excludeId && Number(group.id) === excludeId) return;
           try {
@@ -463,6 +581,20 @@ type ManagedGroup = {
   accessHash?: string;
 };
 
+/**
+ * 按 group.id 记忆化 ChannelInput。
+ *
+ * 不能按 client 缓存 —— v2.ts 每次命令都新建一层 Proxy，client 身份每次都不同。
+ * 改成进程级 Map + TTL：预检、封禁、解封在同一批里会重复解析同一个群，这里直接命中。
+ * 有 accessHash 的群走纯构造、零网络；accessHash 会失效，所以给了 10 分钟上限。
+ */
+const CHANNEL_INPUT_TTL_MS = 10 * 60_000;
+const channelInputCache = new Map<string, {at: number; input: any}>();
+
+function channelInputKey(group: ManagedGroup): string {
+  return `${group.id}:${group.accessHash ?? ''}`;
+}
+
 async function resolveChannelInput(
   client: TelegramClient,
   group: ManagedGroup
@@ -470,24 +602,35 @@ async function resolveChannelInput(
   if (group.kind !== 'channel') {
     return group.id;
   }
-  if (group.accessHash) {
-    return new Api.InputChannel({
-      channelId: bigInt(group.id),
-      accessHash: bigInt(group.accessHash),
-    });
-  }
 
-  return await client.getInputEntity(group.id);
+  const key = channelInputKey(group);
+  const TTL = group.accessHash ? CHANNEL_INPUT_TTL_MS : 0;
+  const cached = channelInputCache.get(key);
+  if (cached && TTL > 0 && Date.now() - cached.at < TTL) return cached.input;
+
+  try {
+    let input: any;
+    if (group.accessHash) {
+      const {Api} = await ensureTeleproto();
+      const bigInt = await ensureBigInt();
+      input = new Api.InputChannel({
+        channelId: bigInt(group.id),
+        accessHash: bigInt(group.accessHash),
+      });
+    } else {
+      input = await client.getInputEntity(group.id);
+    }
+    if (TTL > 0) channelInputCache.set(key, {at: Date.now(), input});
+    return input;
+  } catch (error) {
+    channelInputCache.delete(key);
+    throw error;
+  }
 }
 
-async function resolvePermissionTarget(
-  client: TelegramClient,
-  group: ManagedGroup
-): Promise<any> {
-  if (group.kind === 'chat') {
-    return { className: 'PeerChat', chatId: bigInt(group.id) };
-  }
-  return await resolveChannelInput(client, group);
+/** 让下一次命令重新解析（`.refresh` 后调用） */
+function resetChannelInputCache(): void {
+  channelInputCache.clear();
 }
 
 class PermissionManager {
@@ -653,24 +796,51 @@ class GroupManager {
     client: TelegramClient
   ): Promise<ManagedGroup[]> {
 
-    const cached = await this.cache.get("managed_groups_v6");
+    // 缓存放宽到 30 分钟，并且是 stale-while-revalidate：
+    // 命中旧数据先用旧数据，后台异步刷新，命令本身不等这两遍全量对话框分页。
+    const cached = await this.cache.get("managed_groups_v7");
     const age = Date.now() - cached?.updatedAt;
-    if (cached && Array.isArray(cached.groups) && age >= 0 && age < 5 * 60_000) return cached.groups;
+    const fresh = cached && Array.isArray(cached.groups) && age >= 0 && age < FRESH_TTL_MS;
 
+    if (fresh) return cached.groups;
+
+    const stale = cached && Array.isArray(cached.groups)
+      && cached.groups.length > 0 && age >= 0 && age < STALE_TTL_MS;
+    if (stale) {
+      // 先用着旧的，刷新丢到后台；失败也不影响本次命令
+      void this.refreshInBackground(client, cached.updatedAt);
+      return cached.groups;
+    }
+
+    return await this.loadManageableGroups(client);
+  }
+
+  private static refreshing: Promise<ManagedGroup[]> | null = null;
+
+  private static refreshInBackground(client: TelegramClient, since: number): void {
+    if (this.refreshing) return;
+    this.refreshing = this.loadManageableGroups(client)
+      .catch(() => [])
+      .finally(() => {
+        this.refreshing = null;
+      }) as Promise<ManagedGroup[]>;
+    void since;
+  }
+
+  private static async loadManageableGroups(
+    client: TelegramClient
+  ): Promise<ManagedGroup[]> {
     const groups: ManagedGroup[] = [];
 
     try {
       const dialogs = await this.getAllManageableDialogs(client);
 
-      let skippedNoRights = 0;
       for (const dialog of dialogs || []) {
         if (!(dialog.isChannel || dialog.isGroup)) continue;
-        if (!this.dialogHasManageRights(dialog)) {
-          skippedNoRights++;
-          continue;
-        }
+        if (!this.dialogHasManageRights(dialog)) continue;
         const isChannel = !(dialog.isGroup && !dialog.isChannel);
-        const rawHash = isChannel ? dialog.entity?.accessHash : undefined;
+        // 基础群没有 accessHash；频道一律写下来，让 resolveChannelInput 走零网络的构造分支
+        const rawHash = dialog.entity?.accessHash;
         const accessHash = rawHash != null ? String(rawHash) : undefined;
 
         const rawId = Number(dialog.entity?.id);
@@ -685,7 +855,7 @@ class GroupManager {
       ctx.log.info("aban:operation");
 
       try {
-        await this.cache.set("managed_groups_v6", {updatedAt: Date.now(), groups});
+        await this.cache.set("managed_groups_v7", {updatedAt: Date.now(), groups});
       } catch (cacheError) {
         ctx.log.info("aban:operation");
       }
@@ -697,6 +867,7 @@ class GroupManager {
   }
 
   static async clearCache(): Promise<void> {
+    this.refreshing = null;
     await this.cache.clear();
   }
 }
@@ -961,7 +1132,7 @@ class BanManager {
       embedLinks: true,
     });
 
-    const limit = (await ensurePLimit())(4);
+    const queue = createLaneQueue(CONCURRENCY.LANES, ctx.signal);
 
     const runOne = async (
       group: ManagedGroup
@@ -997,8 +1168,10 @@ class BanManager {
           return { success: true as const, group };
         } catch (error) {
           const floodSecs = getFloodWaitSeconds(error);
-          if (floodSecs !== null && floodSecs <= 8 && retriesLeft > 0) {
-            await sleep((floodSecs + 1) * 1000);
+          if (floodSecs !== null
+              && floodSecs <= CONCURRENCY.FLOOD_MAX_WAIT_SECONDS && retriesLeft > 0) {
+            // 让出车道去睡，而不是占着并发槽干等
+            await queue.release((floodSecs + 1) * 1000);
             return attempt(retriesLeft - 1);
           }
           return {
@@ -1009,19 +1182,22 @@ class BanManager {
         }
       };
 
-      return attempt(1);
+      return attempt(CONCURRENCY.FLOOD_RETRIES);
     };
 
     const settled = await Promise.allSettled(
-      groups.map((group) => limit(() => runOne(group)))
+      groups.map((group) => queue.run(() => runOne(group)))
     );
 
-    const results: Array<
+    await queue.drain();
+
+    type GroupOutcome =
       | { success: true; group: ManagedGroup }
-      | { success: false; group: ManagedGroup; reason: string }
-    > = settled.map((result, index) => {
+      | { success: false; group: ManagedGroup; reason: string };
+
+    const results: GroupOutcome[] = settled.map((result, index) => {
       if (result.status === 'fulfilled') {
-        return result.value;
+        return result.value as GroupOutcome;
       }
       return {
         success: false as const,
@@ -1038,14 +1214,11 @@ class BanManager {
     results.forEach((result) => {
       if (result.success) {
         success++;
-      } else {
-        failed++;
-        failedGroups.push(result.group.title);
-        failureDetails.push({
-          group: result.group,
-          reason: (result as { reason: string }).reason,
-        });
+        return;
       }
+      failed++;
+      failedGroups.push(result.group.title);
+      failureDetails.push({ group: result.group, reason: result.reason });
     });
 
     void reason;
@@ -1081,7 +1254,7 @@ class BanManager {
       untilDate: 0,
     });
 
-    const limit = (await ensurePLimit())(4);
+    const queue = createLaneQueue(CONCURRENCY.LANES, ctx.signal);
 
     const runOne = async (
       group: ManagedGroup
@@ -1110,20 +1283,23 @@ class BanManager {
           return { success: true, group };
         } catch (error) {
           const floodSecs = getFloodWaitSeconds(error);
-          if (floodSecs !== null && floodSecs <= 8 && retriesLeft > 0) {
-            await sleep((floodSecs + 1) * 1000);
+          if (floodSecs !== null
+              && floodSecs <= CONCURRENCY.FLOOD_MAX_WAIT_SECONDS && retriesLeft > 0) {
+            await queue.release((floodSecs + 1) * 1000);
             return attempt(retriesLeft - 1);
           }
           return { success: false, group };
         }
       };
 
-      return attempt(1);
+      return attempt(CONCURRENCY.FLOOD_RETRIES);
     };
 
     const settled = await Promise.allSettled(
-      groups.map((group) => limit(() => runOne(group)))
+      groups.map((group) => queue.run(() => runOne(group)))
     );
+
+    await queue.drain();
 
     const results: Array<{ success: boolean; group: ManagedGroup }> = settled.map(
       (result, index) => {
@@ -1286,29 +1462,34 @@ class CommandHandlers {
         return;
       }
 
-      const checkLimit = (await ensurePLimit())(4);
+      // 预检目标是不是管理员：必须在任何写操作之前完成，否则会留下封了一半的群。
+      // 这趟扫描保留原版的语义，但走并发车道，并且 resolveChannelInput 与随后的封禁
+      // 共享缓存 —— 原来同一个群要解析两遍。
+      const checkQueue = createLaneQueue(CONCURRENCY.LANES, ctx.signal);
       const adminResults = await Promise.allSettled(
-        groups.map((group) =>
-          checkLimit(async () => {
-            try {
-              const target = await resolvePermissionTarget(client, group);
-              return await PermissionManager.isTargetAdmin(client, target, uid);
-            } catch {
-              return false;
-            }
-          })
-        )
+        groups.map((group) => checkQueue.run(async () => {
+          try {
+            const target = group.kind === 'chat'
+              ? { className: 'PeerChat', chatId: bigInt(group.id) }
+              : await resolveChannelInput(client, group);
+            return await PermissionManager.isTargetAdmin(client, target, uid);
+          } catch {
+            return false;
+          }
+        }))
       );
+      await checkQueue.drain();
       const adminGroups = adminResults.filter(
-        (r) => r.status === 'fulfilled' && r.value
+        (result) => result.status === 'fulfilled' && result.value
       ).length;
 
-      if (adminGroups > 0) {
-        const hasConfirm = args.includes('true');
-        if (!hasConfirm) {
-          await MessageManager.smartEdit(message, `⚠️ 目标在 ${adminGroups} 个管理群中具有管理员身份，请在命令后加上 <code>true</code> 确认执行`);
-          return;
-        }
+      const hasConfirm = args.includes('true');
+      if (adminGroups > 0 && !hasConfirm) {
+        await MessageManager.smartEdit(
+          message,
+          `⚠️ 目标在 ${adminGroups} 个管理群中具有管理员身份，请在命令后加上 <code>true</code> 确认执行`
+        );
+        return;
       }
 
       const display = UserResolver.formatUser(user, uid);
@@ -1343,6 +1524,7 @@ class CommandHandlers {
           ? banResult.value
           : { failureDetails: [], unresolved: true, unresolvedReason: 'UNKNOWN_ERROR' };
 
+        // 预检已经拦下无确认的管理员场景，走到这里说明要么加了 true，要么中途才变成管理员
         const summarizeReasons = (details: BatchGroupFailure[]): string => {
           const counts = new Map<string, number>();
           for (const item of details) {
@@ -1406,29 +1588,32 @@ class CommandHandlers {
         return;
       }
 
-      const checkLimitUnban = (await ensurePLimit())(4);
-      const adminResultsUnban = await Promise.allSettled(
-        groups.map((group) =>
-          checkLimitUnban(async () => {
-            try {
-              const target = await resolvePermissionTarget(client, group);
-              return await PermissionManager.isTargetAdmin(client, target, uid);
-            } catch {
-              return false;
-            }
-          })
-        )
+      // 和封禁一样先探一遍管理员身份（原版如此），并发走车道，
+      // resolveChannelInput 与随后的解封共享缓存。
+      const checkQueue = createLaneQueue(CONCURRENCY.LANES, ctx.signal);
+      const adminResults = await Promise.allSettled(
+        groups.map((group) => checkQueue.run(async () => {
+          try {
+            const target = group.kind === 'chat'
+              ? { className: 'PeerChat', chatId: bigInt(group.id) }
+              : await resolveChannelInput(client, group);
+            return await PermissionManager.isTargetAdmin(client, target, uid);
+          } catch {
+            return false;
+          }
+        }))
       );
-      const adminGroups = adminResultsUnban.filter(
-        (r) => r.status === 'fulfilled' && r.value
+      await checkQueue.drain();
+      const adminGroups = adminResults.filter(
+        (result) => result.status === 'fulfilled' && result.value
       ).length;
 
-      if (adminGroups > 0) {
-        const hasConfirm = args.includes('true');
-        if (!hasConfirm) {
-          await MessageManager.smartEdit(message, `⚠️ 目标在 ${adminGroups} 个管理群中具有管理员身份，请在命令后加上 <code>true</code> 确认执行`);
-          return;
-        }
+      if (adminGroups > 0 && !args.includes('true')) {
+        await MessageManager.smartEdit(
+          message,
+          `⚠️ 目标在 ${adminGroups} 个管理群中具有管理员身份，请在命令后加上 <code>true</code> 确认执行`
+        );
+        return;
       }
 
       const display = UserResolver.formatUser(user, uid);
@@ -1479,5 +1664,5 @@ class CommandHandlers {
   }
 }
 
-return {UserResolver, PermissionManager, GroupManager, BanManager, CommandHandlers, MessageManager, parseTimeString};
+return {UserResolver, PermissionManager, GroupManager, BanManager, CommandHandlers, MessageManager, parseTimeString, resetChannelInputCache};
 }

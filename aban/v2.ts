@@ -3,6 +3,20 @@ import {renderHelp} from "./v2/help";
 import {createAbanRuntime} from "./v2/runtime";
 import {definePlugin, type CommandInvocation, type PluginContext} from "telebox/sdk";
 
+// 这两次 import 原来在每次命令的 withClient 里现取；连 help 都因此要等一遍模块解析。
+// 挪到模块级只解析一次，命令路径上就只剩构造 peer。
+let teleprotoPromise: Promise<typeof import("teleproto")> | null = null;
+function ensureTeleproto(): Promise<typeof import("teleproto")> {
+  teleprotoPromise ??= import("teleproto");
+  return teleprotoPromise;
+}
+
+let integerPromise: Promise<(value: any) => any> | null = null;
+function ensureInteger(): Promise<(value: any) => any> {
+  integerPromise ??= import("teleproto/Helpers.js").then((m) => m.returnBigInt);
+  return integerPromise;
+}
+
 const commands = {aban: "封禁管理帮助", kick: "踢出", ban: "封禁", unban: "解封", mute: "禁言",
   unmute: "解除禁言", sb: "批量封禁", unsb: "批量解封", refresh: "刷新管理群缓存"};
 
@@ -21,8 +35,8 @@ export default function createAban() {
             return result;
           };
         }});
-        const {Api} = await import("teleproto");
-        const {returnBigInt: integer} = await import("teleproto/Helpers.js");
+        const {Api} = await ensureTeleproto();
+        const integer = await ensureInteger();
         const chat = inv.message.chatId;
         const raw = inv.message.raw as Api.Message | undefined;
         const peerId = raw?.peerId ?? (chat.startsWith("-100")
@@ -43,6 +57,8 @@ export default function createAban() {
         }
         if (inv.command === "refresh") {
           await runtime.GroupManager.clearCache();
+          // accessHash 也是缓存的一部分：不一起清掉，refresh 之后还是在用旧 hash 构造 InputChannel
+          runtime.resetChannelInputCache();
           const groups = await runtime.GroupManager.getManagedGroups(client);
           await runtime.MessageManager.smartEdit(message, `✅ 已刷新 ${groups.length} 个有管理权的群组`);
         } else if (inv.command === "sb") await runtime.CommandHandlers.handleSuperBan(client, message);

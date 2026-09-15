@@ -96,12 +96,16 @@ function environment(options = {}) {
     telegram: {edit: async (_message, text) => {edits.push(text);}, getReply: async () => reply && ({senderId: String(reply.senderId), raw: reply})}};
   return {calls, edits, cache, client, ctx, reply, controller};
 }
-async function compare(options, run) {
+async function compare(options, run, {unordered = false} = {}) {
   const reference = environment(options), migrated = environment(options);
   const original = await oracle(reference), current = await createRuntime(migrated.ctx, {message: {}, args: [], command: 'ban'});
   const expected = await run(original, reference), actual = await run(current, migrated);
   assert.deepEqual(normalize(actual), normalize(expected));
-  assert.deepEqual(migrated.calls, reference.calls);
+  // 历史清理和跨群扇出是并发的，请求集合一致、入队顺序按事件循环落点浮动。
+  // 需要严格顺序的用例（基础命令、解封）保持 ordered。
+  const key = call => JSON.stringify(call);
+  const shape = calls => unordered ? [...calls].sort((a, b) => key(a).localeCompare(key(b))) : calls;
+  assert.deepEqual(shape(migrated.calls), shape(reference.calls));
   const scrub = texts => texts.map(text => text.replace(/⏱️[\d.]+s/g, '⏱️time'));
   assert.deepEqual(scrub(migrated.edits), scrub(reference.edits));
   return migrated;
@@ -149,15 +153,37 @@ test('target admin lookup error retains original batch behavior', async () => {
   assert.ok(e.calls.some(c => c.args[0]?.className === 'channels.EditBanned'));
 });
 test('administrator confirmation precedes mutation', async () => {
+  // 预检之后才决定是否动写操作，所以不带 true 的那次两边都不该有调用
   const e = await compare({admin: true}, (r, e) => r.CommandHandlers.handleSuperBan(e.client, message()));
   assert.ok(e.edits.at(-1).includes('true'));
   assert.ok(!e.calls.some(c => c.args[0]?.className === 'channels.EditBanned'));
-  await compare({admin: true}, (r, e) => r.CommandHandlers.handleSuperBan(e.client, message(['2', 'true'])));
+  await compare({admin: true}, (r, e) => r.CommandHandlers.handleSuperBan(e.client, message(['2', 'true'])), {unordered: true});
 });
 test('batch partial failures and history cleanup match original', async () => {
   await compare({groups: [channel(), channel(200)], invoke: async req => {
     if (req instanceof Api.channels.EditBanned && String(req.channel.channelId) === '200') throw new Error('PARTICIPANT_ID_INVALID');
-  }}, (r, e) => r.CommandHandlers.handleSuperBan(e.client, message()));
+  }}, (r, e) => r.CommandHandlers.handleSuperBan(e.client, message()), {unordered: true});
+});
+test('a flooded group yields its lane and still gets banned on retry', async t => {
+  // 原版在 p-limit 里睡着等，占住一个并发槽；车道版把槽让出去，其余群照常推进。
+  // oracle 把 sleep 打成了空实现，这条只有迁移版跑得出来，所以不走 compare。
+  let flooded = 0;
+  const e = environment({groups: [channel(100), channel(200), channel(300)], invoke: async req => {
+    if (req instanceof Api.channels.EditBanned && String(req.channel.channelId) === '200' && flooded++ === 0) {
+      throw new Error('FLOOD_WAIT_0');
+    }
+  }});
+  const r = await createRuntime(e.ctx, {message: {}, args: [], command: 'sb'});
+  const result = await r.BanManager.batchBanUser(e.client, [
+    {id: 100, kind: 'channel', title: 'A', accessHash: '20'},
+    {id: 200, kind: 'channel', title: 'B', accessHash: '20'},
+    {id: 300, kind: 'channel', title: 'C', accessHash: '20'},
+  ], 2, input(), '违规');
+  assert.deepEqual({success: result.success, failed: result.failed}, {success: 3, failed: 0});
+  // 200 号被打了两次（一次 FLOOD_WAIT、一次成功），另外两个各一次
+  assert.equal(flooded, 2);
+  // 让出车道不等于放弃限流：重试那一路回到队列末尾，本次仍然只有一轮封禁请求
+  assert.equal(e.calls.filter(c => c.args[0]?.className === 'channels.EditBanned').length, 4);
 });
 test('basic group actions follow original RPC branching', async () => {
   for (const action of ['kick', 'mute', 'unban']) {
@@ -198,6 +224,7 @@ test('unload drains in-flight batch and stops queued native calls', async t => {
   await e.send('.sb 2'); await entered.promise;
   assert.equal((await e.host.unload('aban', 5)).completed, false);
   const before = e.calls.filter(c => c.args[0]?.className === 'channels.EditBanned').length;
+  // 同时在飞的封禁请求上限 = 车道数，其余排在被 abort 拦掉的队列里
   assert.equal(before, 4);
   finish.resolve({});
   assert.equal((await e.host.unload('aban', 1000)).completed, true);
@@ -233,7 +260,7 @@ test('mixed group cache persists through the real host JSON store', async t => {
   const files = await fs.readdir(path.join(e.dir, 'aban'));
   assert.ok(files.includes('aban_cache.json'));
   const cached = JSON.parse(await fs.readFile(path.join(e.dir, 'aban/aban_cache.json'), 'utf8'));
-  assert.equal(cached.cache.managed_groups_v6.groups.length, 2);
+  assert.equal(cached.cache.managed_groups_v7.groups.length, 2);
 });
 test('history cleanup repeats until Telegram returns zero offset', async () => {
   let pages = 0;
@@ -275,9 +302,22 @@ test('expired and old-schema group caches are refreshed', async () => {
   await e.cache.set('managed_groups_v5', [{id: 999, kind: 'chat', title: 'Stale'}]);
   const groups = await r.GroupManager.getManagedGroups(e.client);
   assert.deepEqual(groups.map(g => g.id), [100]);
-  await e.cache.set('managed_groups_v6', {updatedAt: Date.now() - 300001, groups});
+  // 超过 24h 的缓存彻底作废，必须重新拉两遍对话框分页
+  await e.cache.set('managed_groups_v7', {updatedAt: Date.now() - 25 * 60 * 60 * 1000, groups});
   await r.GroupManager.getManagedGroups(e.client);
   assert.equal(e.calls.filter(c => c.method === 'getDialogs').length, 4);
+});
+test('stale-while-revalidate serves old groups without blocking on a refresh', async () => {
+  const e = environment({groups: [channel()]}), r = await createRuntime(e.ctx, {});
+  await r.GroupManager.getManagedGroups(e.client);
+  // 超过新鲜期但仍在 24h 内：这次命令立刻拿到旧数据，不等着重新拉对话框
+  await e.cache.set('managed_groups_v7', {updatedAt: Date.now() - 31 * 60 * 1000,
+    groups: [{id: 999, kind: 'chat', title: 'Stale'}]});
+  assert.deepEqual((await r.GroupManager.getManagedGroups(e.client)).map(g => g.id), [999]);
+  // 后台刷新照常落地，下一次读到的是新数据
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  assert.deepEqual((await r.GroupManager.getManagedGroups(e.client)).map(g => g.id), [100]);
 });
 test('RPC errorMessage appears separately for batch bans and current history cleanup', async () => {
   const e = environment({groups: [channel(), new Api.Chat({id: integer(300), title: 'Basic', creator: true})], invoke: async req => {
