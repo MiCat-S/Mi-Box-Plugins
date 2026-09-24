@@ -42,6 +42,9 @@ jobs:
       - name: Load every plugin artifact
         run: npm run test:plugins:v2
         working-directory: TeleBox-Core
+      # Every test file, including *-compatibility and *-parity suites. The
+      # per-test timeout turns a hung test into a named failure within two
+      # minutes instead of a silent cancellation at the job timeout.
       - name: Run plugin behavior tests
-        run: node --test scripts/*-v2.test.js
+        run: node --test --test-timeout=120000 scripts/*.test.js
         working-directory: TeleBox-Plugins

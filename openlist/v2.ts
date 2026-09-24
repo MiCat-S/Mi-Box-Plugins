@@ -1,5 +1,5 @@
 import {createHash} from "node:crypto";
-import {createReadStream} from "node:fs";
+import {constants, createReadStream} from "node:fs";
 import {lstat, mkdir, open, readFile, writeFile} from "node:fs/promises";
 import path from "node:path";
 import {Readable} from "node:stream";
@@ -29,7 +29,23 @@ async function withBusinessTemp<T>(context:PluginContext,operation:string,use:(d
 
 async function run(context:PluginContext,command:keyof typeof commands,args:string[],options:Record<string,unknown>={}){return context.processes.run(commands[command],args,{timeoutMs:30_000,maxOutputBytes:256*1024,...options});}
 async function ordinary(target:string,kind:"file"|"directory"):Promise<boolean>{try{const info=await lstat(target);if(info.isSymbolicLink()||(kind==="file"?!info.isFile():!info.isDirectory()))throw new Error("OpenList 路径类型异常");return true;}catch(error){if(error instanceof Error&&"code" in error&&error.code==="ENOENT")return false;throw error;}}
-async function migrate(context:PluginContext){const current=await store(context).read();if(current.legacyImported&&Number.isInteger(current.port))return;let legacy:any={};try{const parsed:unknown=JSON.parse(await readFile(context.files.dataPath("credentials.json"),{encoding:"utf8",signal:context.signal}));if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))throw new Error("Invalid legacy credentials");legacy=parsed;}catch(error){context.signal.throwIfAborted();if(!(error instanceof Error&&"code" in error&&error.code==="ENOENT")){context.log.error("openlist_legacy_migration_failed");throw new Error("OpenList 旧凭据迁移失败");}}context.signal.throwIfAborted();await store(context).update(value=>({...value,username:value.username||String(legacy.username??""),password:value.password||String(legacy.password??""),defaultPath:value.defaultPath||String(legacy.defaultPath??""),port:activePort(value),legacyImported:true}));}
+/**
+ * Reads the pre-V2 credentials file. Only a regular file is read: a FIFO or
+ * device at this path would block in a read that the abort signal cannot
+ * interrupt, so it is refused up front instead. O_NONBLOCK keeps the open
+ * itself from waiting for a writer.
+ */
+async function readLegacyCredentials(file: string, signal: AbortSignal): Promise<string> {
+  const handle = await open(file, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    if (!(await handle.stat()).isFile()) throw new Error("Legacy credentials are not a regular file");
+    return await handle.readFile({encoding: "utf8", signal});
+  } finally {
+    await handle.close();
+  }
+}
+
+async function migrate(context:PluginContext){const current=await store(context).read();if(current.legacyImported&&Number.isInteger(current.port))return;let legacy:any={};try{const parsed:unknown=JSON.parse(await readLegacyCredentials(context.files.dataPath("credentials.json"),context.signal));if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))throw new Error("Invalid legacy credentials");legacy=parsed;}catch(error){context.signal.throwIfAborted();if(!(error instanceof Error&&"code" in error&&error.code==="ENOENT")){context.log.error("openlist_legacy_migration_failed");throw new Error("OpenList 旧凭据迁移失败");}}context.signal.throwIfAborted();await store(context).update(value=>({...value,username:value.username||String(legacy.username??""),password:value.password||String(legacy.password??""),defaultPath:value.defaultPath||String(legacy.defaultPath??""),port:activePort(value),legacyImported:true}));}
 
 async function api(context:PluginContext,url:string,init:RequestInit){return context.http.withResponse(url,init,async(response,signal)=>{const reader=response.body?.getReader();if(!reader)throw new Error("OpenList 返回空响应");const chunks:Buffer[]=[];let total=0,cancelPromise:Promise<void>|undefined;const cancel=()=>cancelPromise??=reader.cancel().then(()=>undefined,()=>undefined);try{for(;;){const item=await readPart(reader,signal,cancel);signal.throwIfAborted();if(item.done)break;if(!item.value)continue;total+=item.value.length;if(total>1024*1024)throw new Error("OpenList 响应过大");chunks.push(Buffer.from(item.value));}}finally{try{await cancel();}finally{reader.releaseLock();}}let data:any;try{data=JSON.parse(Buffer.concat(chunks,total).toString("utf8"));}catch{throw new Error("OpenList 返回无效 JSON");}if(!response.ok)throw new Error(`HTTP ${response.status}`);if(data?.code!==200)throw new Error(typeof data?.message==="string"?"OpenList 操作失败":"OpenList 响应结构异常");return data.data;},{timeoutMs:30_000,signal:context.signal,redirects:{allowedHosts:["127.0.0.1"],maxRedirects:0}});}
 async function token(context:PluginContext,state?:State){const current=state??await store(context).read();if(!current.username||!current.password)throw new Error("请先配置 OpenList 账号");const data=await api(context,endpoint(current,"/api/auth/login"),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({username:current.username,password:current.password})});if(typeof data?.token!=="string"||!data.token)throw new Error("OpenList 登录响应无令牌");return data.token;}

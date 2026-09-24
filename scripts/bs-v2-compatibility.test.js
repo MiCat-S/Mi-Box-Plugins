@@ -22,11 +22,10 @@ function createPlugin() {
   return require(entry).default();
 }
 
-async function floodFixture(t, invoke, config = {}, hooks = {}) {
+// bs keeps no state: it forwards to the first channel in its fixed list that
+// accepts the messages, so the fixture only fakes the Telegram client.
+async function floodFixture(t, invoke, hooks = {}) {
   const storageRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-bs-flood-')));
-  await fs.mkdir(path.join(storageRoot, 'bs'));
-  await fs.writeFile(path.join(storageRoot, 'bs', 'config.json'), JSON.stringify({schemaVersion: 1, seq: '1', mode: 'sequence',
-    targets: [{id: '1', target: '@target', createdAt: '1'}], ...config}));
   const edits = [];
   const client = {async getMessages(peer, {ids}) {
       return hooks.getMessages ? hooks.getMessages(peer, ids[0]) : [{id: ids[0]}];}, async getEntity(value) {
@@ -42,69 +41,8 @@ async function floodFixture(t, invoke, config = {}, hooks = {}) {
     text: '.bs', raw: {peerId: returnBigInt('-1009')}})};
 }
 
-test('bs uses exact Teleproto peers and posts linked feedback in the target topic', async t => {
-  const storageRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-bs-compat-')));
-  await fs.mkdir(path.join(storageRoot, 'bs'));
-  await fs.writeFile(path.join(storageRoot, 'bs', 'config.json'), JSON.stringify({
-    schemaVersion: 1,
-    seq: '1',
-    mode: 'sequence',
-    targets: [{id: '1', target: '@target', chatId: '9007199254740995', topicId: '88', display: 'Target', createdAt: '1'}],
-  }));
-  const sourceMarked = '-1009007199254740993';
-  const sourceEntity = new Api.Channel({id: returnBigInt('9007199254740993'), accessHash: returnBigInt(2), title: 'Source'});
-  const targetEntity = new Api.Channel({id: returnBigInt('9007199254740995'), accessHash: returnBigInt(3), title: 'Target'});
-  const forwarded = new Api.Message({id: 501, peerId: new Api.PeerChannel({channelId: targetEntity.id}), message: 'forwarded'});
-  const sends = [];
-  let fetchedPeer;
-  let lookedUp;
-  const client = {
-    async getMessages(peer, {ids}) { fetchedPeer = peer; return [{id: ids[0]}]; },
-    async getEntity(value) {
-      if (value === sourceEntity || value?.toString() === sourceMarked) return sourceEntity;
-      lookedUp = value;
-      return targetEntity;
-    },
-    async getInputEntity() { return new Api.InputPeerChannel({channelId: targetEntity.id, accessHash: targetEntity.accessHash}); },
-    async invoke() { return {updates: [{message: forwarded}]}; },
-    async sendMessage(peer, options) { sends.push({peer, options}); },
-  };
-  const edits = [];
-  const host = new PluginHost({
-    storageRoot,
-    logger: {info() {}, error() {}},
-    telegram: {
-      async edit(_message, text, options) { edits.push({text, options}); },
-      async reply() {}, async invoke() {},
-      async getReply() { return {id: 41, chatId: sourceMarked, raw: {id: 41}}; },
-      async withClient(operation, signal) { return operation(client, signal); },
-    },
-  });
-  await host.load(createPlugin());
-  t.after(async () => { await host.shutdown(2000); await fs.rm(storageRoot, {recursive: true, force: true}); });
-
-  await host.dispatchPrimary({id: 42, chatId: sourceMarked, senderId: '7', outgoing: true, replyToId: 41, text: '.bs', raw: {}});
-
-  assert.equal(fetchedPeer.toString(), sourceMarked);
-  assert.equal(resolveId(fetchedPeer)[1], Api.PeerChannel);
-  assert.equal(lookedUp.toString(), '9007199254740995');
-  assert.equal(sends.length, 1);
-  assert.equal(sends[0].peer, targetEntity);
-  assert.equal(sends[0].options.replyTo, 501);
-  assert.equal(sends[0].options.topMsgId, 88);
-  assert.match(sends[0].options.message, /来源：.*Source/);
-  assert.match(sends[0].options.message, /https:\/\/t\.me\/c\/9007199254740993\/41/);
-  assert.match(sends[0].options.message, /https:\/\/t\.me\/c\/9007199254740995\/501/);
-  assert.match(edits.at(-1).text, /已被保送到频道/);
-});
-
 test('bs cancellation during target resolution prevents later native side effects', async t => {
   const storageRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mibot-bs-cancel-')));
-  await fs.mkdir(path.join(storageRoot, 'bs'));
-  await fs.writeFile(path.join(storageRoot, 'bs', 'config.json'), JSON.stringify({
-    schemaVersion: 1, seq: '1', mode: 'sequence',
-    targets: [{id: '1', target: '@target', createdAt: '1'}],
-  }));
   let resolving;
   let releaseResolution;
   const started = new Promise(resolve => { resolving = resolve; });
@@ -148,7 +86,7 @@ test('bs waits once for FLOOD_WAIT and then retries successfully', async t => {
   const fixture = await floodFixture(t, async () => {
     calls += 1;
     if (calls === 1) throw Object.assign(new Error('private detail'), {errorMessage: 'FLOOD_WAIT_0'});
-    return {updates: []};
+    return ({updates: [{message: {className: 'Message', id: 501}}]});
   });
   await fixture.run();
   assert.equal(calls, 2);
@@ -184,25 +122,6 @@ test('bs rejects FLOOD_WAIT beyond its retry budget with fixed feedback', async 
   assert.doesNotMatch(fixture.edits.join('\n'), /private detail|FLOOD_WAIT/);
 });
 
-test('bs broadcast keeps surrounding successes when the middle target is throttled', async t => {
-  const calls = [];
-  const fixture = await floodFixture(t, async request => {
-    const target = request.toPeer.title;
-    calls.push(target);
-    if (target === '@two') throw Object.assign(new Error('private detail'), {errorMessage: 'FLOOD_WAIT_60'});
-    return {updates: []};
-  }, {seq: '3', mode: 'broadcast', targets: [
-    {id: '1', target: '@one', createdAt: '1'},
-    {id: '2', target: '@two', createdAt: '2'},
-    {id: '3', target: '@three', createdAt: '3'},
-  ]});
-  await fixture.run();
-  assert.deepEqual(calls, ['@one', '@two', '@three']);
-  assert.match(fixture.edits.at(-1), /亲爱的被观察者[\s\S]*@one[\s\S]*@three/);
-  assert.match(fixture.edits.at(-1), /限流：@two/);
-  assert.doesNotMatch(fixture.edits.join('\n'), /private detail|FLOOD_WAIT/);
-});
-
 test('bs cancellation while forwarding prevents source resolution and feedback', async t => {
   let forwardStarted;
   let releaseForward;
@@ -214,7 +133,7 @@ test('bs cancellation while forwarding prevents source resolution and feedback',
     forwardStarted();
     await release;
     return {updates: [{message: {className: 'Message', id: 501}}]};
-  }, {}, {
+  }, {
     getEntity(value) {entityCalls += 1; return {id: returnBigInt(9), title: String(value)};},
     sendMessage() {feedback += 1;},
   });
@@ -246,8 +165,8 @@ test('bs skips deleted messages while collecting and still forwards', async t =>
   let requested;
   const fixture = await floodFixture(t, async request => {
     requested = request.id;
-    return {updates: []};
-  }, {}, {
+    return ({updates: [{message: {className: 'Message', id: 501}}, {message: {className: 'Message', id: 502}}, {message: {className: 'Message', id: 503}}]});
+  }, {
     getMessages(_peer, id) {
       scanned.push(id);
       if (id === 42 || id === 44) throw new Error('MESSAGE_ID_INVALID');
@@ -267,7 +186,7 @@ test('bs skips deleted messages while collecting and still forwards', async t =>
 
 test('bs bounds its source scan by the search limit', async t => {
   let scanned = 0;
-  const fixture = await floodFixture(t, async () => ({updates: []}), {}, {
+  const fixture = await floodFixture(t, async () => ({updates: []}), {
     getMessages() {scanned += 1; throw new Error('MESSAGE_ID_INVALID');},
   });
   await fixture.host.dispatchPrimary({id: 42, chatId: '-1009', senderId: '7', outgoing: true, replyToId: 41,
@@ -276,32 +195,17 @@ test('bs bounds its source scan by the search limit', async t => {
   assert.match(fixture.edits.at(-1), /未找到可转发的消息/);
 });
 
-test('bs escapes hostile target titles in list output', async t => {
+test('bs skips channels it cannot post in and never shows the raw error', async t => {
   const fixture = await floodFixture(t, async () => ({updates: []}), {
-    targets: [{id: '1', target: '@evil', display: '<b>x</b>&amp;<script>', createdAt: '1'}],
-  });
-  await fixture.host.dispatchPrimary({id: 42, chatId: '-1009', senderId: '7', outgoing: true, text: '.bs list', raw: {peerId: returnBigInt('-1009')}});
-  const text = fixture.edits.at(-1);
-  assert.doesNotMatch(text, /<script>|<b>x<\/b>/);
-  // 旧版把转义后的 HTML 存进 display，展示时应还原成纯文本再转义一次，而不是二次转义
-  assert.match(text, /x&amp;$/);
-  assert.doesNotMatch(text, /&amp;amp;/);
-  assert.doesNotMatch(text, /&lt;script&gt;/);
-});
-
-test('bs reports per-target RPC failures with the code but not the raw error', async t => {
-  const fixture = await floodFixture(t, async () => ({updates: []}), {}, {
     getEntity() {throw Object.assign(new Error('private detail'), {errorMessage: 'CHAT_WRITE_FORBIDDEN'});},
   });
   await fixture.run();
-  const text = fixture.edits.at(-1);
-  assert.match(text, /保送失败/);
-  assert.match(text, /CHAT_WRITE_FORBIDDEN/);
-  assert.doesNotMatch(text, /private detail/);
+  assert.equal(fixture.edits.at(-1), '没有找到有发送权限的频道');
+  assert.doesNotMatch(fixture.edits.join('\n'), /private detail|CHAT_WRITE_FORBIDDEN/);
 });
 
 test('bs reports the collected count when the target name is unavailable', async t => {
-  const fixture = await floodFixture(t, async () => ({updates: []}), {}, {
+  const fixture = await floodFixture(t, async () => ({updates: [{message: {className: 'Message', id: 501}}, {message: {className: 'Message', id: 502}}, {message: {className: 'Message', id: 503}}]}), {
     getEntity(value) {return {id: returnBigInt(9)};},
   });
   await fixture.host.dispatchPrimary({id: 42, chatId: '-1009', senderId: '7', outgoing: true, replyToId: 41,

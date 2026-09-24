@@ -162,17 +162,15 @@ test('legacy credential permission failure does not mark migration complete', as
   } finally {await fs.chmod(file, 0o600);}
 });
 
-test('FIFO legacy read is genuinely abortable and never marks migration complete', async t => {
+test('a FIFO at the legacy credentials path is refused without blocking', async t => {
   const {execFileSync} = require('node:child_process');
   const f = await fixture(t, {initial: {legacyImported: false, port: undefined}});
   const fifo = path.join(f.root, 'credentials.json');
   execFileSync('/usr/bin/mkfifo', [fifo]);
-  const setup = create().setup(f.ctx);
-  const writer = await fs.open(fifo, 'w');
-  try {
-    f.controller.abort();
-    await assert.rejects(setup, {name: 'AbortError'});
-  } finally {await writer.close();}
+  // No writer is ever opened. A read that blocked on the FIFO would never
+  // return, and an abort cannot interrupt a read already in flight, so the
+  // plugin has to refuse the file rather than wait on it.
+  await assert.rejects(create().setup(f.ctx), /旧凭据迁移失败/);
   assert.equal(f.store.value().legacyImported, false);
   assert.equal(f.store.value().port, undefined);
 });
