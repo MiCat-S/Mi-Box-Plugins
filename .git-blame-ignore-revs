@@ -1,0 +1,6 @@
+# Formatting-only commits. git blame skips them with
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# and GitHub skips them automatically.
+
+# style: 用 Prettier 统一 V2 源码与测试的排版
+06fa9b328fa7e9dc0a88efb74875ae65b60ce3a2

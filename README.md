@@ -158,13 +158,13 @@ V2 入口为各插件的 `v2.ts`；其余源码仍待迁移，不代表可以直
 
 ## 技术栈
 
-- **开发语言**: TypeScript
-- **数据库**: Lowdb
-- **任务调度**: node-schedule
+- **开发语言**: TypeScript，入口为各插件的 `v2.ts`
+- **插件接口**: `telebox/sdk`，由 [Mi-Box](https://github.com/MiCat-S/Mi-Box) 注入 `PluginContext`
+- **存储**: `ctx.storage`（JSON / SQLite，由宿主管理）
+- **定时任务**: `jobs` 声明或 `ctx.jobs`
 - **Telegram API**: Teleproto
-- **图像处理**: Sharp
-- **其他依赖**: axios, lodash 等
-  
+- **图像处理**: Sharp（少数插件）
+
 
 ## 贡献指南
 
@@ -173,6 +173,14 @@ V2 入口为各插件的 `v2.ts`；其余源码仍待迁移，不代表可以直
 2. 包含完整的功能说明
 3. 添加适当的错误处理
 4. 更新 plugins.json 配置文件
+5. 提交前格式化 V2 源码与测试，CI 会检查格式：
+
+   ```sh
+   npx prettier@3.9.9 --write "*/v2.ts" "*/v2/**/*.ts" "scripts/*.test.js"
+   ```
+
+   旧版源码（`<id>/<id>.ts`）是迁移参照，部分兼容性测试按原文截取，不要格式化；
+   排除清单见 `.prettierignore`。
 
 ## 声明
 

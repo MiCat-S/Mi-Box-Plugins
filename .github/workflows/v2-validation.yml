@@ -30,6 +30,10 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: TeleBox-Core/package-lock.json
+      # The version is pinned so every contributor and CI format identically.
+      - name: Check formatting
+        run: npx --yes prettier@3.9.9 --check "*/v2.ts" "*/v2/**/*.ts" "scripts/*.test.js"
+        working-directory: TeleBox-Plugins
       - name: Install core dependencies
         run: npm ci
         working-directory: TeleBox-Core
