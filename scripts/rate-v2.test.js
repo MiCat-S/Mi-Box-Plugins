@@ -62,6 +62,8 @@ async function fixture(t, {fetch: fetcher = successFetch, edit, hostOptions = {}
   const edits = [], requests = [], logs = [];
   const host = new PluginHost({
     storageRoot: root,
+    // Core admits a Saved Messages command only from the authenticated account.
+    selfId: '123',
     logger: {info(event, data) { logs.push({event, data}); }, error(event, data) { logs.push({event, data}); }},
     http: {fetch: async (input, init) => {
       const url = new URL(input);

@@ -64,20 +64,25 @@ test('botmzt stops polling when the plugin signal is cancelled', async () => {
   assert.equal(f.edits.length, 1);
 });
 
-test('bs migrates legacy state, adds targets, and forwards replied messages', async () => {
-  const storage = memoryStorage({'config.json': {seq: 'bad', mode: 'sequence', targets: [], unknown: 'keep'}});
+test('bs forwards the replied message to the first channel it can post in', async () => {
+  // bs keeps no state since it was aligned with bs.py (06ab0a6, 87bd69c, bdcfa6e):
+  // the target channels are a fixed list, tried left to right.
   const calls = [];
-  const entity = {id: 77n, title: 'Target'};
-  const client = {async getEntity() {return entity;}, async getInputEntity() {return entity;},
-    async getMessages(_peer, {ids}) {return [{id: ids[0]}];}, async invoke(request) {calls.push(request); return {updates: [{message: {className: 'Message', id: 5}}]};}};
-  const f = baseContext({storage}); f.context.telegram.withClient = operation => operation(client, f.context.signal);
+  const entity = {id: 77n, title: 'Target', username: 'ObservingHumanActivity'};
+  const client = {
+    async getEntity(channel) { calls.push(['getEntity', channel]); return entity; },
+    async getInputEntity() { return entity; },
+    async getMessages(_peer, {ids}) { return [{id: ids[0]}]; },
+    async invoke(request) { calls.push(['invoke', request.className]); return {updates: [{message: {className: 'Message', id: 5}}]}; },
+  };
+  const f = baseContext();
+  f.context.telegram.withClient = operation => operation(client, f.context.signal);
   f.context.telegram.getReply = async () => ({id: 4, chatId: '9', raw: {id: 4, peerId: 9}});
-  const definition = plugin('bs'); await definition.setup(f.context);
-  await definition.commands.bs.handle(invocation('bs', ['add', '@target']), f.context);
+  const definition = plugin('bs');
+  assert.equal(definition.setup, undefined);
   await definition.commands.bs.handle(invocation('bs', ['1']), f.context);
-  const state = storage.documents.get('config.json');
-  assert.equal(state.schemaVersion, 1); assert.equal(state.unknown, 'keep'); assert.equal(state.targets[0].chatId, '77');
-  assert.equal(calls.length, 1); assert.match(f.edits.at(-1).text, /已被保送到频道/);
+  assert.deepEqual(calls, [['getEntity', '@ObservingHumanActivity'], ['invoke', 'messages.ForwardMessages']]);
+  assert.match(f.edits.at(-1).text, /1 条消息已被保送到频道/);
 });
 
 test('cosplay accepts only bounded same-domain media and streams temp files to Telegram', async () => {

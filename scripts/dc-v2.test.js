@@ -68,6 +68,8 @@ async function fixture(t, {native = {}, reply, hostOptions = {}, onEdit, onReply
   }});
   const host = new PluginHost({
     storageRoot: root,
+    // Core admits a Saved Messages command only from the authenticated account.
+    selfId: '42',
     logger: {info(event, fields) { logs.push({event, fields}); }, error(event, fields) { logs.push({event, fields}); }},
     telegram: {
       async edit(message, text, options, signal) {

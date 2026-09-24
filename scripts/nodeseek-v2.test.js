@@ -130,6 +130,8 @@ async function fixture(t, {data, config, fetch = successful, process: runProcess
   const before = cronEntries.length;
   const host = new PluginHost({
     storageRoot: root,
+    // Core admits a Saved Messages command only from the authenticated account.
+    selfId: '1',
     logger: {info(event, fields) { logs.push({event, fields}); }, error(event, fields) { logs.push({event, fields}); }},
     http: {fetch: async (input, init) => {
       const url = new URL(input), headers = new Headers(init.headers);
@@ -871,7 +873,7 @@ test('Core enforces owner/edited admission, saved messages and aliases', async t
   assert.equal(await f.host.dispatchPrimary({...envelope, outgoing: false}), false);
   assert.equal(await f.host.dispatchPrimary({...envelope, edited: true}), false);
   assert.equal(f.requests.length + f.edits.length, 0);
-  assert.equal(await f.host.dispatchPrimary({...envelope, outgoing: false, saved: true, text: '.nodeseek help'}), true);
+  assert.equal(await f.host.dispatchPrimary({...envelope, outgoing: false, saved: true, senderId: '1', text: '.nodeseek help'}), true);
   await f.run('!!ns status');
   assert.match(f.edits.at(-1).text, /Cookie：未设置/);
   await f.host.dispatchPrimary({...envelope, saved: true, text: '!!ns set tiny'});
