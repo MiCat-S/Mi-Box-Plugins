@@ -141,13 +141,19 @@ async function fixture(t, options = {}) {
   };
 }
 
+// Pins the host these tests describe: Linux on arm64. The plugin picks its
+// release asset by process.arch, and several assertions name the arm64 asset,
+// so without pinning the architecture the tests depend on the machine they run on.
 async function linux(t, operation) {
-  const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  const arch = Object.getOwnPropertyDescriptor(process, "arch");
   Object.defineProperty(process, "platform", { value: "linux" });
+  Object.defineProperty(process, "arch", { value: "arm64" });
   try {
     return await operation();
   } finally {
-    Object.defineProperty(process, "platform", descriptor);
+    Object.defineProperty(process, "platform", platform);
+    Object.defineProperty(process, "arch", arch);
   }
 }
 
