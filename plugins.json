@@ -267,6 +267,14 @@
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/komari/v2.ts",
     "desc": "Komari 服务器监控"
   },
+  "koutu": {
+    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/koutu/v2.ts",
+    "desc": "PicUP 图片、贴纸与头像一键抠图"
+  },
+  "leech": {
+    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/leech/v2.ts",
+    "desc": "历史消息归档与抓取工具"
+  },
   "listusernames": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/listusernames/v2.ts",
     "desc": "列出属于自己的公开群组/频道"
@@ -314,6 +322,10 @@
   "nezha": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/nezha/v2.ts",
     "desc": "哪吒监控"
+  },
+  "nodeseek": {
+    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/nodeseek/v2.ts",
+    "desc": "NodeSeek 签到、Cookie 与自动签到设置"
   },
   "ntp": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/ntp/v2.ts",
@@ -366,6 +378,10 @@
   "rate": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/rate/v2.ts",
     "desc": "货币实时汇率查询与计算"
+  },
+  "re": {
+    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/re/v2.ts",
+    "desc": "复读回复的消息"
   },
   "restore_pin": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/restore_pin/v2.ts",
@@ -435,6 +451,10 @@
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/sum/v2.ts",
     "desc": "群消息总结"
   },
+  "sure": {
+    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/sure/v2.ts",
+    "desc": "管理 bot 代发消息的白名单规则"
+  },
   "t": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/t/v2.ts",
     "desc": "文字转语音"
@@ -498,9 +518,5 @@
   "zpr": {
     "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/zpr/v2.ts",
     "desc": "二次元图片"
-  },
-  "koutu": {
-    "url": "https://raw.githubusercontent.com/MiCat-S/Mi-Box-Plugins/main/koutu/v2.ts",
-    "desc": "PicUP 图片、贴纸与头像一键抠图"
   }
 }

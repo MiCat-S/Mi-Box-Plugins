@@ -1,124 +1,45 @@
 name: Update README Plugin List
 
+# The list in README.md is generated from plugins.json by
+# scripts/update-readme.js. A pull request only checks it; a push to main
+# regenerates it and commits the result.
 on:
   push:
-    branches: [ main ]
-    paths: [ 'plugins.json', 'README.md' ]
+    branches: [main]
+    paths:
+      - plugins.json
+      - README.md
+      - '*/v2.ts'
+      - scripts/update-readme.js
+      - .github/workflows/update-readme.yml
   pull_request:
-    branches: [ main ]
-    paths: [ 'plugins.json', 'README.md' ]
+    paths:
+      - plugins.json
+      - README.md
+      - '*/v2.ts'
+      - scripts/update-readme.js
+      - .github/workflows/update-readme.yml
   workflow_dispatch:
-  schedule:
-    # Run daily at 3 AM UTC to ensure README is in sync
-    - cron: '0 3 * * *'
 
 jobs:
   update-readme:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
-    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v7
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        
-    - name: Setup Node.js
-      uses: actions/setup-node@v7
-      with:
-        node-version: '18'
-        
-    - name: Update README plugin list
-      run: |
-        cat > update-readme.js << 'EOF'
-        const fs = require('fs');
-        const path = require('path');
-        
-        try {
-          // 读取 plugins.json
-          const pluginsData = JSON.parse(fs.readFileSync('plugins.json', 'utf8'));
-          
-          // 读取 README.md
-          let readmeContent = fs.readFileSync('README.md', 'utf8');
-          
-          // 提取插件信息并排序去重
-          const plugins = Object.keys(pluginsData)
-            .map(name => ({
-              name: name.trim(),
-              desc: pluginsData[name].desc.trim()
-            }))
-            .filter((plugin, index, self) => 
-              index === self.findIndex(p => p.name === plugin.name)
-            )
-            .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-          
-          // 生成插件列表 markdown (保持原格式，每行末尾添加两个空格)
-          const pluginListMd = plugins
-            .map(plugin => `- \`${plugin.name}\` - ${plugin.desc}  `)
-            .join('\n');
-          
-          // 定义替换的开始和结束标记
-          const startMarker = '## 可用插件列表';
-          const endMarker = '## 技术栈';
-          
-          // 查找标记位置
-          const startIndex = readmeContent.indexOf(startMarker);
-          const endIndex = readmeContent.indexOf(endMarker);
-          
-          if (startIndex === -1 || endIndex === -1) {
-            console.error('未找到插件列表标记');
-            process.exit(1);
-          }
-          
-          // 构建新的 README 内容
-          const beforeSection = readmeContent.substring(0, startIndex + startMarker.length);
-          const afterSection = readmeContent.substring(endIndex);
-          
-          const newReadmeContent = `${beforeSection}\n${pluginListMd}\n\n${afterSection}`;
-          
-          // 检查内容是否有变化
-          if (readmeContent === newReadmeContent) {
-            console.log('✅ README.md 已是最新状态，无需更新');
-            process.exit(0);
-          }
-          
-          // 写入更新后的 README.md
-          fs.writeFileSync('README.md', newReadmeContent, 'utf8');
-          
-          console.log(`✅ 已更新 README.md，共 ${plugins.length} 个插件`);
-          console.log('插件列表:', plugins.map(p => p.name).join(', '));
-          
-        } catch (error) {
-          console.error('❌ 更新失败:', error.message);
-          process.exit(1);
-        }
-        EOF
-        
-        node update-readme.js
-        rm -f update-readme.js
-        
-    - name: Check for changes
-      id: verify-changed-files
-      run: |
-        if [ -n "$(git diff --name-only -- README.md)" ]; then
-          echo "changed=true" >> $GITHUB_OUTPUT
-        else
-          echo "changed=false" >> $GITHUB_OUTPUT
-        fi
-        
-    - name: Commit and push changes
-      if: steps.verify-changed-files.outputs.changed == 'true'
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add README.md
-        git commit -m "🤖 自动更新插件列表
-        
-        - 从 plugins.json 同步插件信息
-        - 按字母顺序排序
-        - 自动去重处理
-        
-        插件数量: $(node -e "console.log(Object.keys(JSON.parse(require('fs').readFileSync('plugins.json', 'utf8'))).length)")"
-        git push
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Check the plugin list
+        if: github.event_name == 'pull_request'
+        run: node scripts/update-readme.js --check
+      - name: Regenerate and commit the plugin list
+        if: github.event_name != 'pull_request'
+        run: |
+          node scripts/update-readme.js
+          if git diff --quiet -- README.md; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs: 同步 README 插件列表" -- README.md
+          git push
