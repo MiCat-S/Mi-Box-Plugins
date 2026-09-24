@@ -5,17 +5,15 @@ import { definePlugin, type PluginContext } from "telebox/sdk";
 import type { Api } from "teleproto";
 
 class PartialDelivery extends Error {
-  constructor(readonly delivered: number, readonly cleanupFailed = false) {
+  constructor(
+    readonly delivered: number,
+    readonly cleanupFailed = false,
+  ) {
     super("PARTIAL_DELIVERY");
   }
 }
 
-const PROXIES = [
-  "i.pximg.net",
-  "i.pixiv.cat",
-  "i.pixiv.re",
-  "i.pixiv.nl",
-] as const;
+const PROXIES = ["i.pximg.net", "i.pixiv.cat", "i.pixiv.re", "i.pixiv.nl"] as const;
 const MAX_IMAGE = 25 * 1024 * 1024;
 type State = {
   schemaVersion: 1;
@@ -28,12 +26,11 @@ const DEFAULTS: State = {
   proxyHost: "i.pximg.net",
   legacyImported: false,
 };
-const store = (c: PluginContext) =>
-  c.storage.json<State>("v2-config.json", DEFAULTS);
+const store = (c: PluginContext) => c.storage.json<State>("v2-config.json", DEFAULTS);
 const esc = (v: unknown) =>
   String(v ?? "").replace(
     /[&<>\"']/g,
-    (x) =>
+    x =>
       ({
         "&": "&amp;",
         "<": "&lt;",
@@ -78,14 +75,12 @@ async function consume(
 async function responseJson(response: Response, signal: AbortSignal) {
   if (response.status !== 200) throw new Error("API 状态异常");
   const type = response.headers.get("content-type") ?? "";
-  if (type && !type.toLowerCase().includes("json"))
-    throw new Error("API 格式异常");
-  if (Number(response.headers.get("content-length")) > 1024 * 1024)
-    throw new Error("API 响应过大");
+  if (type && !type.toLowerCase().includes("json")) throw new Error("API 格式异常");
+  if (Number(response.headers.get("content-length")) > 1024 * 1024) throw new Error("API 响应过大");
   if (!response.body) throw new Error("API 响应为空");
   const chunks: Uint8Array[] = [];
   let size = 0;
-  await consume(response.body.getReader(), signal, (value) => {
+  await consume(response.body.getReader(), signal, value => {
     size += value.byteLength;
     if (size > 1024 * 1024) throw new Error("API 响应过大");
     chunks.push(value);
@@ -94,17 +89,12 @@ async function responseJson(response: Response, signal: AbortSignal) {
   return JSON.parse(Buffer.concat(chunks, size).toString("utf8"));
 }
 function normalize(raw: unknown): State {
-  const x =
-    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const x = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const legacy = x.zpr_proxy_host;
   return {
     ...x,
     schemaVersion: 1,
-    proxyHost: validProxy(x.proxyHost)
-      ? x.proxyHost
-      : validProxy(legacy)
-        ? legacy
-        : "i.pximg.net",
+    proxyHost: validProxy(x.proxyHost) ? x.proxyHost : validProxy(legacy) ? legacy : "i.pximg.net",
     legacyImported: x.legacyImported === true,
   };
 }
@@ -117,20 +107,17 @@ async function migrate(c: PluginContext) {
         signal: c.signal,
       }),
     );
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      throw new Error("invalid");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid");
     rawDocument = parsed;
   } catch (error) {
     c.signal.throwIfAborted();
-    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
-      throw new Error("ZPR_CONFIG_INVALID");
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw new Error("ZPR_CONFIG_INVALID");
   }
   const document = await store(c).read();
   let value = normalize(document);
   c.signal.throwIfAborted();
   if (value.legacyImported) return value;
-  const explicitProxy =
-    !!rawDocument && Object.hasOwn(rawDocument, "proxyHost");
+  const explicitProxy = !!rawDocument && Object.hasOwn(rawDocument, "proxyHost");
   {
     try {
       const raw = JSON.parse(
@@ -143,16 +130,12 @@ async function migrate(c: PluginContext) {
       if (!explicitProxy) value.proxyHost = normalize(raw).proxyHost;
     } catch (error) {
       c.signal.throwIfAborted();
-      if (!(
-        error instanceof Error &&
-        "code" in error &&
-        error.code === "ENOENT"
-      ))
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
         throw new Error("ZPR_LEGACY_CONFIG_INVALID");
     }
     value.legacyImported = true;
   }
-  return store(c).update((current) => ({
+  return store(c).update(current => ({
     ...normalize(current),
     proxyHost: value.proxyHost,
     legacyImported: true,
@@ -187,8 +170,7 @@ function imageUrl(raw: string, proxy: string) {
   } catch {
     throw new Error("图片地址无效");
   }
-  if (u.protocol !== "https:" || u.username || u.password || u.hash)
-    throw new Error("图片地址无效");
+  if (u.protocol !== "https:" || u.username || u.password || u.hash) throw new Error("图片地址无效");
   u.hostname = proxy;
   u.port = "";
   return u;
@@ -206,19 +188,13 @@ function publicUrl(raw: string) {
     u.password ||
     u.hash ||
     !["pximg.net", "pixiv.net", "pixiv.cat", "pixiv.re", "pixiv.nl"].some(
-      (h) => u.hostname === h || u.hostname.endsWith(`.${h}`),
+      h => u.hostname === h || u.hostname.endsWith(`.${h}`),
     )
   )
     throw new Error("原图地址无效");
   return u.href;
 }
-async function image(
-  c: PluginContext,
-  url: URL,
-  host: string,
-  target: string,
-  openFile: typeof open,
-) {
+async function image(c: PluginContext, url: URL, host: string, target: string, openFile: typeof open) {
   return c.http.withResponse(
     url,
     {
@@ -228,17 +204,13 @@ async function image(
       headers: {
         Accept: "image/*",
         "User-Agent": "MiBot-Zpr/2.0",
-        ...(host === "i.pximg.net"
-          ? { Referer: "https://www.pixiv.net/" }
-          : {}),
+        ...(host === "i.pximg.net" ? { Referer: "https://www.pixiv.net/" } : {}),
       },
     },
     async (response, signal) => {
-      if (response.status !== 200 || !response.body)
-        throw new Error("图片不可用");
+      if (response.status !== 200 || !response.body) throw new Error("图片不可用");
       const type = response.headers.get("content-type") ?? "";
-      if (type && !type.toLowerCase().startsWith("image/"))
-        throw new Error("图片格式无效");
+      if (type && !type.toLowerCase().startsWith("image/")) throw new Error("图片格式无效");
       const reader = response.body.getReader();
       let handedOff = false;
       let handle: Awaited<ReturnType<typeof open>> | undefined;
@@ -248,17 +220,13 @@ async function image(
         handle = await openFile(target, "wx", 0o600);
         signal.throwIfAborted();
         handedOff = true;
-        await consume(reader, signal, async (value) => {
+        await consume(reader, signal, async value => {
           total += value.byteLength;
           if (total > MAX_IMAGE) throw new Error("图片过大");
           let offset = 0;
           while (offset < value.byteLength) {
             signal.throwIfAborted();
-            const { bytesWritten } = await handle!.write(
-              value,
-              offset,
-              value.byteLength - offset,
-            );
+            const { bytesWritten } = await handle!.write(value, offset, value.byteLength - offset);
             signal.throwIfAborted();
             if (bytesWritten <= 0) throw new Error("图片写入失败");
             offset += bytesWritten;
@@ -289,7 +257,7 @@ async function download(
   target: string,
   openFile: typeof open,
 ) {
-  for (const host of [preferred, ...PROXIES.filter((x) => x !== preferred)]) {
+  for (const host of [preferred, ...PROXIES.filter(x => x !== preferred)]) {
     c.signal.throwIfAborted();
     try {
       await image(c, imageUrl(item.regular, host), host, target, openFile);
@@ -324,11 +292,7 @@ export default function createZpr(dependencies: Dependencies = {}) {
         description: "随机纸片人图片",
         async handle(i, c) {
           const edit = (text: string, html = false) =>
-            c.telegram.edit(
-              i.message,
-              text,
-              html ? { parseMode: "html", linkPreview: false } : {},
-            );
+            c.telegram.edit(i.message, text, html ? { parseMode: "html", linkPreview: false } : {});
           try {
             const first = i.args[0]?.toLowerCase();
             if (first === "help" || first === "h") {
@@ -338,14 +302,11 @@ export default function createZpr(dependencies: Dependencies = {}) {
             let state = normalize(await store(c).read());
             if (first === "proxy") {
               if (!i.args[1]) {
-                await edit(
-                  `当前反代：${state.proxyHost}\n可用：${PROXIES.join("、")}`,
-                );
+                await edit(`当前反代：${state.proxyHost}\n可用：${PROXIES.join("、")}`);
                 return;
               }
-              if (!validProxy(i.args[1]))
-                throw new Error("反代地址不在允许列表");
-              state = await store(c).update((v) => ({
+              if (!validProxy(i.args[1])) throw new Error("反代地址不在允许列表");
+              state = await store(c).update(v => ({
                 ...normalize(v),
                 proxyHost: i.args[1]!,
                 legacyImported: true,
@@ -358,8 +319,7 @@ export default function createZpr(dependencies: Dependencies = {}) {
               tag = "";
             for (const arg of i.args) {
               if (arg.toLowerCase() === "r18") r18 = 1;
-              else if (/^\d+$/u.test(arg))
-                count = Math.min(10, Math.max(1, Number(arg)));
+              else if (/^\d+$/u.test(arg)) count = Math.min(10, Math.max(1, Number(arg)));
               else if (!tag) tag = arg.slice(0, 100);
             }
             await edit("正在获取图片…");
@@ -396,18 +356,17 @@ export default function createZpr(dependencies: Dependencies = {}) {
               },
             )) as any;
             if (!Array.isArray(data?.data)) throw new Error("API 响应无效");
-            const items = data.data
-              .map(apiItem)
-              .filter(Boolean)
-              .slice(0, count) as NonNullable<ReturnType<typeof apiItem>>[];
+            const items = data.data.map(apiItem).filter(Boolean).slice(0, count) as NonNullable<
+              ReturnType<typeof apiItem>
+            >[];
             if (!items.length) throw new Error("未找到图片");
             let delivered = 0;
             try {
               await (dependencies.withTemp
-                ? dependencies.withTemp(c, async (directory) => {
+                ? dependencies.withTemp(c, async directory => {
                     await produce(directory);
                   })
-                : c.files.withTemp(async (directory) => {
+                : c.files.withTemp(async directory => {
                     await produce(directory);
                   }));
               async function produce(directory: string) {
@@ -421,20 +380,12 @@ export default function createZpr(dependencies: Dependencies = {}) {
                   results.push({
                     item,
                     file,
-                    host: await download(
-                      c,
-                      item,
-                      state.proxyHost,
-                      file,
-                      openFile,
-                    ),
+                    host: await download(c, item, state.proxyHost, file, openFile),
                   });
                 }
-                const best = results.find(
-                  (x) => x.host !== state.proxyHost,
-                )?.host;
+                const best = results.find(x => x.host !== state.proxyHost)?.host;
                 if (best)
-                  await store(c).update((v) => ({
+                  await store(c).update(v => ({
                     ...normalize(v),
                     proxyHost: best,
                     legacyImported: true,
@@ -499,7 +450,7 @@ export default function createZpr(dependencies: Dependencies = {}) {
         },
       },
     },
-    settings: (c) => ({
+    settings: c => ({
       id: "zpr",
       title: "随机纸片人",
       description: "Lolicon 图片反代配置",
@@ -510,13 +461,13 @@ export default function createZpr(dependencies: Dependencies = {}) {
           key: "proxyHost",
           label: "反代服务器",
           type: "select",
-          options: PROXIES.map((value) => ({ value, label: value })),
+          options: PROXIES.map(value => ({ value, label: value })),
         },
       ],
       getValues: async () => ({ proxyHost: (await store(c).read()).proxyHost }),
       async setValues(patch) {
         if (!validProxy(patch.proxyHost)) throw new Error("invalid proxy");
-        await store(c).update((v) => ({
+        await store(c).update(v => ({
           ...normalize(v),
           proxyHost: patch.proxyHost as string,
           legacyImported: true,

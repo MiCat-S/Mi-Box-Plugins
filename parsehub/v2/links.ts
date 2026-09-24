@@ -8,8 +8,11 @@ export function extractLinks(text: string, maximum = 10): string[] {
   for (const raw of text.match(/(?:https?:\/\/|www\.)\S+/gi) ?? []) {
     const candidate = raw.replace(TRAILING_PUNCTUATION, "");
     let url: URL;
-    try {url = new URL(/^www\./i.test(candidate) ? `https://${candidate}` : candidate);}
-    catch {continue;}
+    try {
+      url = new URL(/^www\./i.test(candidate) ? `https://${candidate}` : candidate);
+    } catch {
+      continue;
+    }
     if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.href.length > 2048) continue;
     if (seen.has(url.href)) continue;
     seen.add(url.href);
@@ -27,12 +30,12 @@ export function isProgressText(text: unknown): boolean {
 
 export function hasMediaPayload(message: unknown): boolean {
   if (!message || typeof message !== "object") return false;
-  const media = (message as {media?: {className?: string}}).media;
+  const media = (message as { media?: { className?: string } }).media;
   return Boolean(media && media.className !== "MessageMediaEmpty");
 }
 
 export function isFinalBotMessage(message: unknown): boolean {
   if (hasMediaPayload(message)) return true;
-  const text = String((message as {message?: unknown} | undefined)?.message ?? "").trim();
+  const text = String((message as { message?: unknown } | undefined)?.message ?? "").trim();
   return Boolean(text) && !isProgressText(text);
 }

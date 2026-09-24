@@ -1,21 +1,19 @@
-import {Api} from "teleproto";
-import {returnBigInt} from "teleproto/Helpers";
+import { Api } from "teleproto";
+import { returnBigInt } from "teleproto/Helpers";
 
 /**
  * MessageEntity class names exposed by the current Teleproto build. Only these
  * are accepted when persisting or reviving stored entity JSON, so a tampered or
  * outdated database cannot instantiate arbitrary TL constructors.
  */
-const ENTITY_CLASS_NAMES = new Set(
-  Object.keys(Api).filter(name => /^MessageEntity[A-Z]/.test(name)),
-);
+const ENTITY_CLASS_NAMES = new Set(Object.keys(Api).filter(name => /^MessageEntity[A-Z]/.test(name)));
 
 /** Entity fields carrying 64-bit TL integers that must keep full precision. */
 const LONG_FIELDS = new Set(["documentId", "userId"]);
 const isDecimalString = (value: unknown): value is string => typeof value === "string" && /^-?\d+$/.test(value);
 
 function entityClassName(entity: unknown): string | undefined {
-  const name = (entity as {className?: unknown})?.className;
+  const name = (entity as { className?: unknown })?.className;
   return typeof name === "string" && ENTITY_CLASS_NAMES.has(name) ? name : undefined;
 }
 

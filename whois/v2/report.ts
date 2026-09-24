@@ -1,12 +1,15 @@
-const esc = (text: string) => text.replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]!);
+const esc = (text: string) =>
+  text.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
 export function report(domain: string, raw: string, now = Date.now()): string[] {
   const field = (name: string) => raw.match(new RegExp(`^${name}:[ \\t]*(.*)$`, "im"))?.[1].trim();
   const expiry = field("Registry Expiry Date") ?? field("Registrar Registration Expiration Date");
   const lines = [`WHOIS 结果\n${domain}`];
   const fields = [
-    ["注册商", field("Registrar")], ["注册日期", field("Creation Date")],
-    ["更新日期", field("Updated Date")], ["到期日期", expiry],
+    ["注册商", field("Registrar")],
+    ["注册日期", field("Creation Date")],
+    ["更新日期", field("Updated Date")],
+    ["到期日期", expiry],
     ["域名状态", field("Domain Status")],
   ];
   for (const [label, value] of fields) if (value) lines.push(`${label}: ${value}`);
@@ -22,7 +25,10 @@ export function report(domain: string, raw: string, now = Date.now()): string[] 
   if (servers.length) lines.push(`DNS 服务器:\n${[...new Set(servers)].join("\n")}`);
   const pages: string[] = [];
   // Split before escaping so every page has complete entities and Unicode characters.
-  for (const [text, tag] of [[lines.join("\n"), "pre"], [raw, "blockquote expandable"]]) {
+  for (const [text, tag] of [
+    [lines.join("\n"), "pre"],
+    [raw, "blockquote expandable"],
+  ]) {
     const closing = tag.split(" ")[0];
     let page = "";
     for (const char of text) {

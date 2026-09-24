@@ -1,7 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {setTimeout as delay} from "node:timers/promises";
-import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, type CommandDefinition} from "telebox/sdk";
-import type {Api} from "teleproto";
+import { renderHelp as renderPluginHelp } from "./v2/help";
+import { setTimeout as delay } from "node:timers/promises";
+import { STRUCTURED_PLUGIN_API_VERSION, definePlugin, type CommandDefinition } from "telebox/sdk";
+import type { Api } from "teleproto";
 
 const MAX_MENTIONS = 250;
 const MAX_PAGES = 10;
@@ -10,8 +10,11 @@ const MAX_PAGE_CHARS = 3300;
 const PAGE_HEADER = "<b>@所有人:</b>\n";
 const TRUNCATION_NOTICE = `\n\n<i>已达到单次 ${MAX_MENTIONS} 人 / ${MAX_PAGES} 页上限，剩余成员未发送。</i>`;
 
-const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
-  character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
+const escape = (value: unknown): string =>
+  String(value ?? "").replace(
+    /[&<>\"']/g,
+    character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;" })[character]!,
+  );
 
 function mention(user: Api.User): string | undefined {
   if (user.bot || user.deleted) return undefined;
@@ -52,7 +55,7 @@ function planPages(values: readonly string[], sourceTruncated: boolean): PagePla
 
   if (currentCount) result.push(current);
   if (truncated && result.length) result[result.length - 1] += TRUNCATION_NOTICE;
-  return {pages: result, included, truncated};
+  return { pages: result, included, truncated };
 }
 
 function failureMessage(error: unknown): string {
@@ -77,31 +80,34 @@ export default function createAtAll() {
     helpArgs: ["help", "h"],
     args: "",
     arguments: [],
-    examples: [{args: "", description: "在群组中 @所有可见成员"}],
+    examples: [{ args: "", description: "在群组中 @所有可见成员" }],
     help: [
       {
         heading: "功能描述：",
-        body: "• 一键@群组中的可见普通成员、管理员和账号本人\n" +
+        body:
+          "• 一键@群组中的可见普通成员、管理员和账号本人\n" +
           "• 自动跳过 Bot、已删除账号和无可用名称的成员\n" +
           `• 每次最多处理 ${MAX_MENTIONS} 人、发送 ${MAX_PAGES} 条消息`,
       },
       {
         heading: "执行限制：",
-        body: `• 每页最多 ${MAX_MENTIONS_PER_PAGE} 个 mention、${MAX_PAGE_CHARS} 字符\n` +
+        body:
+          `• 每页最多 ${MAX_MENTIONS_PER_PAGE} 个 mention、${MAX_PAGE_CHARS} 字符\n` +
           "• 同一时间只执行一个 AtAll 任务\n" +
           "• 达到上限时停止并在末页提示截断",
       },
       {
         heading: "注意事项：",
-        body: "• 大量提醒有封号和 Telegram 频率限制风险，后果自负\n" +
-          "• 一般可优先使用置顶消息提醒成员",
+        body: "• 大量提醒有封号和 Telegram 频率限制风险，后果自负\n" + "• 一般可优先使用置顶消息提醒成员",
       },
     ],
     async handle(invocation, context) {
       if (["help", "h"].includes(invocation.args[0]?.toLowerCase() ?? "")) {
-        await context.telegram.edit(invocation.message,
+        await context.telegram.edit(
+          invocation.message,
           renderPluginHelp(invocation.prefix, MAX_MENTIONS, MAX_PAGES, MAX_MENTIONS_PER_PAGE, MAX_PAGE_CHARS),
-          {parseMode: "html"});
+          { parseMode: "html" },
+        );
         return;
       }
       if (busy) {
@@ -113,21 +119,25 @@ export default function createAtAll() {
       try {
         const raw = invocation.message.raw as Api.Message | undefined;
         if (!raw?.peerId) throw new Error("Missing peer");
-        if (invocation.message.chatType === "private" || invocation.message.chatType === "broadcast" ||
-            raw.peerId.className === "PeerUser") {
-          await context.telegram.edit(invocation.message, "❌ 此命令只能在群组中使用", {parseMode: "html"});
+        if (
+          invocation.message.chatType === "private" ||
+          invocation.message.chatType === "broadcast" ||
+          raw.peerId.className === "PeerUser"
+        ) {
+          await context.telegram.edit(invocation.message, "❌ 此命令只能在群组中使用", { parseMode: "html" });
           return;
         }
 
-        await context.telegram.edit(invocation.message, "🔄 正在获取群组成员列表...", {parseMode: "html"});
+        await context.telegram.edit(invocation.message, "🔄 正在获取群组成员列表...", { parseMode: "html" });
         await context.telegram.withClient(async (client, signal) => {
           const peer = raw.peerId;
-          const participants: AsyncIterable<unknown> = typeof client.iterParticipants === "function"
-            ? client.iterParticipants(peer, {limit: MAX_MENTIONS + 1, showTotal: false})
-            : (async function* () {
-                const loaded = await client.getParticipants(peer, {limit: MAX_MENTIONS + 1, showTotal: false});
-                for (const participant of loaded) yield participant;
-              })();
+          const participants: AsyncIterable<unknown> =
+            typeof client.iterParticipants === "function"
+              ? client.iterParticipants(peer, { limit: MAX_MENTIONS + 1, showTotal: false })
+              : (async function* () {
+                  const loaded = await client.getParticipants(peer, { limit: MAX_MENTIONS + 1, showTotal: false });
+                  for (const participant of loaded) yield participant;
+                })();
           const mentions: string[] = [];
           let inspected = 0;
           let sourceTruncated = false;
@@ -143,16 +153,17 @@ export default function createAtAll() {
           }
 
           if (!inspected) {
-            await context.telegram.edit(invocation.message, "❌ 无法获取群组成员或群组为空", {parseMode: "html"});
+            await context.telegram.edit(invocation.message, "❌ 无法获取群组成员或群组为空", { parseMode: "html" });
             return;
           }
           const output = planPages(mentions, sourceTruncated);
           if (!output.included) {
-            await context.telegram.edit(invocation.message, "❌ 没有可@的成员", {parseMode: "html"});
+            await context.telegram.edit(invocation.message, "❌ 没有可@的成员", { parseMode: "html" });
             return;
           }
-          await context.telegram.edit(invocation.message,
-            `🔄 正在生成@列表... (${output.included} 个成员)`, {parseMode: "html"});
+          await context.telegram.edit(invocation.message, `🔄 正在生成@列表... (${output.included} 个成员)`, {
+            parseMode: "html",
+          });
 
           for (let index = 0; index < output.pages.length; index += 1) {
             signal.throwIfAborted();
@@ -162,12 +173,12 @@ export default function createAtAll() {
               replyTo: index === 0 ? invocation.message.id : undefined,
               topMsgId: invocation.message.topicId,
             });
-            if (index + 1 < output.pages.length) await delay(500, undefined, {signal});
+            if (index + 1 < output.pages.length) await delay(500, undefined, { signal });
           }
           if (typeof raw.delete === "function") {
             signal.throwIfAborted();
             try {
-              await raw.delete({revoke: true});
+              await raw.delete({ revoke: true });
             } catch {
               if (!signal.aborted) context.log.info("atall_receipt_cleanup_failed");
             }
@@ -176,7 +187,7 @@ export default function createAtAll() {
       } catch (error) {
         if (context.signal.aborted) return;
         context.log.error("atall_failed");
-        await context.telegram.edit(invocation.message, failureMessage(error), {parseMode: "html"});
+        await context.telegram.edit(invocation.message, failureMessage(error), { parseMode: "html" });
       } finally {
         busy = false;
       }
@@ -188,6 +199,6 @@ export default function createAtAll() {
     id: "atall",
     description: "在群组中提醒所有可见成员",
     renderHelp: prefix => renderPluginHelp(prefix, MAX_MENTIONS, MAX_PAGES, MAX_MENTIONS_PER_PAGE, MAX_PAGE_CHARS),
-    commands: {atall: atallCommand},
+    commands: { atall: atallCommand },
   });
 }

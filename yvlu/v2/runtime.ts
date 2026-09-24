@@ -1,8 +1,17 @@
-import type {MessageEnvelope, PluginContext} from "telebox/sdk";
+import type { MessageEnvelope, PluginContext } from "telebox/sdk";
 
-export const escape = (value: unknown): string => String(value).replace(/[&<>"']/g, c => ({
-  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-})[c]!);
+export const escape = (value: unknown): string =>
+  String(value).replace(
+    /[&<>"']/g,
+    c =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[c]!,
+  );
 
 export class UserError extends Error {}
 
@@ -18,8 +27,9 @@ export function native<T>(ctx: PluginContext, use: (client: any) => Promise<T>):
 }
 
 export async function optional<T>(ctx: PluginContext, label: string, use: () => Promise<T>): Promise<T | undefined> {
-  try { return await use(); }
-  catch {
+  try {
+    return await use();
+  } catch {
     ctx.signal.throwIfAborted();
     ctx.log.info(`yvlu.optional.${label}.failed`);
     return undefined;
@@ -27,14 +37,21 @@ export async function optional<T>(ctx: PluginContext, label: string, use: () => 
 }
 
 export function envelope(raw: any, parent: MessageEnvelope): MessageEnvelope {
-  return {id: raw.id, chatId: raw.chatId?.toString() ?? parent.chatId,
-    senderId: raw.senderId?.toString(), text: raw.message || "", outgoing: Boolean(raw.out),
-    replyToId: raw.replyTo?.replyToMsgId, topicId: parent.topicId, raw};
+  return {
+    id: raw.id,
+    chatId: raw.chatId?.toString() ?? parent.chatId,
+    senderId: raw.senderId?.toString(),
+    text: raw.message || "",
+    outgoing: Boolean(raw.out),
+    replyToId: raw.replyTo?.replyToMsgId,
+    topicId: parent.topicId,
+    raw,
+  };
 }
 
 export async function rawMessage(ctx: PluginContext, message: MessageEnvelope): Promise<any> {
   if (message.raw) return message.raw;
-  const messages: any = await native(ctx, client => client.getMessages(message.chatId, {ids: [message.id]}));
+  const messages: any = await native(ctx, client => client.getMessages(message.chatId, { ids: [message.id] }));
   if (!messages?.[0]) throw new UserError("未找到消息");
   return messages[0];
 }

@@ -1,49 +1,82 @@
-import type {PluginContext} from "telebox/sdk";
+import type { PluginContext } from "telebox/sdk";
 
 async function readBody(response: Response, signal: AbortSignal, maximum: number): Promise<string> {
-    if (!response.body) return "";
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let text = "", total = 0, done = false;
-    let cancellation: Promise<void> | undefined;
-    const cancel = () => cancellation ??= reader.cancel();
-    const onAbort = () => {void cancel().catch(() => undefined);};
-    signal.addEventListener("abort", onAbort, {once: true});
-    try {
-      while (true) {
-        signal.throwIfAborted();
-        const chunk = await reader.read();
-        signal.throwIfAborted();
-        if (chunk.done) {done = true; break;}
-        total += chunk.value.byteLength;
-        if (total > maximum) throw new Error("Response too large");
-        text += decoder.decode(chunk.value, {stream: true});
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "",
+    total = 0,
+    done = false;
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => (cancellation ??= reader.cancel());
+  const onAbort = () => {
+    void cancel().catch(() => undefined);
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const chunk = await reader.read();
+      signal.throwIfAborted();
+      if (chunk.done) {
+        done = true;
+        break;
       }
-      text += decoder.decode();
-      return text;
-    } finally {
-      signal.removeEventListener("abort", onAbort);
-      try {if (!done) await cancel();} finally {reader.releaseLock();}
+      total += chunk.value.byteLength;
+      if (total > maximum) throw new Error("Response too large");
+      text += decoder.decode(chunk.value, { stream: true });
     }
+    text += decoder.decode();
+    return text;
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    try {
+      if (!done) await cancel();
+    } finally {
+      reader.releaseLock();
+    }
+  }
 }
 
-export async function fetchBoundedText(ctx: PluginContext, url: string, maximum: number, timeoutMs: number, allowedHosts: readonly string[], headers: Record<string,string> = {}) {
-  return ctx.http.withResponse(url, {headers}, async (response, signal) => ({response,text:await readBody(response,signal,maximum)}),
-    {timeoutMs,redirects:{allowedHosts,maxRedirects:5},denyPrivateAddresses:true});
+export async function fetchBoundedText(
+  ctx: PluginContext,
+  url: string,
+  maximum: number,
+  timeoutMs: number,
+  allowedHosts: readonly string[],
+  headers: Record<string, string> = {},
+) {
+  return ctx.http.withResponse(
+    url,
+    { headers },
+    async (response, signal) => ({ response, text: await readBody(response, signal, maximum) }),
+    { timeoutMs, redirects: { allowedHosts, maxRedirects: 5 }, denyPrivateAddresses: true },
+  );
 }
 
 export async function fetchSubscription(ctx: PluginContext, url: string) {
-  const target=new URL(url);
-  const {response,text}=await fetchBoundedText(ctx,url,2*1024*1024,15_000,[target.hostname],{"user-agent":"Mi Box"});
+  const target = new URL(url);
+  const { response, text } = await fetchBoundedText(ctx, url, 2 * 1024 * 1024, 15_000, [target.hostname], {
+    "user-agent": "Mi Box",
+  });
   if (!response.ok) throw new Error("Subscription unavailable");
-  return {text, traffic: trafficSummary(response.headers.get("subscription-userinfo")), contentDisposition:response.headers.get("content-disposition"), profileUrl:response.headers.get("profile-web-page-url")};
+  return {
+    text,
+    traffic: trafficSummary(response.headers.get("subscription-userinfo")),
+    contentDisposition: response.headers.get("content-disposition"),
+    profileUrl: response.headers.get("profile-web-page-url"),
+  };
 }
 
 function bytes(value: bigint): string {
   const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-  let divisor = 1n, index = 0;
-  while (value >= divisor * 1024n && index < units.length - 1) {divisor *= 1024n; index++;}
-  return `${value / divisor}${index ? `.${((value % divisor) * 100n / divisor).toString().padStart(2, "0")}` : ""} ${units[index]}`;
+  let divisor = 1n,
+    index = 0;
+  while (value >= divisor * 1024n && index < units.length - 1) {
+    divisor *= 1024n;
+    index++;
+  }
+  return `${value / divisor}${index ? `.${(((value % divisor) * 100n) / divisor).toString().padStart(2, "0")}` : ""} ${units[index]}`;
 }
 
 export function trafficSummary(header: string | null, now = Date.now()): string {
@@ -53,9 +86,14 @@ export function trafficSummary(header: string | null, now = Date.now()): string 
     const match = part.trim().match(/^(upload|download|total|expire|starttime)\s*=\s*(\d{1,20})$/i);
     if (match) fields.set(match[1].toLowerCase(), BigInt(match[2]));
   }
-  const upload = fields.get("upload"), download = fields.get("download"), total = fields.get("total");
+  const upload = fields.get("upload"),
+    download = fields.get("download"),
+    total = fields.get("total");
   const used = upload !== undefined && download !== undefined ? upload + download : undefined;
-  const lines = [`上传: ${upload === undefined ? "未知" : bytes(upload)}`, `下载: ${download === undefined ? "未知" : bytes(download)}`];
+  const lines = [
+    `上传: ${upload === undefined ? "未知" : bytes(upload)}`,
+    `下载: ${download === undefined ? "未知" : bytes(download)}`,
+  ];
   if (used !== undefined) lines.push(`已用: ${bytes(used)}`);
   lines.push(`总量: ${total === undefined ? "未知" : total === 0n ? "未设限" : bytes(total)}`);
   if (total !== undefined && total > 0n && used !== undefined) {
@@ -67,7 +105,9 @@ export function trafficSummary(header: string | null, now = Date.now()): string 
   else if (expire === 0n) lines.push("到期: 未设期限");
   else if (expire <= 8_640_000_000_000n) {
     const time = Number(expire) * 1000;
-    lines.push(`到期: ${new Date(time).toISOString().replace("T", " ").replace(".000Z", " UTC")}${time <= now ? "（已过期）" : ""}`);
+    lines.push(
+      `到期: ${new Date(time).toISOString().replace("T", " ").replace(".000Z", " UTC")}${time <= now ? "（已过期）" : ""}`,
+    );
   } else lines.push("到期: 无效时间");
   return lines.join("\n");
 }

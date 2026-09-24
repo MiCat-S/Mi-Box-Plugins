@@ -1,18 +1,195 @@
-import {createReports} from "./v2/reports";
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin,requireSdkFeatures,ui,type MessageEnvelope,type PluginContext} from "telebox/sdk";
+import { createReports } from "./v2/reports";
+import { renderHelp as renderPluginHelp } from "./v2/help";
+import { definePlugin, requireSdkFeatures, ui, type MessageEnvelope, type PluginContext } from "telebox/sdk";
 requireSdkFeatures("legacySqlite");
-type Config={schemaVersion:1;url:string;legacyImported:boolean;[key:string]:unknown};
-const defaults:Config={schemaVersion:1,url:"",legacyImported:false};
-const store=(c:PluginContext)=>c.storage.json<Config>("config-v2.json",defaults);
-const esc=(v:unknown)=>String(v??"").replace(/[&<>"']/g,x=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[x]!);
-const number=(v:unknown)=>typeof v==="number"&&Number.isFinite(v)?v:0;
-function base(input:string){const u=new URL(input.includes("://")?input:`https://${input}`);if(!/^https?:$/.test(u.protocol)||u.username||u.password)throw new Error("Komari 地址无效");u.pathname=u.pathname.replace(/\/+$/,"");u.search="";u.hash="";return u;}
-async function get(c:PluginContext,root:URL,endpoint:string){const u=new URL(root);u.pathname=`${u.pathname}${endpoint}`;return c.http.withResponse(u,{headers:{accept:"application/json","user-agent":"MiBot-Komari/2"}},async(r,s)=>{const reader=r.body?.getReader();if(!reader)throw new Error("Komari 返回空响应");const chunks:Buffer[]=[];let total=0,complete=false,cancelPromise:Promise<void>|undefined;const cancel=()=>cancelPromise??=reader.cancel().catch(()=>{});const onAbort=()=>{void cancel();};s.addEventListener("abort",onAbort,{once:true});try{for(;;){s.throwIfAborted();const x=await reader.read();s.throwIfAborted();if(x.done){complete=true;break;}total+=x.value.length;if(total>2*1024*1024)throw new Error("Komari 响应过大");chunks.push(Buffer.from(x.value));}}finally{s.removeEventListener("abort",onAbort);if(!complete)await cancel();if(cancelPromise)await cancelPromise;reader.releaseLock();}let data:any;try{data=JSON.parse(Buffer.concat(chunks).toString("utf8"));}catch{throw new Error("Komari 返回无效 JSON");}if(!r.ok)throw new Error(`HTTP ${r.status}`);if(data?.status!=="success"||data.data===undefined)throw new Error("Komari 响应结构异常");return data.data;},{timeoutMs:10_000,redirects:{allowedHosts:[u.hostname],maxRedirects:2}});}
-function renderReport(text:string){return esc(text).replace(/\*\*([^\n]*?)\*\*/g,"<b>$1</b>").replace(/`([^`]*?)`/g,"<code>$1</code>");}
-const missing=(error:unknown)=>error instanceof Error&&"code" in error&&(error as {code?:unknown}).code==="ENOENT";
-async function migrate(c:PluginContext){const current=await store(c).read();if(current.legacyImported)return;if(current.url){await store(c).update(v=>({...v,legacyImported:true}));return;}let url="";try{const db=c.storage.legacySqlite("komari_config.db",{readonly:true});url=await db.read(x=>String((x.prepare("SELECT value FROM config WHERE key = ?").get("komari_url") as any)?.value??""));}catch(error){if(c.signal.aborted)throw error;if(!missing(error)){c.log.error("komari_legacy_migration_failed");throw new Error("Komari legacy migration failed");}}await store(c).update(v=>({...v,url:v.url||url,legacyImported:true}));}
-class UserError extends Error{}
-async function failure(c:PluginContext,m:MessageEnvelope,error:unknown){if(c.signal.aborted)return;if(!(error instanceof UserError))c.log.error("komari_request_failed");const message=error instanceof UserError?error.message:"Komari 请求失败，请稍后重试";try{await c.telegram.edit(m,`❌ ${esc(message)}`,{parseMode:"html"});}catch{if(!c.signal.aborted)c.log.error("komari_failure_receipt_failed");}}
-async function command(m:MessageEnvelope,args:readonly string[],c:PluginContext){try{if(args[0]==="_set_url"){const url=args[1];if(!url)throw new UserError("请提供 Komari 地址");try{base(url);}catch{throw new UserError("Komari 地址无效");}await store(c).update(v=>({...v,url:url.replace(/\/+$/,"")}));await c.telegram.edit(m,"Komari 地址已保存。");return;}const config=await store(c).read();if(!config.url)throw new UserError("请先使用 komari _set_url <URL> 配置");const root=base(config.url),sub=args[0]??"status";if(!["status","total","show"].includes(sub)||sub==="show"&&!args.slice(1).length)throw new UserError("未知子命令");await c.telegram.edit(m,"正在获取 Komari 数据…");const reports=createReports(async(_base,endpoint)=>({status:"success",data:await get(c,root,endpoint)}));const out=sub==="status"?await reports.getServerInfo(root.href):sub==="total"?await reports.getNodesOverview(root.href):await reports.getNodeDetails(root.href,args.slice(1).join(" "));c.signal.throwIfAborted();const pages=(await ui.renderRichText(renderReport(out),ui.PAGE_LABEL_RESERVE)).map((page,index,all)=>page+ui.pageLabel(index,all.length));const delivery=await ui.deliverPages(pages,c.signal,(page,index)=>index?c.telegram.reply(m,page,{parseMode:"html"}):c.telegram.edit(m,page,{parseMode:"html"}));if(delivery.interrupted){c.log.error("komari_result_delivery_failed");if(!delivery.published)throw delivery.error;try{await c.telegram.reply(m,ui.interruptedNotice(delivery),{parseMode:"html"});}catch{if(!c.signal.aborted)c.log.error("komari_interrupted_notice_failed");}}}catch(e){await failure(c,m,e);}}
-export default function createKomari(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"komari",description:"查询 Komari 服务与节点状态",legacyStorage:{sqlite:["komari_config.db"]},commands:{komari:{helpArgs: ["help", "h"], description:"查询或配置 Komari",async handle(i,c){await command(i.message,i.args,c);}}},settings:c=>({id:"komari",title:"Komari",category:"插件配置",icon:"📡",getSchema:()=>[{key:"url",label:"服务地址",type:"string"}],getValues:async()=>({url:(await store(c).read()).url}),async setValues(p){if(typeof p.url!=="string")throw new Error("invalid URL");const url=p.url;base(url);await store(c).update(v=>({...v,url:url.replace(/\/+$/,"")}));}}),setup:migrate});}
+type Config = { schemaVersion: 1; url: string; legacyImported: boolean; [key: string]: unknown };
+const defaults: Config = { schemaVersion: 1, url: "", legacyImported: false };
+const store = (c: PluginContext) => c.storage.json<Config>("config-v2.json", defaults);
+const esc = (v: unknown) =>
+  String(v ?? "").replace(
+    /[&<>"']/g,
+    x => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[x]!,
+  );
+const number = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+function base(input: string) {
+  const u = new URL(input.includes("://") ? input : `https://${input}`);
+  if (!/^https?:$/.test(u.protocol) || u.username || u.password) throw new Error("Komari 地址无效");
+  u.pathname = u.pathname.replace(/\/+$/, "");
+  u.search = "";
+  u.hash = "";
+  return u;
+}
+async function get(c: PluginContext, root: URL, endpoint: string) {
+  const u = new URL(root);
+  u.pathname = `${u.pathname}${endpoint}`;
+  return c.http.withResponse(
+    u,
+    { headers: { accept: "application/json", "user-agent": "MiBot-Komari/2" } },
+    async (r, s) => {
+      const reader = r.body?.getReader();
+      if (!reader) throw new Error("Komari 返回空响应");
+      const chunks: Buffer[] = [];
+      let total = 0,
+        complete = false,
+        cancelPromise: Promise<void> | undefined;
+      const cancel = () => (cancelPromise ??= reader.cancel().catch(() => {}));
+      const onAbort = () => {
+        void cancel();
+      };
+      s.addEventListener("abort", onAbort, { once: true });
+      try {
+        for (;;) {
+          s.throwIfAborted();
+          const x = await reader.read();
+          s.throwIfAborted();
+          if (x.done) {
+            complete = true;
+            break;
+          }
+          total += x.value.length;
+          if (total > 2 * 1024 * 1024) throw new Error("Komari 响应过大");
+          chunks.push(Buffer.from(x.value));
+        }
+      } finally {
+        s.removeEventListener("abort", onAbort);
+        if (!complete) await cancel();
+        if (cancelPromise) await cancelPromise;
+        reader.releaseLock();
+      }
+      let data: any;
+      try {
+        data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        throw new Error("Komari 返回无效 JSON");
+      }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (data?.status !== "success" || data.data === undefined) throw new Error("Komari 响应结构异常");
+      return data.data;
+    },
+    { timeoutMs: 10_000, redirects: { allowedHosts: [u.hostname], maxRedirects: 2 } },
+  );
+}
+function renderReport(text: string) {
+  return esc(text)
+    .replace(/\*\*([^\n]*?)\*\*/g, "<b>$1</b>")
+    .replace(/`([^`]*?)`/g, "<code>$1</code>");
+}
+const missing = (error: unknown) =>
+  error instanceof Error && "code" in error && (error as { code?: unknown }).code === "ENOENT";
+async function migrate(c: PluginContext) {
+  const current = await store(c).read();
+  if (current.legacyImported) return;
+  if (current.url) {
+    await store(c).update(v => ({ ...v, legacyImported: true }));
+    return;
+  }
+  let url = "";
+  try {
+    const db = c.storage.legacySqlite("komari_config.db", { readonly: true });
+    url = await db.read(x =>
+      String((x.prepare("SELECT value FROM config WHERE key = ?").get("komari_url") as any)?.value ?? ""),
+    );
+  } catch (error) {
+    if (c.signal.aborted) throw error;
+    if (!missing(error)) {
+      c.log.error("komari_legacy_migration_failed");
+      throw new Error("Komari legacy migration failed");
+    }
+  }
+  await store(c).update(v => ({ ...v, url: v.url || url, legacyImported: true }));
+}
+class UserError extends Error {}
+async function failure(c: PluginContext, m: MessageEnvelope, error: unknown) {
+  if (c.signal.aborted) return;
+  if (!(error instanceof UserError)) c.log.error("komari_request_failed");
+  const message = error instanceof UserError ? error.message : "Komari 请求失败，请稍后重试";
+  try {
+    await c.telegram.edit(m, `❌ ${esc(message)}`, { parseMode: "html" });
+  } catch {
+    if (!c.signal.aborted) c.log.error("komari_failure_receipt_failed");
+  }
+}
+async function command(m: MessageEnvelope, args: readonly string[], c: PluginContext) {
+  try {
+    if (args[0] === "_set_url") {
+      const url = args[1];
+      if (!url) throw new UserError("请提供 Komari 地址");
+      try {
+        base(url);
+      } catch {
+        throw new UserError("Komari 地址无效");
+      }
+      await store(c).update(v => ({ ...v, url: url.replace(/\/+$/, "") }));
+      await c.telegram.edit(m, "Komari 地址已保存。");
+      return;
+    }
+    const config = await store(c).read();
+    if (!config.url) throw new UserError("请先使用 komari _set_url <URL> 配置");
+    const root = base(config.url),
+      sub = args[0] ?? "status";
+    if (!["status", "total", "show"].includes(sub) || (sub === "show" && !args.slice(1).length))
+      throw new UserError("未知子命令");
+    await c.telegram.edit(m, "正在获取 Komari 数据…");
+    const reports = createReports(async (_base, endpoint) => ({
+      status: "success",
+      data: await get(c, root, endpoint),
+    }));
+    const out =
+      sub === "status"
+        ? await reports.getServerInfo(root.href)
+        : sub === "total"
+          ? await reports.getNodesOverview(root.href)
+          : await reports.getNodeDetails(root.href, args.slice(1).join(" "));
+    c.signal.throwIfAborted();
+    const pages = (await ui.renderRichText(renderReport(out), ui.PAGE_LABEL_RESERVE)).map(
+      (page, index, all) => page + ui.pageLabel(index, all.length),
+    );
+    const delivery = await ui.deliverPages(pages, c.signal, (page, index) =>
+      index ? c.telegram.reply(m, page, { parseMode: "html" }) : c.telegram.edit(m, page, { parseMode: "html" }),
+    );
+    if (delivery.interrupted) {
+      c.log.error("komari_result_delivery_failed");
+      if (!delivery.published) throw delivery.error;
+      try {
+        await c.telegram.reply(m, ui.interruptedNotice(delivery), { parseMode: "html" });
+      } catch {
+        if (!c.signal.aborted) c.log.error("komari_interrupted_notice_failed");
+      }
+    }
+  } catch (e) {
+    await failure(c, m, e);
+  }
+}
+export default function createKomari() {
+  return definePlugin({
+    renderHelp: renderPluginHelp,
+    apiVersion: 1,
+    id: "komari",
+    description: "查询 Komari 服务与节点状态",
+    legacyStorage: { sqlite: ["komari_config.db"] },
+    commands: {
+      komari: {
+        helpArgs: ["help", "h"],
+        description: "查询或配置 Komari",
+        async handle(i, c) {
+          await command(i.message, i.args, c);
+        },
+      },
+    },
+    settings: c => ({
+      id: "komari",
+      title: "Komari",
+      category: "插件配置",
+      icon: "📡",
+      getSchema: () => [{ key: "url", label: "服务地址", type: "string" }],
+      getValues: async () => ({ url: (await store(c).read()).url }),
+      async setValues(p) {
+        if (typeof p.url !== "string") throw new Error("invalid URL");
+        const url = p.url;
+        base(url);
+        await store(c).update(v => ({ ...v, url: url.replace(/\/+$/, "") }));
+      },
+    }),
+    setup: migrate,
+  });
+}

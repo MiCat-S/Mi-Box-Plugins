@@ -62,8 +62,7 @@ const TAGS = {
 
 const repeatNbsp = (n: number) => "\u00A0".repeat(Math.max(0, n));
 
-const normalizeNewlines = (markdown: string) =>
-  (markdown || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+const normalizeNewlines = (markdown: string) => (markdown || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
 const countLeadingSpaces = (s: string): number => {
   let i = 0;
@@ -92,7 +91,7 @@ const isBlockquoteLine = (l: string) => /^\s*>/.test(l);
 const stripBlockquoteMarker = (l: string) => l.replace(/^\s*>\s?/, "");
 
 const matchListMarker = (
-  line: string
+  line: string,
 ): { ordered: boolean; indent: number; markerLen: number; content: string } | null => {
   const indent = countLeadingSpaces(line);
   const rest = line.slice(indent);
@@ -148,12 +147,7 @@ export class TelegraphFormatter {
   // Block parsing (near-CommonMark)
   // -------------------------
 
-  private static parseBlocks(
-    lines: string[],
-    start: number,
-    end: number,
-    baseIndent: number
-  ): Block[] {
+  private static parseBlocks(lines: string[], start: number, end: number, baseIndent: number): Block[] {
     const blocks: Block[] = [];
     let i = start;
 
@@ -286,7 +280,7 @@ export class TelegraphFormatter {
     lines: string[],
     start: number,
     end: number,
-    baseIndent: number
+    baseIndent: number,
   ): { block: Block; nextIndex: number } {
     let i = start;
 
@@ -392,8 +386,7 @@ export class TelegraphFormatter {
 
       // If we encounter a non-list line at indent <= root.indent and it looks like a new block, terminate
       const maybeNewRootBlock =
-        indent <= root.indent &&
-        (isFenceStart(raw) || isHr(raw) || isAtxHeading(raw) || isBlockquoteLine(raw));
+        indent <= root.indent && (isFenceStart(raw) || isHr(raw) || isAtxHeading(raw) || isBlockquoteLine(raw));
       if (maybeNewRootBlock) break;
 
       i++;
@@ -476,7 +469,7 @@ export class TelegraphFormatter {
       }
 
       if (b.type === "paragraph") {
-        const pTextLines = b.lines.map((l) => this.preserveIndentLine(l));
+        const pTextLines = b.lines.map(l => this.preserveIndentLine(l));
         out.push({ tag: TAGS.p, children: this.inlineWithHardBreaks(pTextLines) });
         continue;
       }
@@ -496,11 +489,16 @@ export class TelegraphFormatter {
     const tag = b.ordered ? TAGS.ol : TAGS.ul;
     return {
       tag,
-      children: b.items.map((it) => {
+      children: b.items.map(it => {
         // Convert item children blocks to nodes; if empty, fall back to inline text
         const childNodes = it.children.length
           ? this.blocksToNodes(it.children)
-          : [{ tag: TAGS.p, children: this.inlineWithHardBreaks([this.preserveIndentLine((it.lines[0] ?? "").trim())]) }];
+          : [
+              {
+                tag: TAGS.p,
+                children: this.inlineWithHardBreaks([this.preserveIndentLine((it.lines[0] ?? "").trim())]),
+              },
+            ];
 
         // CommonMark: list item can contain multiple blocks; Telegraph <li> can contain mixed children.
         return { tag: TAGS.li, children: childNodes };
@@ -637,7 +635,7 @@ export class TelegraphFormatter {
   }
 
   private static findNextInlineToken(
-    s: string
+    s: string,
   ): { kind: "image" | "link" | "code" | "strong" | "strike" | "underline" | "em"; start: number; end: number } | null {
     const candidates: Array<{
       kind: "image" | "link" | "code" | "strong" | "strike" | "underline" | "em";
@@ -723,7 +721,7 @@ export class TelegraphFormatter {
     if (!candidates.length) return null;
 
     // choose earliest start; tie-breaker: longer match first (prevents partial captures)
-    candidates.sort((a, b) => (a.start - b.start) || (b.end - b.start) - (a.end - a.start));
+    candidates.sort((a, b) => a.start - b.start || b.end - b.start - (a.end - a.start));
     return candidates[0];
   }
 

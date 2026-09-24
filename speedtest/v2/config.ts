@@ -1,5 +1,5 @@
-import {readFile, lstat} from "node:fs/promises";
-import type {PluginContext} from "telebox/sdk";
+import { readFile, lstat } from "node:fs/promises";
+import type { PluginContext } from "telebox/sdk";
 
 export type MessageType = "photo" | "sticker" | "file" | "txt";
 
@@ -22,7 +22,7 @@ export const DEFAULTS: SpeedtestState = {
 const store = (context: PluginContext) => context.storage.json<SpeedtestState>("v2-config.json", DEFAULTS);
 
 function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function positiveSafeInteger(value: unknown): number | null {
@@ -46,10 +46,17 @@ export function normalizeState(value: unknown): SpeedtestState {
 }
 
 function parseRecord(text: string): Record<string, unknown> {
-  type SourceJson = {parse(input: string, reviver: (key: string, value: unknown, context: {source?: string}) => unknown): unknown};
+  type SourceJson = {
+    parse(input: string, reviver: (key: string, value: unknown, context: { source?: string }) => unknown): unknown;
+  };
   const sourceJson = JSON as unknown as SourceJson;
   const parsed = sourceJson.parse(text, (_key, value, context) => {
-    if (typeof value === "number" && context?.source && /^-?\d+$/.test(context.source) && !Number.isSafeInteger(value)) {
+    if (
+      typeof value === "number" &&
+      context?.source &&
+      /^-?\d+$/.test(context.source) &&
+      !Number.isSafeInteger(value)
+    ) {
       return BigInt(context.source);
     }
     return value;
@@ -64,21 +71,23 @@ function hasCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
 }
 
-type LegacyRead = {exists: false} | {exists: true; value: Record<string, unknown>};
+type LegacyRead = { exists: false } | { exists: true; value: Record<string, unknown> };
 
 async function readLegacy(context: PluginContext, fileName: string): Promise<LegacyRead> {
   return context.tasks.run(`speedtest:legacy:${fileName}`, async signal => {
     const file = context.files.dataPath(fileName);
     let info;
-    try { info = await lstat(file); }
-    catch (error) {
+    try {
+      info = await lstat(file);
+    } catch (error) {
       signal.throwIfAborted();
-      if (hasCode(error, "ENOENT")) return {exists: false};
+      if (hasCode(error, "ENOENT")) return { exists: false };
       throw error;
     }
-    if (info.isSymbolicLink() || !info.isFile()) throw new Error(`Legacy Speedtest configuration is not a regular file: ${fileName}`);
-    const value = parseRecord(await readFile(file, {encoding: "utf8", signal}));
-    return {exists: true, value};
+    if (info.isSymbolicLink() || !info.isFile())
+      throw new Error(`Legacy Speedtest configuration is not a regular file: ${fileName}`);
+    const value = parseRecord(await readFile(file, { encoding: "utf8", signal }));
+    return { exists: true, value };
   });
 }
 
@@ -86,7 +95,8 @@ async function exists(context: PluginContext, fileName: string): Promise<boolean
   return context.tasks.run(`speedtest:exists:${fileName}`, async signal => {
     try {
       const info = await lstat(context.files.dataPath(fileName));
-      if (info.isSymbolicLink() || !info.isFile()) throw new Error(`Speedtest configuration is not a regular file: ${fileName}`);
+      if (info.isSymbolicLink() || !info.isFile())
+        throw new Error(`Speedtest configuration is not a regular file: ${fileName}`);
       return true;
     } catch (error) {
       signal.throwIfAborted();
@@ -106,9 +116,9 @@ export async function migrateConfig(context: PluginContext): Promise<SpeedtestSt
     readLegacy(context, "config.json"),
     readLegacy(context, "speedtest.json"),
   ]);
-  const legacy = {...(panel.exists ? panel.value : {}), ...(command.exists ? command.value : {})};
-  const merged = currentExists ? {...legacy, ...current} : legacy;
-  return currentStore.update(() => normalizeState({...merged, legacyImported: true}));
+  const legacy = { ...(panel.exists ? panel.value : {}), ...(command.exists ? command.value : {}) };
+  const merged = currentExists ? { ...legacy, ...current } : legacy;
+  return currentStore.update(() => normalizeState({ ...merged, legacyImported: true }));
 }
 
 export async function readConfig(context: PluginContext): Promise<SpeedtestState> {
@@ -119,7 +129,7 @@ export async function updateConfig(
   context: PluginContext,
   patch: Partial<Pick<SpeedtestState, "default_server_id" | "preferred_type">>,
 ): Promise<SpeedtestState> {
-  return store(context).update(current => normalizeState({...current, ...patch, legacyImported: true}));
+  return store(context).update(current => normalizeState({ ...current, ...patch, legacyImported: true }));
 }
 
 export function messageOrder(preferred: MessageType | null): MessageType[] {

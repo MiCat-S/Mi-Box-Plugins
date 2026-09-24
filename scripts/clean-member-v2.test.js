@@ -1,15 +1,244 @@
-'use strict';
-const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path'),fs=require('node:fs/promises'),os=require('node:os');
-const core=path.resolve(__dirname,'../../TeleBox-Core'),{buildPlugin}=require(path.join(core,'scripts/build-v2-plugin.cjs')),Api=require(path.join(core,'node_modules/teleproto')).Api;
-const create=require(path.join(buildPlugin({id:'clean_member',packageRoot:path.resolve(__dirname,'../clean_member'),entry:'v2.ts'}).artifactDir,'index.cjs')).default;
-async function fixture(options={}){if(typeof options==='boolean')options={fail:options};const dir=await fs.mkdtemp(path.join(os.tmpdir(),'cm-')),edits=[],rpc=[],sent=[];let state={schemaVersion:1,entries:{}};const chat=options.chat||{className:'Channel',id:10n,title:'Group'},admin=new Api.ChannelParticipantAdmin({userId:1n,adminRights:new Api.ChatAdminRights({banUsers:true})});let pages=0,adminPage=0;const defaultUsers=[{className:'User',id:2n,deleted:true,firstName:'Gone'}],participantPages=options.pages||[defaultUsers,[]],adminPages=options.adminPages||[[{id:1n}]];const controller=options.controller||new AbortController();const client={getEntity:async value=>{options.onEntity?.(value);return chat;},getInputEntity:async x=>x,getMe:async()=>({id:1n}),sendFile:async(...args)=>{sent.push(args);await options.sendFile?.(...args);},invoke:async req=>{rpc.push(req);if(req instanceof Api.channels.GetParticipant)return{participant:admin};if(req instanceof Api.channels.GetParticipants){if(req.filter instanceof Api.ChannelParticipantsAdmins){if(options.adminFailure)throw new Error('admin list unavailable');return{users:adminPages[adminPage++]||[]};}return{users:participantPages[pages++]||[]};}if(req instanceof Api.channels.EditBanned){if(options.onBan)await options.onBan(req,rpc.filter(x=>x instanceof Api.channels.EditBanned).length);if(options.banError)throw Object.assign(new Error(options.banError),{errorMessage:options.banError});if(options.fail)throw new Error('denied: /private/token');}return{};}};const signal=controller.signal,ctx={signal,log:{error(){}},files:{dataFile:async n=>path.join(dir,n)},storage:{json:()=>({read:async()=>structuredClone(state),update:async fn=>(state=await fn(structuredClone(state)))})},telegram:{edit:async(m,t)=>edits.push(t),withClient:fn=>fn(client,signal)}};return{controller,dir,edits,rpc,sent,state:()=>state,run:(args,message={})=>create().commands.clean_member.handle({message:{id:1,chatId:'-100',text:'.clean_member '+args.join(' '),outgoing:true,raw:{peerId:'x'},...message},args,prefix:'.',command:'clean_member'},ctx)};}
-test('search stores versioned cache and writes private uniquely named reports without exposing paths',async t=>{const f=await fixture();t.after(()=>fs.rm(f.dir,{recursive:true,force:true}));await f.run(['4','search']);assert.equal(f.state().schemaVersion,1);assert.equal(Object.values(f.state().entries)[0].users[0].id,'2');assert.match(f.edits.at(-1),/符合条件: <code>1<\/code>/);await Promise.all([f.run(['4','search']),f.run(['4','search'])]);const reports=(await fs.readdir(f.dir)).filter(x=>x.startsWith('report_'));assert.equal(reports.length,3);assert.equal(new Set(reports).size,3);for(const report of reports){const file=path.join(f.dir,report);assert.equal((await fs.stat(file)).mode&0o777,0o600);assert.match(await fs.readFile(file,'utf8'),/"2","","Gone","未知","是"/);}assert.equal(f.edits.some(text=>text.includes(f.dir)),false);assert.match(f.edits.at(-1),/报告: <code>report_[^/]+\.csv<\/code>/);});
-test('cleanup checks ban permission and reports partial failure',async t=>{const f=await fixture(true);t.after(()=>fs.rm(f.dir,{recursive:true,force:true}));await f.run(['4']);assert.match(f.edits.at(-1),/失败\/跳过: <code>1<\/code>/);const report=(await fs.readdir(f.dir)).find(x=>x.startsWith('failed_'));const body=await fs.readFile(path.join(f.dir,report),'utf8');assert.match(body,/"移出失败"/);assert.doesNotMatch(body,/private|token|denied/);});
-test('search paginates through every full participant page',async t=>{const first=Array.from({length:200},(_,i)=>({className:'User',id:BigInt(i+2),deleted:true,firstName:`U${i}`})),last=[{className:'User',id:900719925474099312345n,deleted:true,firstName:'Last'}];const f=await fixture({pages:[first,last]});t.after(()=>fs.rm(f.dir,{recursive:true,force:true}));await f.run(['4','search']);assert.match(f.edits.at(-1),/扫描人数: <code>201<\/code>/);assert.equal(Object.values(f.state().entries)[0].users.at(-1).id,'900719925474099312345');const calls=f.rpc.filter(x=>x instanceof Api.channels.GetParticipants&&x.filter instanceof Api.ChannelParticipantsRecent);assert.deepEqual(calls.map(x=>x.offset),[0,200]);});
-test('CSV neutralizes spreadsheet formulas and keeps commas and quotes intact',async t=>{const user={className:'User',id:2n,deleted:true,username:'=HYPERLINK("https://bad")',firstName:'+cmd, "quoted"',lastName:'@payload'};const f=await fixture({pages:[[user]]});t.after(()=>fs.rm(f.dir,{recursive:true,force:true}));await f.run(['4','search']);const report=(await fs.readdir(f.dir)).find(x=>x.startsWith('report_'));const body=await fs.readFile(path.join(f.dir,report),'utf8');assert.match(body,/"'=HYPERLINK\(""https:\/\/bad""\)"/);assert.match(body,/"'\+cmd, ""quoted"" @payload"/);});
-test('chat target preserves IDs beyond the JavaScript safe integer range',async t=>{let target;const f=await fixture({onEntity:value=>{target=value;}});t.after(()=>fs.rm(f.dir,{recursive:true,force:true}));await f.run(['4','search','chat:-100900719925474099312345']);assert.equal(target.toString(),'-100900719925474099312345');assert.notEqual(typeof target,'number');});
-test('unload cancellation wins over USER_NOT_PARTICIPANT and prevents final feedback',async t=>{const blocked=Promise.withResolvers(),entered=Promise.withResolvers(),controller=new AbortController();const f=await fixture({controller,banError:'USER_NOT_PARTICIPANT',onBan:async(req,count)=>{if(count===1){entered.resolve();await blocked.promise;}}});t.after(()=>fs.rm(f.dir,{recursive:true,force:true}));const running=f.run(['4']);await entered.promise;controller.abort();blocked.resolve();await running;assert.equal(f.rpc.filter(x=>x instanceof Api.channels.EditBanned).length,1);assert.equal(f.edits.some(x=>/清理完成|处理失败/.test(x)),false);});
-test('cleanup paginates admins and never removes an admin from a later page',async t=>{const first=Array.from({length:200},(_,i)=>({id:BigInt(i+100)})),protectedUser={className:'User',id:900719925474099312345n,deleted:true};const f=await fixture({adminPages:[first,[protectedUser]],pages:[[protectedUser]]});t.after(()=>fs.rm(f.dir,{recursive:true,force:true}));await f.run(['4']);assert.equal(f.rpc.filter(x=>x instanceof Api.channels.EditBanned).length,0);const calls=f.rpc.filter(x=>x instanceof Api.channels.GetParticipants&&x.filter instanceof Api.ChannelParticipantsAdmins);assert.deepEqual(calls.map(x=>x.offset),[0,200]);});
-test('cleanup fails closed when the complete admin list is unavailable',async t=>{const f=await fixture({adminFailure:true});t.after(()=>fs.rm(f.dir,{recursive:true,force:true}));await f.run(['4']);assert.match(f.edits.at(-1),/已停止清理/);assert.equal(f.rpc.filter(x=>x instanceof Api.channels.EditBanned).length,0);});
-test('numeric parameters remain strict',async t=>{const f=await fixture();t.after(()=>fs.rm(f.dir,{recursive:true,force:true}));await f.run(['1','7days','search']);assert.match(f.edits.at(-1),/天数必须为正整数/);await f.run(['4','limit:2x']);assert.equal(f.edits.at(-1),'❌ limit 必须为正整数');});
-test('absurd FLOOD_WAIT values do not overflow into an immediate retry',async t=>{const f=await fixture({banError:'FLOOD_WAIT_999999999999'});t.after(()=>fs.rm(f.dir,{recursive:true,force:true}));await f.run(['4']);assert.equal(f.rpc.filter(x=>x instanceof Api.channels.EditBanned).length,1);assert.match(f.edits.at(-1),/失败\/跳过: <code>1<\/code>/);});
+"use strict";
+const test = require("node:test"),
+  assert = require("node:assert/strict"),
+  path = require("node:path"),
+  fs = require("node:fs/promises"),
+  os = require("node:os");
+const core = path.resolve(__dirname, "../../TeleBox-Core"),
+  { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs")),
+  Api = require(path.join(core, "node_modules/teleproto")).Api;
+const create = require(
+  path.join(
+    buildPlugin({ id: "clean_member", packageRoot: path.resolve(__dirname, "../clean_member"), entry: "v2.ts" })
+      .artifactDir,
+    "index.cjs",
+  ),
+).default;
+async function fixture(options = {}) {
+  if (typeof options === "boolean") options = { fail: options };
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cm-")),
+    edits = [],
+    rpc = [],
+    sent = [];
+  let state = { schemaVersion: 1, entries: {} };
+  const chat = options.chat || { className: "Channel", id: 10n, title: "Group" },
+    admin = new Api.ChannelParticipantAdmin({ userId: 1n, adminRights: new Api.ChatAdminRights({ banUsers: true }) });
+  let pages = 0,
+    adminPage = 0;
+  const defaultUsers = [{ className: "User", id: 2n, deleted: true, firstName: "Gone" }],
+    participantPages = options.pages || [defaultUsers, []],
+    adminPages = options.adminPages || [[{ id: 1n }]];
+  const controller = options.controller || new AbortController();
+  const client = {
+    getEntity: async value => {
+      options.onEntity?.(value);
+      return chat;
+    },
+    getInputEntity: async x => x,
+    getMe: async () => ({ id: 1n }),
+    sendFile: async (...args) => {
+      sent.push(args);
+      await options.sendFile?.(...args);
+    },
+    invoke: async req => {
+      rpc.push(req);
+      if (req instanceof Api.channels.GetParticipant) return { participant: admin };
+      if (req instanceof Api.channels.GetParticipants) {
+        if (req.filter instanceof Api.ChannelParticipantsAdmins) {
+          if (options.adminFailure) throw new Error("admin list unavailable");
+          return { users: adminPages[adminPage++] || [] };
+        }
+        return { users: participantPages[pages++] || [] };
+      }
+      if (req instanceof Api.channels.EditBanned) {
+        if (options.onBan) await options.onBan(req, rpc.filter(x => x instanceof Api.channels.EditBanned).length);
+        if (options.banError) throw Object.assign(new Error(options.banError), { errorMessage: options.banError });
+        if (options.fail) throw new Error("denied: /private/token");
+      }
+      return {};
+    },
+  };
+  const signal = controller.signal,
+    ctx = {
+      signal,
+      log: { error() {} },
+      files: { dataFile: async n => path.join(dir, n) },
+      storage: {
+        json: () => ({
+          read: async () => structuredClone(state),
+          update: async fn => (state = await fn(structuredClone(state))),
+        }),
+      },
+      telegram: { edit: async (m, t) => edits.push(t), withClient: fn => fn(client, signal) },
+    };
+  return {
+    controller,
+    dir,
+    edits,
+    rpc,
+    sent,
+    state: () => state,
+    run: (args, message = {}) =>
+      create().commands.clean_member.handle(
+        {
+          message: {
+            id: 1,
+            chatId: "-100",
+            text: ".clean_member " + args.join(" "),
+            outgoing: true,
+            raw: { peerId: "x" },
+            ...message,
+          },
+          args,
+          prefix: ".",
+          command: "clean_member",
+        },
+        ctx,
+      ),
+  };
+}
+test("search stores versioned cache and writes private uniquely named reports without exposing paths", async t => {
+  const f = await fixture();
+  t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  await f.run(["4", "search"]);
+  assert.equal(f.state().schemaVersion, 1);
+  assert.equal(Object.values(f.state().entries)[0].users[0].id, "2");
+  assert.match(f.edits.at(-1), /符合条件: <code>1<\/code>/);
+  await Promise.all([f.run(["4", "search"]), f.run(["4", "search"])]);
+  const reports = (await fs.readdir(f.dir)).filter(x => x.startsWith("report_"));
+  assert.equal(reports.length, 3);
+  assert.equal(new Set(reports).size, 3);
+  for (const report of reports) {
+    const file = path.join(f.dir, report);
+    assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+    assert.match(await fs.readFile(file, "utf8"), /"2","","Gone","未知","是"/);
+  }
+  assert.equal(
+    f.edits.some(text => text.includes(f.dir)),
+    false,
+  );
+  assert.match(f.edits.at(-1), /报告: <code>report_[^/]+\.csv<\/code>/);
+});
+test("cleanup checks ban permission and reports partial failure", async t => {
+  const f = await fixture(true);
+  t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  await f.run(["4"]);
+  assert.match(f.edits.at(-1), /失败\/跳过: <code>1<\/code>/);
+  const report = (await fs.readdir(f.dir)).find(x => x.startsWith("failed_"));
+  const body = await fs.readFile(path.join(f.dir, report), "utf8");
+  assert.match(body, /"移出失败"/);
+  assert.doesNotMatch(body, /private|token|denied/);
+});
+test("search paginates through every full participant page", async t => {
+  const first = Array.from({ length: 200 }, (_, i) => ({
+      className: "User",
+      id: BigInt(i + 2),
+      deleted: true,
+      firstName: `U${i}`,
+    })),
+    last = [{ className: "User", id: 900719925474099312345n, deleted: true, firstName: "Last" }];
+  const f = await fixture({ pages: [first, last] });
+  t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  await f.run(["4", "search"]);
+  assert.match(f.edits.at(-1), /扫描人数: <code>201<\/code>/);
+  assert.equal(Object.values(f.state().entries)[0].users.at(-1).id, "900719925474099312345");
+  const calls = f.rpc.filter(
+    x => x instanceof Api.channels.GetParticipants && x.filter instanceof Api.ChannelParticipantsRecent,
+  );
+  assert.deepEqual(
+    calls.map(x => x.offset),
+    [0, 200],
+  );
+});
+test("CSV neutralizes spreadsheet formulas and keeps commas and quotes intact", async t => {
+  const user = {
+    className: "User",
+    id: 2n,
+    deleted: true,
+    username: '=HYPERLINK("https://bad")',
+    firstName: '+cmd, "quoted"',
+    lastName: "@payload",
+  };
+  const f = await fixture({ pages: [[user]] });
+  t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  await f.run(["4", "search"]);
+  const report = (await fs.readdir(f.dir)).find(x => x.startsWith("report_"));
+  const body = await fs.readFile(path.join(f.dir, report), "utf8");
+  assert.match(body, /"'=HYPERLINK\(""https:\/\/bad""\)"/);
+  assert.match(body, /"'\+cmd, ""quoted"" @payload"/);
+});
+test("chat target preserves IDs beyond the JavaScript safe integer range", async t => {
+  let target;
+  const f = await fixture({
+    onEntity: value => {
+      target = value;
+    },
+  });
+  t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  await f.run(["4", "search", "chat:-100900719925474099312345"]);
+  assert.equal(target.toString(), "-100900719925474099312345");
+  assert.notEqual(typeof target, "number");
+});
+test("unload cancellation wins over USER_NOT_PARTICIPANT and prevents final feedback", async t => {
+  const blocked = Promise.withResolvers(),
+    entered = Promise.withResolvers(),
+    controller = new AbortController();
+  const f = await fixture({
+    controller,
+    banError: "USER_NOT_PARTICIPANT",
+    onBan: async (req, count) => {
+      if (count === 1) {
+        entered.resolve();
+        await blocked.promise;
+      }
+    },
+  });
+  t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const running = f.run(["4"]);
+  await entered.promise;
+  controller.abort();
+  blocked.resolve();
+  await running;
+  assert.equal(f.rpc.filter(x => x instanceof Api.channels.EditBanned).length, 1);
+  assert.equal(
+    f.edits.some(x => /清理完成|处理失败/.test(x)),
+    false,
+  );
+});
+test("cleanup paginates admins and never removes an admin from a later page", async t => {
+  const first = Array.from({ length: 200 }, (_, i) => ({ id: BigInt(i + 100) })),
+    protectedUser = { className: "User", id: 900719925474099312345n, deleted: true };
+  const f = await fixture({ adminPages: [first, [protectedUser]], pages: [[protectedUser]] });
+  t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  await f.run(["4"]);
+  assert.equal(f.rpc.filter(x => x instanceof Api.channels.EditBanned).length, 0);
+  const calls = f.rpc.filter(
+    x => x instanceof Api.channels.GetParticipants && x.filter instanceof Api.ChannelParticipantsAdmins,
+  );
+  assert.deepEqual(
+    calls.map(x => x.offset),
+    [0, 200],
+  );
+});
+test("cleanup fails closed when the complete admin list is unavailable", async t => {
+  const f = await fixture({ adminFailure: true });
+  t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  await f.run(["4"]);
+  assert.match(f.edits.at(-1), /已停止清理/);
+  assert.equal(f.rpc.filter(x => x instanceof Api.channels.EditBanned).length, 0);
+});
+test("numeric parameters remain strict", async t => {
+  const f = await fixture();
+  t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  await f.run(["1", "7days", "search"]);
+  assert.match(f.edits.at(-1), /天数必须为正整数/);
+  await f.run(["4", "limit:2x"]);
+  assert.equal(f.edits.at(-1), "❌ limit 必须为正整数");
+});
+test("absurd FLOOD_WAIT values do not overflow into an immediate retry", async t => {
+  const f = await fixture({ banError: "FLOOD_WAIT_999999999999" });
+  t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  await f.run(["4"]);
+  assert.equal(f.rpc.filter(x => x instanceof Api.channels.EditBanned).length, 1);
+  assert.match(f.edits.at(-1), /失败\/跳过: <code>1<\/code>/);
+});

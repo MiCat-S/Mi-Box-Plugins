@@ -12,10 +12,21 @@ const MAX_LIMIT = 100_000;
 function date(value: string, end: boolean): number | undefined {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) return;
-  const result = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]),
-    end ? 23 : 0, end ? 59 : 0, end ? 59 : 0, end ? 999 : 0);
-  if (result.getFullYear() !== Number(match[1]) || result.getMonth() !== Number(match[2]) - 1 ||
-      result.getDate() !== Number(match[3])) return;
+  const result = new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    end ? 23 : 0,
+    end ? 59 : 0,
+    end ? 59 : 0,
+    end ? 999 : 0,
+  );
+  if (
+    result.getFullYear() !== Number(match[1]) ||
+    result.getMonth() !== Number(match[2]) - 1 ||
+    result.getDate() !== Number(match[3])
+  )
+    return;
   return Math.floor(result.getTime() / 1000);
 }
 
@@ -49,5 +60,5 @@ export function parseArchiveInput(args: readonly string[]): ArchiveInput | undef
   const from = date(fromText, false);
   const to = date(toText, true);
   if (from === undefined || to === undefined || from > to) return;
-  return {target, from, to, label: `${fromText} 00:00:00 -> ${toText} 23:59:59`, batch, ...(limit ? {limit} : {})};
+  return { target, from, to, label: `${fromText} 00:00:00 -> ${toText} 23:59:59`, batch, ...(limit ? { limit } : {}) };
 }

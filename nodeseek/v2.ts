@@ -1,6 +1,13 @@
-import {setTimeout as sleep} from "node:timers/promises";
-import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, type CommandInvocation, definePlugin, type PluginContext} from "telebox/sdk";
-import {curlCffi, probeCurlCffi, validatePythonPath} from "./v2/curl-cffi";
+import { setTimeout as sleep } from "node:timers/promises";
+import {
+  STRUCTURED_PLUGIN_API_VERSION,
+  renderCommandHelp,
+  type CommandDefinition,
+  type CommandInvocation,
+  definePlugin,
+  type PluginContext,
+} from "telebox/sdk";
+import { curlCffi, probeCurlCffi, validatePythonPath } from "./v2/curl-cffi";
 
 type Data = Record<string, unknown> & {
   cookie: string;
@@ -9,21 +16,37 @@ type Data = Record<string, unknown> & {
   lastResult: string;
 };
 type Status = "success" | "already" | "invalid" | "fail" | "error";
-type Result = {result: Status; msg: string; diag?: string};
-const defaults: Data = {cookie: "", autoEnabled: false, lastDoneDate: "", lastResult: ""};
+type Result = { result: Status; msg: string; diag?: string };
+const defaults: Data = { cookie: "", autoEnabled: false, lastDoneDate: "", lastResult: "" };
 const titles: Record<Status, string> = {
-  success: "签到成功", already: "今日已签到", invalid: "Cookie 已失效", fail: "签到失败", error: "请求出错",
+  success: "签到成功",
+  already: "今日已签到",
+  invalid: "Cookie 已失效",
+  fail: "签到失败",
+  error: "请求出错",
 };
-const icons: Record<Status, string> = {success: "🍗", already: "✅", invalid: "⚠️", fail: "❌", error: "⚠️"};
+const icons: Record<Status, string> = { success: "🍗", already: "✅", invalid: "⚠️", fail: "❌", error: "⚠️" };
 const headers = {
   Accept: "application/json, text/plain, */*",
   "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-  origin: "https://www.nodeseek.com", referer: "https://www.nodeseek.com/board", "Content-Type": "application/json",
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  origin: "https://www.nodeseek.com",
+  referer: "https://www.nodeseek.com/board",
+  "Content-Type": "application/json",
 };
-const escape = (text: string): string => text.replace(/[&<>"']/g, character => ({
-  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-})[character]!);
+const escape = (text: string): string =>
+  text.replace(
+    /[&<>"']/g,
+    character =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[character]!,
+  );
 
 function today(): string {
   const date = new Date();
@@ -32,75 +55,120 @@ function today(): string {
 
 function redact(text: string, cookie: string, limit = 500): string {
   // Redact before truncation, including individual cookie values echoed by an upstream.
-  const secrets = [cookie, ...cookie.split(";").map(part => {
-    const separator = part.indexOf("=");
-    return separator < 0 ? "" : part.slice(separator + 1).trim();
-  })].filter(Boolean).sort((a, b) => b.length - a.length);
+  const secrets = [
+    cookie,
+    ...cookie.split(";").map(part => {
+      const separator = part.indexOf("=");
+      return separator < 0 ? "" : part.slice(separator + 1).trim();
+    }),
+  ]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
   for (const secret of secrets) text = text.split(secret).join("[REDACTED]");
   // Repair unpaired JSON surrogates and never split an astral character at the limit.
   // Node 24 provides this API; the shared SDK's ES2022 lib predates its declaration.
-  text = (text as string & {toWellFormed(): string}).toWellFormed();
+  text = (text as string & { toWellFormed(): string }).toWellFormed();
   const end = text.charCodeAt(limit - 1);
   return text.slice(0, end >= 0xd800 && end <= 0xdbff ? limit - 1 : limit);
 }
 
 function waf(server: string, body: string): boolean {
-  return /cloudflare/i.test(server) ||
-    /cf-browser-verification|just a moment|attention required|checking your browser|sorry, you have been blocked/i.test(body);
+  return (
+    /cloudflare/i.test(server) ||
+    /cf-browser-verification|just a moment|attention required|checking your browser|sorry, you have been blocked/i.test(
+      body,
+    )
+  );
 }
 
-function classify(status: number, server: string, body: string, cookie: string, transport: string, fallbackFailed: boolean): Result {
+function classify(
+  status: number,
+  server: string,
+  body: string,
+  cookie: string,
+  transport: string,
+  fallbackFailed: boolean,
+): Result {
   let data: unknown;
   let parsed = true;
-  try { data = JSON.parse(body); } catch { parsed = false; }
-  const payload = data && typeof data === "object" && !Array.isArray(data) ? data as Record<string, unknown> : {};
+  try {
+    data = JSON.parse(body);
+  } catch {
+    parsed = false;
+  }
+  const payload = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : {};
   const code = payload.code ?? payload.retcode ?? payload.status;
   const rawMessage = payload.message || payload.msg || payload.reason || "";
   const message = typeof rawMessage === "string" ? rawMessage : "";
   const msg = redact(message, cookie);
   // Business JSON takes precedence: NodeSeek also returns already-done results over HTTP 500.
-  if (/未登录|登录已过期|请先登录|not.*login|unauthorized|invalid.*cookie|cookie/i.test(message) ||
-      code === 401 || code === 4001 || code === 1001) {
-    return {result: "invalid", msg: msg || "Cookie 已失效，请重新获取"};
+  if (
+    /未登录|登录已过期|请先登录|not.*login|unauthorized|invalid.*cookie|cookie/i.test(message) ||
+    code === 401 ||
+    code === 4001 ||
+    code === 1001
+  ) {
+    return { result: "invalid", msg: msg || "Cookie 已失效，请重新获取" };
   }
-  if (payload.success === true || payload.code === 1 || payload.retcode === 1 || /鸡腿|签到成功|成功签到/.test(message)) {
-    return {result: "success", msg: msg || "签到成功"};
+  if (
+    payload.success === true ||
+    payload.code === 1 ||
+    payload.retcode === 1 ||
+    /鸡腿|签到成功|成功签到/.test(message)
+  ) {
+    return { result: "success", msg: msg || "签到成功" };
   }
   if (/已完成签到|已签到|今天已签到|已经签到/.test(message) || code === 0) {
-    return {result: "already", msg: msg || "今日已签到"};
+    return { result: "already", msg: msg || "今日已签到" };
   }
   const challenge = waf(server, body);
   // Raw response snippets can contain credentials unrelated to the configured cookie.
   const diag = `transport=${transport} | HTTP ${status} | JSON=${parsed} | WAF=${challenge}${fallbackFailed ? " | fallback=失败，请检查 Python/curl_cffi 配置" : ""}`;
-  if (status !== 200) return {
-    result: status === 401 ? "invalid" : challenge ? "fail" : "error",
-    msg: status === 401 ? "Cookie 已失效，请重新获取" :
-      `HTTP ${status}${challenge ? "（疑似被 Cloudflare/WAF 拦截，并非 Cookie 失效）" : ""}`,
-    diag,
-  };
-  if (!parsed) return {result: "error", msg: challenge ?
-    "请求被 Cloudflare/WAF 拦截，稍后重试" : "响应格式异常，无法解析", diag};
-  return {result: "fail", msg: msg || `签到失败（业务码 ${typeof code === "number" ? code : "未知"}）`, diag};
+  if (status !== 200)
+    return {
+      result: status === 401 ? "invalid" : challenge ? "fail" : "error",
+      msg:
+        status === 401
+          ? "Cookie 已失效，请重新获取"
+          : `HTTP ${status}${challenge ? "（疑似被 Cloudflare/WAF 拦截，并非 Cookie 失效）" : ""}`,
+      diag,
+    };
+  if (!parsed)
+    return {
+      result: "error",
+      msg: challenge ? "请求被 Cloudflare/WAF 拦截，稍后重试" : "响应格式异常，无法解析",
+      diag,
+    };
+  return { result: "fail", msg: msg || `签到失败（业务码 ${typeof code === "number" ? code : "未知"}）`, diag };
 }
 
-async function consume(response: Response, signal: AbortSignal): Promise<{status: number; server: string; body: string}> {
-  const result = {status: response.status, server: response.headers.get("server") || "", body: ""};
+async function consume(
+  response: Response,
+  signal: AbortSignal,
+): Promise<{ status: number; server: string; body: string }> {
+  const result = { status: response.status, server: response.headers.get("server") || "", body: "" };
   if (!response.body) return result;
   const reader = response.body.getReader();
   // Fixed storage bounds retained memory even for adversarial one-byte chunks.
   const buffer = new Uint8Array(64 * 1024);
-  let bytes = 0, done = false;
+  let bytes = 0,
+    done = false;
   let cancellation: Promise<void> | undefined;
-  const cancel = () => cancellation ??= reader.cancel();
+  const cancel = () => (cancellation ??= reader.cancel());
   // The observer prevents an unhandled rejection; finally awaits the same cancellation.
-  const onAbort = () => { void cancel().catch(() => undefined); };
-  signal.addEventListener("abort", onAbort, {once: true});
+  const onAbort = () => {
+    void cancel().catch(() => undefined);
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
   try {
     while (true) {
       signal.throwIfAborted();
       const chunk = await reader.read();
       signal.throwIfAborted();
-      if (chunk.done) { done = true; break; }
+      if (chunk.done) {
+        done = true;
+        break;
+      }
       if (chunk.value.byteLength > buffer.length - bytes) throw new Error("NodeSeek response exceeds byte limit");
       buffer.set(chunk.value, bytes);
       bytes += chunk.value.byteLength;
@@ -109,43 +177,55 @@ async function consume(response: Response, signal: AbortSignal): Promise<{status
     return result;
   } finally {
     signal.removeEventListener("abort", onAbort);
-    try { if (!done || cancellation) await cancel(); } finally { reader.releaseLock(); }
+    try {
+      if (!done || cancellation) await cancel();
+    } finally {
+      reader.releaseLock();
+    }
   }
 }
 
 function wait(ctx: PluginContext, ms: number, signal: AbortSignal): Promise<void> {
-  return ctx.tasks.run("nodeseek:wait", scoped => sleep(ms, undefined, {signal: AbortSignal.any([scoped, signal])}));
+  return ctx.tasks.run("nodeseek:wait", scoped => sleep(ms, undefined, { signal: AbortSignal.any([scoped, signal]) }));
 }
 
 async function sign(ctx: PluginContext, cookie: string, random: boolean, signal: AbortSignal): Promise<Result> {
-  let info: Result = {result: "error", msg: "网络请求出错"};
+  let info: Result = { result: "error", msg: "网络请求出错" };
   for (let attempt = 0; attempt < 3; attempt++) {
     signal.throwIfAborted();
     try {
       const url = `https://www.nodeseek.com/api/attendance?random=${random}`;
       let response = await ctx.http.withResponse(
         url,
-        {method: "POST", body: "{}", redirect: "manual", credentials: "omit", headers: {...headers, Cookie: cookie}},
-        consume, {signal, timeoutMs: 15000, redirects:{allowedHosts:["www.nodeseek.com"],maxRedirects:2}},
+        {
+          method: "POST",
+          body: "{}",
+          redirect: "manual",
+          credentials: "omit",
+          headers: { ...headers, Cookie: cookie },
+        },
+        consume,
+        { signal, timeoutMs: 15000, redirects: { allowedHosts: ["www.nodeseek.com"], maxRedirects: 2 } },
       );
       signal.throwIfAborted();
-      let transport = "scoped-http", fallbackFailed = false;
+      let transport = "scoped-http",
+        fallbackFailed = false;
       if ((response.status !== 200 && waf(response.server, response.body)) || waf("", response.body)) {
         try {
-          response = await curlCffi(ctx, url, {...headers, Cookie: cookie}, signal);
+          response = await curlCffi(ctx, url, { ...headers, Cookie: cookie }, signal);
           transport = "curl_cffi";
         } catch {
           signal.throwIfAborted();
           fallbackFailed = true;
-          ctx.log.error("nodeseek.fallback.failed", {attempt: attempt + 1});
+          ctx.log.error("nodeseek.fallback.failed", { attempt: attempt + 1 });
         }
       }
       info = classify(response.status, response.server, response.body, cookie, transport, fallbackFailed);
     } catch (error) {
       signal.throwIfAborted();
       const timeout = error instanceof Error && "code" in error && error.code === "TIMEOUT";
-      ctx.log.error("nodeseek.request.failed", {attempt: attempt + 1, timeout});
-      info = {result: "error", msg: timeout ? "网络请求超时，请稍后重试" : "网络请求出错，请稍后重试"};
+      ctx.log.error("nodeseek.request.failed", { attempt: attempt + 1, timeout });
+      info = { result: "error", msg: timeout ? "网络请求超时，请稍后重试" : "网络请求出错，请稍后重试" };
     }
     if (info.result !== "fail" && info.result !== "error") return info;
     if (attempt < 2) await wait(ctx, 3000, signal);
@@ -153,8 +233,12 @@ async function sign(ctx: PluginContext, cookie: string, random: boolean, signal:
   return info;
 }
 
-function store(ctx: PluginContext) { return ctx.storage.json<Data>("data.json", defaults); }
-function configStore(ctx: PluginContext) { return ctx.storage.json<Record<string, unknown>>("config.json", {}); }
+function store(ctx: PluginContext) {
+  return ctx.storage.json<Data>("data.json", defaults);
+}
+function configStore(ctx: PluginContext) {
+  return ctx.storage.json<Record<string, unknown>>("config.json", {});
+}
 
 async function persist(ctx: PluginContext, cookie: string, info: Result, signal: AbortSignal): Promise<void> {
   await store(ctx).update(data => {
@@ -167,153 +251,250 @@ async function persist(ctx: PluginContext, cookie: string, info: Result, signal:
 }
 
 /** signRandom keeps the original source-selected reward mode; default is random rewards. */
-export default function createNodeSeek({signRandom = true}: {signRandom?: boolean} = {}) {
+export default function createNodeSeek({ signRandom = true }: { signRandom?: boolean } = {}) {
   let signing = false;
   let dailyRunning = false;
   type Edit = (text: string, html?: boolean) => Promise<void>;
-  const guarded = (operation: (i: CommandInvocation, ctx: PluginContext, edit: Edit) => Promise<void>): CommandDefinition["handle"] => async (i, ctx) => {
-    const edit: Edit = async (text, html = false) => {
-      ctx.signal.throwIfAborted();
-      await ctx.telegram.edit(i.message, text, html ? {parseMode: "html"} : {});
+  const guarded =
+    (operation: (i: CommandInvocation, ctx: PluginContext, edit: Edit) => Promise<void>): CommandDefinition["handle"] =>
+    async (i, ctx) => {
+      const edit: Edit = async (text, html = false) => {
+        ctx.signal.throwIfAborted();
+        await ctx.telegram.edit(i.message, text, html ? { parseMode: "html" } : {});
+      };
+      try {
+        ctx.signal.throwIfAborted();
+        await operation(i, ctx, edit);
+      } catch {
+        ctx.signal.throwIfAborted();
+        ctx.log.error("nodeseek.command.failed");
+        try {
+          await edit("❌ 出错了：NodeSeek 操作失败，请检查配置或稍后重试");
+        } catch {
+          ctx.signal.throwIfAborted();
+          throw new Error("NodeSeek message delivery failed");
+        }
+      }
     };
-    try { ctx.signal.throwIfAborted(); await operation(i, ctx, edit); }
-    catch {
-      ctx.signal.throwIfAborted();
-      ctx.log.error("nodeseek.command.failed");
-      try { await edit("❌ 出错了：NodeSeek 操作失败，请检查配置或稍后重试"); }
-      catch { ctx.signal.throwIfAborted(); throw new Error("NodeSeek message delivery failed"); }
-    }
-  };
-  const auto = (enabled: boolean): CommandDefinition["handle"] => guarded(async (_i, ctx, edit) => {
-    await store(ctx).update(data => ({...data, autoEnabled: enabled}), ctx.signal);
-    await edit(enabled ? "✅ 已开启每日自动签到" : "⏹️ 已关闭每日自动签到");
-  });
+  const auto = (enabled: boolean): CommandDefinition["handle"] =>
+    guarded(async (_i, ctx, edit) => {
+      await store(ctx).update(data => ({ ...data, autoEnabled: enabled }), ctx.signal);
+      await edit(enabled ? "✅ 已开启每日自动签到" : "⏹️ 已关闭每日自动签到");
+    });
   const command: CommandDefinition = {
-    helpOnEmpty: true, helpArgs: ["help"], description: "NodeSeek 签到、Cookie 与自动签到设置", subcommandsCaseSensitive: false,
+    helpOnEmpty: true,
+    helpArgs: ["help"],
+    description: "NodeSeek 签到、Cookie 与自动签到设置",
+    subcommandsCaseSensitive: false,
     subcommands: {
-      set: {description: "设置或更新登录 Cookie", args: "Cookie", examples: [{args: "set ns_xxx=xxx; other=xxx"}],
-        help: [{heading: "获取 Cookie：", body: "浏览器登录 nodeseek.com，按 F12 打开开发者工具 → Network → 刷新页面 → 从请求的 Request Headers 复制完整 Cookie 字段值。Cookie 保存在本机 assets/nodeseek/data.json，失效后重新登录并设置。"}],
-        handle: guarded(async ({args, message, prefix}, ctx, edit) => {
+      set: {
+        description: "设置或更新登录 Cookie",
+        args: "Cookie",
+        examples: [{ args: "set ns_xxx=xxx; other=xxx" }],
+        help: [
+          {
+            heading: "获取 Cookie：",
+            body: "浏览器登录 nodeseek.com，按 F12 打开开发者工具 → Network → 刷新页面 → 从请求的 Request Headers 复制完整 Cookie 字段值。Cookie 保存在本机 assets/nodeseek/data.json，失效后重新登录并设置。",
+          },
+        ],
+        handle: guarded(async ({ args, message, prefix }, ctx, edit) => {
           if (!message.saved) {
             await edit("🔒 请仅在收藏夹中设置 Cookie");
             return;
           }
           const cookie = args.join(" ");
           if (cookie.length < 20) {
-            await edit(`❌ 请提供有效的 Cookie，例如：\n<code>${escape(prefix)}nodeseek set ns_xxx=xxx; other=xxx</code>`, true); return;
+            await edit(
+              `❌ 请提供有效的 Cookie，例如：\n<code>${escape(prefix)}nodeseek set ns_xxx=xxx; other=xxx</code>`,
+              true,
+            );
+            return;
           }
-          await store(ctx).update(data => ({...data, cookie, lastDoneDate: ""}), ctx.signal);
+          await store(ctx).update(data => ({ ...data, cookie, lastDoneDate: "" }), ctx.signal);
           await edit(`🍪 Cookie 已保存，可以用 <code>${escape(prefix)}nodeseek now</code> 测试签到了`, true);
           return;
-
-        })},
-      auto: {description: "设置每日自动签到", subcommands: {
-        on: {description: "开启自动签到", args: "", handle: auto(true)},
-        off: {description: "关闭自动签到", args: "", handle: auto(false)},
-      }, examples: [{args: "auto on"}, {args: "auto off"}],
-        help: [{heading: "执行时间：", body: "按服务进程本地时区，每天 8:00–8:59 随机执行一次，结果发送到收藏夹。"}],
-        handle: guarded(async ({prefix}, _ctx, edit) => { await edit(`用法：<code>${escape(prefix)}nodeseek auto on</code> 或 <code>${escape(prefix)}nodeseek auto off</code>`, true); })},
-      status: {description: "查看 Cookie、签到状态与 Python 回退环境", args: "", examples: [{args: "status"}], handle: guarded(async (_i, ctx, edit) => {
-        const data = await store(ctx).read(ctx.signal);
+        }),
+      },
+      auto: {
+        description: "设置每日自动签到",
+        subcommands: {
+          on: { description: "开启自动签到", args: "", handle: auto(true) },
+          off: { description: "关闭自动签到", args: "", handle: auto(false) },
+        },
+        examples: [{ args: "auto on" }, { args: "auto off" }],
+        help: [{ heading: "执行时间：", body: "按服务进程本地时区，每天 8:00–8:59 随机执行一次，结果发送到收藏夹。" }],
+        handle: guarded(async ({ prefix }, _ctx, edit) => {
+          await edit(
+            `用法：<code>${escape(prefix)}nodeseek auto on</code> 或 <code>${escape(prefix)}nodeseek auto off</code>`,
+            true,
+          );
+        }),
+      },
+      status: {
+        description: "查看 Cookie、签到状态与 Python 回退环境",
+        args: "",
+        examples: [{ args: "status" }],
+        handle: guarded(async (_i, ctx, edit) => {
+          const data = await store(ctx).read(ctx.signal);
           const fallback = await probeCurlCffi(ctx, ctx.signal);
-          await edit([
-            `🍪 Cookie：${data.cookie ? "已设置" : "未设置"}`,
-            `⏰ 自动签到：${data.autoEnabled ? "已开启（每天 8:00~8:59 随机一次）" : "未开启"}`,
-            `📅 今日是否已处理：${data.lastDoneDate === today() ? "是" : "否"}`,
-            `📝 最近一次结果：${redact(data.lastResult || "无", data.cookie || "")}`,
-            `🛡️ Cloudflare fallback：${fallback}`,
-          ].join("\n")); return;
-
-      })},
-      now: {description: "立即手动签到一次", args: "", examples: [{args: "now"}], handle: guarded(async ({prefix}, ctx, edit) => {
-        const data = await store(ctx).read(ctx.signal);
-        if (!data.cookie) {
-          await edit(`⚠️ 还没有设置 Cookie，先用 <code>${escape(prefix)}nodeseek set &lt;cookie&gt;</code> 设置`, true); return;
-        }
-        if (signing) { await edit("⏳ 正在签到，请等待当前签到完成"); return; }
-        signing = true;
-        try {
-          await edit("⏳ 正在签到…");
-          const info = await sign(ctx, data.cookie, signRandom, ctx.signal);
-          await persist(ctx, data.cookie, info, ctx.signal);
-          await edit(`${icons[info.result]} <b>${titles[info.result]}</b>\n${escape(info.msg)}${info.diag ? `\n\n<code>${escape(info.diag)}</code>` : ""}`, true);
-        } finally { signing = false; }
-
-      })},
+          await edit(
+            [
+              `🍪 Cookie：${data.cookie ? "已设置" : "未设置"}`,
+              `⏰ 自动签到：${data.autoEnabled ? "已开启（每天 8:00~8:59 随机一次）" : "未开启"}`,
+              `📅 今日是否已处理：${data.lastDoneDate === today() ? "是" : "否"}`,
+              `📝 最近一次结果：${redact(data.lastResult || "无", data.cookie || "")}`,
+              `🛡️ Cloudflare fallback：${fallback}`,
+            ].join("\n"),
+          );
+          return;
+        }),
+      },
+      now: {
+        description: "立即手动签到一次",
+        args: "",
+        examples: [{ args: "now" }],
+        handle: guarded(async ({ prefix }, ctx, edit) => {
+          const data = await store(ctx).read(ctx.signal);
+          if (!data.cookie) {
+            await edit(
+              `⚠️ 还没有设置 Cookie，先用 <code>${escape(prefix)}nodeseek set &lt;cookie&gt;</code> 设置`,
+              true,
+            );
+            return;
+          }
+          if (signing) {
+            await edit("⏳ 正在签到，请等待当前签到完成");
+            return;
+          }
+          signing = true;
+          try {
+            await edit("⏳ 正在签到…");
+            const info = await sign(ctx, data.cookie, signRandom, ctx.signal);
+            await persist(ctx, data.cookie, info, ctx.signal);
+            await edit(
+              `${icons[info.result]} <b>${titles[info.result]}</b>\n${escape(info.msg)}${info.diag ? `\n\n<code>${escape(info.diag)}</code>` : ""}`,
+              true,
+            );
+          } finally {
+            signing = false;
+          }
+        }),
+      },
     },
-    help: [{heading: "说明：", body: "签到逻辑参考 xinycai/nodeseek_signin，直接调用 NodeSeek 签到接口领取鸡腿。遇到 Cloudflare/WAF 挑战时尝试已有 Python 的 curl_cffi 浏览器指纹回退；可在插件设置填写 Python 绝对路径，留空时优先使用插件数据目录的旧 venv，其次本地 PATH。"}],
-    handle: guarded(async (i, _ctx, edit) => { await edit(help(i.prefix), true); }),
+    help: [
+      {
+        heading: "说明：",
+        body: "签到逻辑参考 xinycai/nodeseek_signin，直接调用 NodeSeek 签到接口领取鸡腿。遇到 Cloudflare/WAF 挑战时尝试已有 Python 的 curl_cffi 浏览器指纹回退；可在插件设置填写 Python 绝对路径，留空时优先使用插件数据目录的旧 venv，其次本地 PATH。",
+      },
+    ],
+    handle: guarded(async (i, _ctx, edit) => {
+      await edit(help(i.prefix), true);
+    }),
   };
-  const help = (prefix: string) => renderCommandHelp("nodeseek", command, {prefix, title: "🍗 NodeSeek 自动签到"});
-  return definePlugin({renderHelp: help,
-    apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "nodeseek", description: "NodeSeek 论坛每日签到，领取鸡腿",
-    commands: {nodeseek: command},
+  const help = (prefix: string) => renderCommandHelp("nodeseek", command, { prefix, title: "🍗 NodeSeek 自动签到" });
+  return definePlugin({
+    renderHelp: help,
+    apiVersion: STRUCTURED_PLUGIN_API_VERSION,
+    id: "nodeseek",
+    description: "NodeSeek 论坛每日签到，领取鸡腿",
+    commands: { nodeseek: command },
     async setup(ctx) {
       const config = await configStore(ctx).read(ctx.signal);
       const legacyCookie = typeof config.cookie === "string" ? config.cookie : "";
       if (!legacyCookie) return;
-      await store(ctx).update(data => data.cookie ? data : {...data, cookie: legacyCookie, lastDoneDate: ""}, ctx.signal);
+      await store(ctx).update(
+        data => (data.cookie ? data : { ...data, cookie: legacyCookie, lastDoneDate: "" }),
+        ctx.signal,
+      );
       await configStore(ctx).update(data => {
-        const next = {...data};
+        const next = { ...data };
         delete next.cookie;
         return next;
       }, ctx.signal);
     },
-    jobs: {nodeseek_daily_checkin: {
-      cron: "0 8 * * *", description: "NodeSeek 每日自动签到（8:00~8:59 内随机执行一次）",
-      async handle(ctx, callerSignal) {
-        const signal = AbortSignal.any([ctx.signal, callerSignal]);
-        signal.throwIfAborted();
-        if (dailyRunning) return;
-        dailyRunning = true;
-        try {
-          let data = await store(ctx).read(signal);
-          if (!data.autoEnabled || !data.cookie || data.lastDoneDate === today()) return;
-          await wait(ctx, Math.floor(Math.random() * 59 * 60 * 1000), signal);
-          data = await store(ctx).read(signal);
-          if (!data.autoEnabled || !data.cookie || data.lastDoneDate === today() || signing) return;
-          signing = true;
+    jobs: {
+      nodeseek_daily_checkin: {
+        cron: "0 8 * * *",
+        description: "NodeSeek 每日自动签到（8:00~8:59 内随机执行一次）",
+        async handle(ctx, callerSignal) {
+          const signal = AbortSignal.any([ctx.signal, callerSignal]);
+          signal.throwIfAborted();
+          if (dailyRunning) return;
+          dailyRunning = true;
           try {
-            const info = await sign(ctx, data.cookie, signRandom, signal);
-            await persist(ctx, data.cookie, info, signal);
-            signal.throwIfAborted();
-            await ctx.telegram.withClient(async (client, transportSignal) => {
+            let data = await store(ctx).read(signal);
+            if (!data.autoEnabled || !data.cookie || data.lastDoneDate === today()) return;
+            await wait(ctx, Math.floor(Math.random() * 59 * 60 * 1000), signal);
+            data = await store(ctx).read(signal);
+            if (!data.autoEnabled || !data.cookie || data.lastDoneDate === today() || signing) return;
+            signing = true;
+            try {
+              const info = await sign(ctx, data.cookie, signRandom, signal);
+              await persist(ctx, data.cookie, info, signal);
               signal.throwIfAborted();
-              transportSignal.throwIfAborted();
-              await client.sendMessage("me", {message: `${icons[info.result]} NodeSeek ${titles[info.result]}\n${info.msg}`, parseMode: false});
-            });
-          } finally { signing = false; }
-        } finally { dailyRunning = false; }
+              await ctx.telegram.withClient(async (client, transportSignal) => {
+                signal.throwIfAborted();
+                transportSignal.throwIfAborted();
+                await client.sendMessage("me", {
+                  message: `${icons[info.result]} NodeSeek ${titles[info.result]}\n${info.msg}`,
+                  parseMode: false,
+                });
+              });
+            } finally {
+              signing = false;
+            }
+          } finally {
+            dailyRunning = false;
+          }
+        },
       },
-    }},
+    },
     settings: ctx => ({
-      id: "nodeseek", title: "NodeSeek 签到", description: "NodeSeek 自动签到配置", category: "插件配置", icon: "🍗",
+      id: "nodeseek",
+      title: "NodeSeek 签到",
+      description: "NodeSeek 自动签到配置",
+      category: "插件配置",
+      icon: "🍗",
       getSchema: () => [
-        {key: "cookie", label: "Cookie", type: "password", secret: true, description: "NodeSeek 论坛登录 Cookie"},
-        {key: "autoEnabled", label: "每日自动签到", type: "boolean", description: "每天 8:00–8:59 随机执行一次并发送结果到收藏夹"},
-        {key: "pythonPath", label: "Python 绝对路径", type: "string", description: "已有 curl_cffi 的 Python；留空时优先旧 venv，其次本地 PATH"},
+        { key: "cookie", label: "Cookie", type: "password", secret: true, description: "NodeSeek 论坛登录 Cookie" },
+        {
+          key: "autoEnabled",
+          label: "每日自动签到",
+          type: "boolean",
+          description: "每天 8:00–8:59 随机执行一次并发送结果到收藏夹",
+        },
+        {
+          key: "pythonPath",
+          label: "Python 绝对路径",
+          type: "string",
+          description: "已有 curl_cffi 的 Python；留空时优先旧 venv，其次本地 PATH",
+        },
       ],
       getValues: async signal => {
         const [config, data] = await Promise.all([configStore(ctx).read(signal), store(ctx).read(signal)]);
         signal.throwIfAborted();
-        return {...config, cookie: data.cookie, autoEnabled: data.autoEnabled};
+        return { ...config, cookie: data.cookie, autoEnabled: data.autoEnabled };
       },
       setValues: async (patch, signal) => {
         if (patch.pythonPath !== undefined) validatePythonPath(patch.pythonPath);
         if (patch.cookie !== undefined) {
           const cookie = patch.cookie as string;
-          await store(ctx).update(data => ({...data, cookie, ...(data.cookie === cookie ? {} : {lastDoneDate: ""})}), signal);
+          await store(ctx).update(
+            data => ({ ...data, cookie, ...(data.cookie === cookie ? {} : { lastDoneDate: "" }) }),
+            signal,
+          );
         }
         if (patch.autoEnabled !== undefined) {
           const autoEnabled = patch.autoEnabled as boolean;
-          await store(ctx).update(data => ({...data, autoEnabled}), signal);
+          await store(ctx).update(data => ({ ...data, autoEnabled }), signal);
         }
-        const configPatch = {...patch};
+        const configPatch = { ...patch };
         delete configPatch.cookie;
         delete configPatch.autoEnabled;
-        if (Object.keys(configPatch).length) await configStore(ctx).update(data => ({...data, ...configPatch}), signal);
+        if (Object.keys(configPatch).length)
+          await configStore(ctx).update(data => ({ ...data, ...configPatch }), signal);
       },
     }),
-    resources: {processes: {concurrency: 1, queueCapacity: 1, timeoutMs: 30_000, maxOutputBytes: 1024 * 1024}},
+    resources: { processes: { concurrency: 1, queueCapacity: 1, timeoutMs: 30_000, maxOutputBytes: 1024 * 1024 } },
   });
 }

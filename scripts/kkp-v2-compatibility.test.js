@@ -1,26 +1,260 @@
-'use strict';
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
-const core=path.resolve(__dirname,'../../TeleBox-Core');
-const {buildPlugin}=require(path.join(core,'scripts/build-v2-plugin.cjs')),{PluginHost}=require(path.join(core,'dist/v2/host.js')),{Api}=require(path.join(core,'node_modules/teleproto'));
-const create=require(path.join(buildPlugin({id:'kkp',packageRoot:path.resolve(__dirname,'../kkp'),entry:'v2.ts'}).artifactDir,'index.cjs')).default;
-const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return{promise,resolve};};
-function result(id=11n){const document=Object.assign(Object.create(Api.Document.prototype),{id:9007199254741999n,accessHash:-9007199254742999n,fileReference:Buffer.from('ref'),mimeType:'video/mp4',attributes:[]});const media=Object.assign(Object.create(Api.MessageMediaDocument.prototype),{document});return{id,out:false,message:'title #tag https://secret',entities:[{className:'MessageEntityHashtag',offset:6,length:4},{className:'MessageEntityUrl',offset:11,length:14}],media,document};}
-async function fixture(t,options={}){const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'kkp-compat-'))),edits=[],logs=[],sentMessages=[],files=[],reads=[];let deleted=0,readCalls=0;
- const client={async getMessages(...args){readCalls++;reads.push(args);if(options.getMessages)return options.getMessages(readCalls);return readCalls===1?[{id:10n}]:[result()];},async sendMessage(_peer,payload){sentMessages.push(payload.message);},async sendFile(peer,payload){files.push({peer,payload});if(options.sendFile)return options.sendFile(payload);},async markAsRead(){if(options.markFailure)throw new Error('mark secret');}};
- const host=new PluginHost({storageRoot:root,logger:{info(event,fields){logs.push({level:'info',event,fields});},error(event,fields){logs.push({level:'error',event,fields});}},telegram:{async edit(_m,text,settings){edits.push({text,settings});},async reply(){},async invoke(){},async getReply(){},async withClient(operation,signal){return operation(client,signal);}}});await host.load(create());t.after(async()=>{await host.shutdown(1000);await fs.rm(root,{recursive:true,force:true});});let id=0;
- const run=(text='.kkp',raw={peerId:'peer',async delete(){deleted++;if(options.deleteFailure)throw new Error('delete token=/private/path');}})=>host.dispatchPrimary({id:++id,chatId:'9007199254740999',senderId:'1',outgoing:true,text,replyToId:9,raw});return{host,edits,logs,sentMessages,files,reads,run,get deleted(){return deleted;}};}
+"use strict";
+const test = require("node:test"),
+  assert = require("node:assert/strict"),
+  fs = require("node:fs/promises"),
+  os = require("node:os"),
+  path = require("node:path");
+const core = path.resolve(__dirname, "../../TeleBox-Core");
+const { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs")),
+  { PluginHost } = require(path.join(core, "dist/v2/host.js")),
+  { Api } = require(path.join(core, "node_modules/teleproto"));
+const create = require(
+  path.join(
+    buildPlugin({ id: "kkp", packageRoot: path.resolve(__dirname, "../kkp"), entry: "v2.ts" }).artifactDir,
+    "index.cjs",
+  ),
+).default;
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(done => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+function result(id = 11n) {
+  const document = Object.assign(Object.create(Api.Document.prototype), {
+    id: 9007199254741999n,
+    accessHash: -9007199254742999n,
+    fileReference: Buffer.from("ref"),
+    mimeType: "video/mp4",
+    attributes: [],
+  });
+  const media = Object.assign(Object.create(Api.MessageMediaDocument.prototype), { document });
+  return {
+    id,
+    out: false,
+    message: "title #tag https://secret",
+    entities: [
+      { className: "MessageEntityHashtag", offset: 6, length: 4 },
+      { className: "MessageEntityUrl", offset: 11, length: 14 },
+    ],
+    media,
+    document,
+  };
+}
+async function fixture(t, options = {}) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "kkp-compat-"))),
+    edits = [],
+    logs = [],
+    sentMessages = [],
+    files = [],
+    reads = [];
+  let deleted = 0,
+    readCalls = 0;
+  const client = {
+    async getMessages(...args) {
+      readCalls++;
+      reads.push(args);
+      if (options.getMessages) return options.getMessages(readCalls);
+      return readCalls === 1 ? [{ id: 10n }] : [result()];
+    },
+    async sendMessage(_peer, payload) {
+      sentMessages.push(payload.message);
+    },
+    async sendFile(peer, payload) {
+      files.push({ peer, payload });
+      if (options.sendFile) return options.sendFile(payload);
+    },
+    async markAsRead() {
+      if (options.markFailure) throw new Error("mark secret");
+    },
+  };
+  const host = new PluginHost({
+    storageRoot: root,
+    logger: {
+      info(event, fields) {
+        logs.push({ level: "info", event, fields });
+      },
+      error(event, fields) {
+        logs.push({ level: "error", event, fields });
+      },
+    },
+    telegram: {
+      async edit(_m, text, settings) {
+        edits.push({ text, settings });
+      },
+      async reply() {},
+      async invoke() {},
+      async getReply() {},
+      async withClient(operation, signal) {
+        return operation(client, signal);
+      },
+    },
+  });
+  await host.load(create());
+  t.after(async () => {
+    await host.shutdown(1000);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  let id = 0;
+  const run = (
+    text = ".kkp",
+    raw = {
+      peerId: "peer",
+      async delete() {
+        deleted++;
+        if (options.deleteFailure) throw new Error("delete token=/private/path");
+      },
+    },
+  ) =>
+    host.dispatchPrimary({
+      id: ++id,
+      chatId: "9007199254740999",
+      senderId: "1",
+      outgoing: true,
+      text,
+      replyToId: 9,
+      raw,
+    });
+  return {
+    host,
+    edits,
+    logs,
+    sentMessages,
+    files,
+    reads,
+    run,
+    get deleted() {
+      return deleted;
+    },
+  };
+}
 
-test('KKP-COMPAT-01 sends the original video as spoiler with filtered caption then cleans command',async t=>{const f=await fixture(t);await f.run();assert.deepEqual(f.sentMessages,['随机色色']);assert.equal(f.files.length,1);assert.ok(f.files[0].payload.file instanceof Api.InputMediaDocument);assert.ok(f.files[0].payload.file.getBytes().length>0);assert.equal(f.files[0].payload.caption,'title');assert.equal(f.files[0].payload.formattingEntities[0].length,5);assert.equal(f.files[0].payload.replyTo,9);assert.equal(f.deleted,1);});
-test('KKP-COMPAT-02 cancellation after initial history read starts no bot command',async t=>{const entered=deferred(),release=deferred();const f=await fixture(t,{getMessages:async()=>{entered.resolve();await release.promise;return[{id:10n}];}});const running=f.run();await entered.promise;const unloading=f.host.unload('kkp',1000);release.resolve();assert.equal((await unloading).completed,true);await running;assert.deepEqual(f.sentMessages,[]);assert.equal(f.deleted,0);assert.doesNotMatch(f.edits.map(x=>x.text).join('\n'),/失败|secret/);});
-test('KKP-COMPAT-03 cleanup deletion failure logs a fixed event without failing delivery',async t=>{const f=await fixture(t,{deleteFailure:true});await f.run();assert.equal(f.files.length,1);assert.equal(f.deleted,1);assert.equal(f.logs.some(x=>x.event==='kkp_command_cleanup_failed'),true);assert.equal(f.logs.some(x=>x.event==='kkp_failed'),false);assert.doesNotMatch(JSON.stringify({edits:f.edits,logs:f.logs}),/token=|private\/path/);});
-test('KKP-COMPAT-04 unknown parameters preserve escaped original feedback',async t=>{const f=await fixture(t);await f.run('.kkp <bad>');assert.equal(f.edits.at(-1).text,'❌ <b>未知命令:</b> <code>&lt;bad&gt;</code>');assert.deepEqual(f.sentMessages,[]);});
+test("KKP-COMPAT-01 sends the original video as spoiler with filtered caption then cleans command", async t => {
+  const f = await fixture(t);
+  await f.run();
+  assert.deepEqual(f.sentMessages, ["随机色色"]);
+  assert.equal(f.files.length, 1);
+  assert.ok(f.files[0].payload.file instanceof Api.InputMediaDocument);
+  assert.ok(f.files[0].payload.file.getBytes().length > 0);
+  assert.equal(f.files[0].payload.caption, "title");
+  assert.equal(f.files[0].payload.formattingEntities[0].length, 5);
+  assert.equal(f.files[0].payload.replyTo, 9);
+  assert.equal(f.deleted, 1);
+});
+test("KKP-COMPAT-02 cancellation after initial history read starts no bot command", async t => {
+  const entered = deferred(),
+    release = deferred();
+  const f = await fixture(t, {
+    getMessages: async () => {
+      entered.resolve();
+      await release.promise;
+      return [{ id: 10n }];
+    },
+  });
+  const running = f.run();
+  await entered.promise;
+  const unloading = f.host.unload("kkp", 1000);
+  release.resolve();
+  assert.equal((await unloading).completed, true);
+  await running;
+  assert.deepEqual(f.sentMessages, []);
+  assert.equal(f.deleted, 0);
+  assert.doesNotMatch(f.edits.map(x => x.text).join("\n"), /失败|secret/);
+});
+test("KKP-COMPAT-03 cleanup deletion failure logs a fixed event without failing delivery", async t => {
+  const f = await fixture(t, { deleteFailure: true });
+  await f.run();
+  assert.equal(f.files.length, 1);
+  assert.equal(f.deleted, 1);
+  assert.equal(
+    f.logs.some(x => x.event === "kkp_command_cleanup_failed"),
+    true,
+  );
+  assert.equal(
+    f.logs.some(x => x.event === "kkp_failed"),
+    false,
+  );
+  assert.doesNotMatch(JSON.stringify({ edits: f.edits, logs: f.logs }), /token=|private\/path/);
+});
+test("KKP-COMPAT-04 unknown parameters preserve escaped original feedback", async t => {
+  const f = await fixture(t);
+  await f.run(".kkp <bad>");
+  assert.equal(f.edits.at(-1).text, "❌ <b>未知命令:</b> <code>&lt;bad&gt;</code>");
+  assert.deepEqual(f.sentMessages, []);
+});
 
-test('KKP-COMPAT-05 cancellation while upload is in flight prevents command cleanup and failure feedback',async t=>{const entered=deferred(),release=deferred();const f=await fixture(t,{sendFile:async()=>{entered.resolve();await release.promise;}});const running=f.run();await entered.promise;const unloading=f.host.unload('kkp',1000);release.resolve();assert.equal((await unloading).completed,true);await running;assert.equal(f.deleted,0);assert.equal(f.logs.some(x=>x.event==='kkp_failed'),false);assert.doesNotMatch(f.edits.map(x=>x.text).join('\n'),/失败/);});
+test("KKP-COMPAT-05 cancellation while upload is in flight prevents command cleanup and failure feedback", async t => {
+  const entered = deferred(),
+    release = deferred();
+  const f = await fixture(t, {
+    sendFile: async () => {
+      entered.resolve();
+      await release.promise;
+    },
+  });
+  const running = f.run();
+  await entered.promise;
+  const unloading = f.host.unload("kkp", 1000);
+  release.resolve();
+  assert.equal((await unloading).completed, true);
+  await running;
+  assert.equal(f.deleted, 0);
+  assert.equal(
+    f.logs.some(x => x.event === "kkp_failed"),
+    false,
+  );
+  assert.doesNotMatch(f.edits.map(x => x.text).join("\n"), /失败/);
+});
 
-test('KKP-COMPAT-06 bot failures expose neither error names nor messages',async t=>{const f=await fixture(t,{getMessages:async()=>{const error=new Error('token=private /secret/path');error.name='PrivateTransportError';throw error;}});await f.run();const visible=JSON.stringify({edits:f.edits,logs:f.logs});assert.match(f.edits.at(-1).text,/获取视频失败或超时/);assert.doesNotMatch(visible,/PrivateTransportError|token=private|secret\/path/);});
+test("KKP-COMPAT-06 bot failures expose neither error names nor messages", async t => {
+  const f = await fixture(t, {
+    getMessages: async () => {
+      const error = new Error("token=private /secret/path");
+      error.name = "PrivateTransportError";
+      throw error;
+    },
+  });
+  await f.run();
+  const visible = JSON.stringify({ edits: f.edits, logs: f.logs });
+  assert.match(f.edits.at(-1).text, /获取视频失败或超时/);
+  assert.doesNotMatch(visible, /PrivateTransportError|token=private|secret\/path/);
+});
 
-test('KKP-COMPAT-07 help is complete and uses the active prefix',async t=>{const f=await fixture(t);await f.run('.kkp help');const text=f.edits.at(-1).text;assert.match(text,/随机色色视频获取/);assert.match(text,/<code>\.kkp<\/code>/);assert.match(text,/SeSe3000Bot/);assert.deepEqual(f.sentMessages,[]);});
+test("KKP-COMPAT-07 help is complete and uses the active prefix", async t => {
+  const f = await fixture(t);
+  await f.run(".kkp help");
+  const text = f.edits.at(-1).text;
+  assert.match(text, /随机色色视频获取/);
+  assert.match(text, /<code>\.kkp<\/code>/);
+  assert.match(text, /SeSe3000Bot/);
+  assert.deepEqual(f.sentMessages, []);
+});
 
-test('KKP-COMPAT-08 filename video formats and precise cursors select only newer inbound media',async t=>{for(const extension of ['mp4','avi','mov','mkv','webm','flv','wmv','m4v']){let calls=0;const media={className:'MessageMediaDocument',document:{mimeType:'application/octet-stream',attributes:[{className:'DocumentAttributeFilename',fileName:`clip.${extension}`}]}};const candidate={id:'9007199254742000',out:false,message:'clip',media};const f=await fixture(t,{getMessages:async()=>++calls===1?[{id:'9007199254741999'}]:[{...candidate,id:'9007199254741999'},candidate]});await f.run();assert.equal(f.files.length,1);assert.equal(f.files[0].payload.file,media);}});
+test("KKP-COMPAT-08 filename video formats and precise cursors select only newer inbound media", async t => {
+  for (const extension of ["mp4", "avi", "mov", "mkv", "webm", "flv", "wmv", "m4v"]) {
+    let calls = 0;
+    const media = {
+      className: "MessageMediaDocument",
+      document: {
+        mimeType: "application/octet-stream",
+        attributes: [{ className: "DocumentAttributeFilename", fileName: `clip.${extension}` }],
+      },
+    };
+    const candidate = { id: "9007199254742000", out: false, message: "clip", media };
+    const f = await fixture(t, {
+      getMessages: async () =>
+        ++calls === 1 ? [{ id: "9007199254741999" }] : [{ ...candidate, id: "9007199254741999" }, candidate],
+    });
+    await f.run();
+    assert.equal(f.files.length, 1);
+    assert.equal(f.files[0].payload.file, media);
+  }
+});
 
-test('KKP-COMPAT-09 missing raw peer falls back to precise chat id',async t=>{const f=await fixture(t);await f.run('.kkp',{async delete(){}});assert.equal(String(f.files[0].peer),'9007199254740999');assert.equal(typeof f.files[0].peer,'object');});
+test("KKP-COMPAT-09 missing raw peer falls back to precise chat id", async t => {
+  const f = await fixture(t);
+  await f.run(".kkp", { async delete() {} });
+  assert.equal(String(f.files[0].peer), "9007199254740999");
+  assert.equal(typeof f.files[0].peer, "object");
+});

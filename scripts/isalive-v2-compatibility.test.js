@@ -1,19 +1,288 @@
-'use strict';
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
-const core=path.resolve(__dirname,'../../TeleBox-Core'),{buildPlugin}=require(path.join(core,'scripts/build-v2-plugin.cjs')),{PluginHost}=require(path.join(core,'dist/v2/host.js')),{Api}=require(path.join(core,'node_modules/teleproto')),{returnBigInt}=require(path.join(core,'node_modules/teleproto/Helpers.js'));
-function plugin(){const {artifactDir}=buildPlugin({id:'isalive',packageRoot:path.resolve(__dirname,'../isalive'),entry:'v2.ts'}),entry=path.join(artifactDir,'index.cjs');delete require.cache[require.resolve(entry)];return require(entry).default();}
-async function fixture(t,client,options={}){const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'mibot-isalive-'))),edits=[],replies=[],logs=[];const host=new PluginHost({storageRoot:root,prefixes:options.prefixes,logger:{info(){},error(event,fields){logs.push({event,fields});}},telegram:{async edit(message,text,sendOptions){edits.push({message,text,options:sendOptions});},async reply(message,text,sendOptions){replies.push({message,text,options:sendOptions});if(options.onReply)await options.onReply(text);},async invoke(){assert.fail('invoke');},async getReply(){},async withClient(operation,signal){return operation(client,signal);}}});await host.load(plugin());t.after(async()=>{await host.shutdown(2000);await fs.rm(root,{recursive:true,force:true});});return{host,edits,replies,logs,run:(text,message={})=>host.dispatchPrimary({id:1,chatId:'-1009',senderId:'7',outgoing:true,text,...message})};}
+"use strict";
+const test = require("node:test"),
+  assert = require("node:assert/strict"),
+  fs = require("node:fs/promises"),
+  os = require("node:os"),
+  path = require("node:path");
+const core = path.resolve(__dirname, "../../TeleBox-Core"),
+  { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs")),
+  { PluginHost } = require(path.join(core, "dist/v2/host.js")),
+  { Api } = require(path.join(core, "node_modules/teleproto")),
+  { returnBigInt } = require(path.join(core, "node_modules/teleproto/Helpers.js"));
+function plugin() {
+  const { artifactDir } = buildPlugin({
+      id: "isalive",
+      packageRoot: path.resolve(__dirname, "../isalive"),
+      entry: "v2.ts",
+    }),
+    entry = path.join(artifactDir, "index.cjs");
+  delete require.cache[require.resolve(entry)];
+  return require(entry).default();
+}
+async function fixture(t, client, options = {}) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mibot-isalive-"))),
+    edits = [],
+    replies = [],
+    logs = [];
+  const host = new PluginHost({
+    storageRoot: root,
+    prefixes: options.prefixes,
+    logger: {
+      info() {},
+      error(event, fields) {
+        logs.push({ event, fields });
+      },
+    },
+    telegram: {
+      async edit(message, text, sendOptions) {
+        edits.push({ message, text, options: sendOptions });
+      },
+      async reply(message, text, sendOptions) {
+        replies.push({ message, text, options: sendOptions });
+        if (options.onReply) await options.onReply(text);
+      },
+      async invoke() {
+        assert.fail("invoke");
+      },
+      async getReply() {},
+      async withClient(operation, signal) {
+        return operation(client, signal);
+      },
+    },
+  });
+  await host.load(plugin());
+  t.after(async () => {
+    await host.shutdown(2000);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  return {
+    host,
+    edits,
+    replies,
+    logs,
+    run: (text, message = {}) =>
+      host.dispatchPrimary({ id: 1, chatId: "-1009", senderId: "7", outgoing: true, text, ...message }),
+  };
+}
 
-test('isalive preserves help, exact missing input, username normalization and full output',async t=>{const id=returnBigInt('9007199254740993'),seen=[],now=Math.floor(Date.now()/1000);const user=new Api.User({id,accessHash:returnBigInt(2),firstName:'A<&',lastName:'User',username:'alice',verified:true,premium:true,support:true,status:new Api.UserStatusOffline({wasOnline:now-4*86400})});const client={async getEntity(value){seen.push(value);return user;},async getMessages(peer,options){assert.equal(peer.className,'PeerChannel');assert.equal(options.fromUser,user);assert.equal(options.replyTo,42);return[new Api.Message({id:3,peerId:peer,message:'hi',date:now-8*86400})];}};const f=await fixture(t,client,{prefixes:['!']});await f.run('!isalive');assert.match(f.edits.at(-1).text,/Missing parameter/);assert.match(f.edits.at(-1).text,/!isalive 1948276144/);const peer=new Api.PeerChannel({channelId:returnBigInt(9)});await f.run('!isalive alice',{topicId:42,raw:{peerId:peer}});assert.equal(seen[0],'@alice');const out=f.edits.at(-1).text;assert.match(out,/👤 用户信息/);assert.match(out,/A&lt;&amp; User/);assert.match(out,/9007199254740993/);assert.match(out,/官方认证/);assert.match(out,/Premium/);assert.match(out,/官方客服/);assert.match(out,/本群潜水员认证/);});
+test("isalive preserves help, exact missing input, username normalization and full output", async t => {
+  const id = returnBigInt("9007199254740993"),
+    seen = [],
+    now = Math.floor(Date.now() / 1000);
+  const user = new Api.User({
+    id,
+    accessHash: returnBigInt(2),
+    firstName: "A<&",
+    lastName: "User",
+    username: "alice",
+    verified: true,
+    premium: true,
+    support: true,
+    status: new Api.UserStatusOffline({ wasOnline: now - 4 * 86400 }),
+  });
+  const client = {
+    async getEntity(value) {
+      seen.push(value);
+      return user;
+    },
+    async getMessages(peer, options) {
+      assert.equal(peer.className, "PeerChannel");
+      assert.equal(options.fromUser, user);
+      assert.equal(options.replyTo, 42);
+      return [new Api.Message({ id: 3, peerId: peer, message: "hi", date: now - 8 * 86400 })];
+    },
+  };
+  const f = await fixture(t, client, { prefixes: ["!"] });
+  await f.run("!isalive");
+  assert.match(f.edits.at(-1).text, /Missing parameter/);
+  assert.match(f.edits.at(-1).text, /!isalive 1948276144/);
+  const peer = new Api.PeerChannel({ channelId: returnBigInt(9) });
+  await f.run("!isalive alice", { topicId: 42, raw: { peerId: peer } });
+  assert.equal(seen[0], "@alice");
+  const out = f.edits.at(-1).text;
+  assert.match(out, /👤 用户信息/);
+  assert.match(out, /A&lt;&amp; User/);
+  assert.match(out, /9007199254740993/);
+  assert.match(out, /官方认证/);
+  assert.match(out, /Premium/);
+  assert.match(out, /官方客服/);
+  assert.match(out, /本群潜水员认证/);
+});
 
-test('isalive UID fallback searches both dialog folders and preserves bigint precision',async t=>{const wanted='9007199254740993',calls=[],user=new Api.User({id:returnBigInt(wanted),accessHash:returnBigInt(2),firstName:'Found',status:new Api.UserStatusRecently()});const group={className:'Channel',id:returnBigInt(5)};const client={async getEntity(value){assert.equal(String(value),wanted);throw new Error('not cached');},async getDialogs(options){calls.push(options);return options.folderId?[{id:5,entity:group}]:[{id:4,entity:{className:'User'}}];},async getParticipants(entity,options){assert.equal(entity,group);assert.equal(options.limit,200);return[user];},async getMessages(){return[];}};const f=await fixture(t,client);await f.run(`.isalive ${wanted}`,{raw:{peerId:new Api.PeerChannel({channelId:returnBigInt(9)})}});assert.deepEqual(calls,[{}, {folderId:1}]);assert.match(f.edits.at(-1).text,/Found/);assert.match(f.edits.at(-1).text,/最近上线/);});
+test("isalive UID fallback searches both dialog folders and preserves bigint precision", async t => {
+  const wanted = "9007199254740993",
+    calls = [],
+    user = new Api.User({
+      id: returnBigInt(wanted),
+      accessHash: returnBigInt(2),
+      firstName: "Found",
+      status: new Api.UserStatusRecently(),
+    });
+  const group = { className: "Channel", id: returnBigInt(5) };
+  const client = {
+    async getEntity(value) {
+      assert.equal(String(value), wanted);
+      throw new Error("not cached");
+    },
+    async getDialogs(options) {
+      calls.push(options);
+      return options.folderId ? [{ id: 5, entity: group }] : [{ id: 4, entity: { className: "User" } }];
+    },
+    async getParticipants(entity, options) {
+      assert.equal(entity, group);
+      assert.equal(options.limit, 200);
+      return [user];
+    },
+    async getMessages() {
+      return [];
+    },
+  };
+  const f = await fixture(t, client);
+  await f.run(`.isalive ${wanted}`, { raw: { peerId: new Api.PeerChannel({ channelId: returnBigInt(9) }) } });
+  assert.deepEqual(calls, [{}, { folderId: 1 }]);
+  assert.match(f.edits.at(-1).text, /Found/);
+  assert.match(f.edits.at(-1).text, /最近上线/);
+});
 
-test('isalive rejects non-users and hides resolver details',async t=>{const nonUser=await fixture(t,{async getEntity(){return new Api.Chat({id:returnBigInt(3),title:'Group',photo:new Api.ChatPhotoEmpty(),participantsCount:1,date:0,version:1});}});await nonUser.run('.isalive group');assert.equal(nonUser.edits.at(-1).text,'❌ 查询失败，提供的用户名或ID可能不存在或有误。');const failed=await fixture(t,{async getEntity(){throw new Error('token=secret');}});await failed.run('.isalive alice');assert.match(failed.edits.at(-1).text,/无法解析用户: 查询失败/);assert.doesNotMatch(failed.edits.at(-1).text,/secret|token/);});
+test("isalive rejects non-users and hides resolver details", async t => {
+  const nonUser = await fixture(t, {
+    async getEntity() {
+      return new Api.Chat({
+        id: returnBigInt(3),
+        title: "Group",
+        photo: new Api.ChatPhotoEmpty(),
+        participantsCount: 1,
+        date: 0,
+        version: 1,
+      });
+    },
+  });
+  await nonUser.run(".isalive group");
+  assert.equal(nonUser.edits.at(-1).text, "❌ 查询失败，提供的用户名或ID可能不存在或有误。");
+  const failed = await fixture(t, {
+    async getEntity() {
+      throw new Error("token=secret");
+    },
+  });
+  await failed.run(".isalive alice");
+  assert.match(failed.edits.at(-1).text, /无法解析用户: 查询失败/);
+  assert.doesNotMatch(failed.edits.at(-1).text, /secret|token/);
+});
 
-test('isalive unload cancels an in-flight group scan without final or error output',async t=>{let started,release;const ready=new Promise(resolve=>{started=resolve;}),gate=new Promise(resolve=>{release=resolve;});const client={async getEntity(){throw new Error('miss');},async getDialogs(){started();await gate;return[];}};const f=await fixture(t,client);const running=f.run('.isalive 123',{chatId:'scan'});await ready;const unloading=f.host.unload('isalive',2000);release();assert.equal((await unloading).completed,true);await running;assert.equal(f.edits.filter(x=>/无法解析|用户信息/.test(x.text)).length,0);});
+test("isalive unload cancels an in-flight group scan without final or error output", async t => {
+  let started, release;
+  const ready = new Promise(resolve => {
+      started = resolve;
+    }),
+    gate = new Promise(resolve => {
+      release = resolve;
+    });
+  const client = {
+    async getEntity() {
+      throw new Error("miss");
+    },
+    async getDialogs() {
+      started();
+      await gate;
+      return [];
+    },
+  };
+  const f = await fixture(t, client);
+  const running = f.run(".isalive 123", { chatId: "scan" });
+  await ready;
+  const unloading = f.host.unload("isalive", 2000);
+  release();
+  assert.equal((await unloading).completed, true);
+  await running;
+  assert.equal(f.edits.filter(x => /无法解析|用户信息/.test(x.text)).length, 0);
+});
 
-test('isalive never logs an attacker-controlled error name',async t=>{const failure=new Error('private');failure.name='TOKEN_secret_from_remote';const f=await fixture(t,{async getEntity(){throw failure;}});await f.run('.isalive alice');assert.deepEqual(f.logs,[{event:'isalive_query_failed',fields:undefined}]);assert.doesNotMatch(JSON.stringify(f.logs),/TOKEN|secret|private/);});
+test("isalive never logs an attacker-controlled error name", async t => {
+  const failure = new Error("private");
+  failure.name = "TOKEN_secret_from_remote";
+  const f = await fixture(t, {
+    async getEntity() {
+      throw failure;
+    },
+  });
+  await f.run(".isalive alice");
+  assert.deepEqual(f.logs, [{ event: "isalive_query_failed", fields: undefined }]);
+  assert.doesNotMatch(JSON.stringify(f.logs), /TOKEN|secret|private/);
+});
 
-test('isalive observes cancellation after the final empty dialog page',async t=>{let started,release,participants=0;const ready=new Promise(resolve=>{started=resolve;}),gate=new Promise(resolve=>{release=resolve;});let calls=0;const client={async getEntity(){throw new Error('miss');},async getDialogs(){calls++;if(calls===2){started();await gate;}return[];},async getParticipants(){participants++;return[];}};const f=await fixture(t,client),running=f.run('.isalive 123',{chatId:'scan'});await ready;const unloading=f.host.unload('isalive',2000);release();assert.equal((await unloading).completed,true);await running;assert.equal(calls,2);assert.equal(participants,0);assert.equal(f.edits.filter(x=>/无法解析|用户信息/.test(x.text)).length,0);});
+test("isalive observes cancellation after the final empty dialog page", async t => {
+  let started,
+    release,
+    participants = 0;
+  const ready = new Promise(resolve => {
+      started = resolve;
+    }),
+    gate = new Promise(resolve => {
+      release = resolve;
+    });
+  let calls = 0;
+  const client = {
+    async getEntity() {
+      throw new Error("miss");
+    },
+    async getDialogs() {
+      calls++;
+      if (calls === 2) {
+        started();
+        await gate;
+      }
+      return [];
+    },
+    async getParticipants() {
+      participants++;
+      return [];
+    },
+  };
+  const f = await fixture(t, client),
+    running = f.run(".isalive 123", { chatId: "scan" });
+  await ready;
+  const unloading = f.host.unload("isalive", 2000);
+  release();
+  assert.equal((await unloading).completed, true);
+  await running;
+  assert.equal(calls, 2);
+  assert.equal(participants, 0);
+  assert.equal(f.edits.filter(x => /无法解析|用户信息/.test(x.text)).length, 0);
+});
 
-test('isalive paginates a long escaped name and preserves delivered content on interruption',async t=>{const name='<&😀'.repeat(1500),user=new Api.User({id:returnBigInt(7),accessHash:returnBigInt(2),firstName:name,status:new Api.UserStatusOnline()}),client={async getEntity(){return user;},async getMessages(){return[];}};const f=await fixture(t,client);await f.run('.isalive long',{raw:{peerId:new Api.PeerUser({userId:returnBigInt(7)})}});const pages=[f.edits.at(-1),...f.replies].map(x=>x.text);assert.ok(pages.length>1);assert.match(pages[0],/\n1\/\d+ 页$/);assert.ok(pages.every(page=>page.length<=4096&&page.isWellFormed()));assert.match(pages.join('\n'),/&lt;&amp;😀/);let failed=false;const partial=await fixture(t,client,{onReply(){if(!failed){failed=true;throw new Error('failed');}}});await partial.run('.isalive long',{raw:{peerId:new Api.PeerUser({userId:returnBigInt(7)})}});assert.doesNotMatch(partial.edits.at(-1).text,/无法解析/);assert.match(partial.replies.at(-1).text,/后续页发送中断/);});
+test("isalive paginates a long escaped name and preserves delivered content on interruption", async t => {
+  const name = "<&😀".repeat(1500),
+    user = new Api.User({
+      id: returnBigInt(7),
+      accessHash: returnBigInt(2),
+      firstName: name,
+      status: new Api.UserStatusOnline(),
+    }),
+    client = {
+      async getEntity() {
+        return user;
+      },
+      async getMessages() {
+        return [];
+      },
+    };
+  const f = await fixture(t, client);
+  await f.run(".isalive long", { raw: { peerId: new Api.PeerUser({ userId: returnBigInt(7) }) } });
+  const pages = [f.edits.at(-1), ...f.replies].map(x => x.text);
+  assert.ok(pages.length > 1);
+  assert.match(pages[0], /\n1\/\d+ 页$/);
+  assert.ok(pages.every(page => page.length <= 4096 && page.isWellFormed()));
+  assert.match(pages.join("\n"), /&lt;&amp;😀/);
+  let failed = false;
+  const partial = await fixture(t, client, {
+    onReply() {
+      if (!failed) {
+        failed = true;
+        throw new Error("failed");
+      }
+    },
+  });
+  await partial.run(".isalive long", { raw: { peerId: new Api.PeerUser({ userId: returnBigInt(7) }) } });
+  assert.doesNotMatch(partial.edits.at(-1).text, /无法解析/);
+  assert.match(partial.replies.at(-1).text, /后续页发送中断/);
+});

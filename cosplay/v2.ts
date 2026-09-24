@@ -1,10 +1,10 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
+import { renderHelp as renderPluginHelp } from "./v2/help";
 import path from "node:path";
-import {open, stat, unlink, type FileHandle} from "node:fs/promises";
-import {load} from "cheerio";
-import {definePlugin, type PluginContext} from "telebox/sdk";
-import {returnBigInt} from "teleproto/Helpers";
-import type {Api as ApiTypes} from "teleproto";
+import { open, stat, unlink, type FileHandle } from "node:fs/promises";
+import { load } from "cheerio";
+import { definePlugin, type PluginContext } from "telebox/sdk";
+import { returnBigInt } from "teleproto/Helpers";
+import type { Api as ApiTypes } from "teleproto";
 
 const HOST = "cosplaytele.com";
 const MAX_IMAGES = 10;
@@ -17,9 +17,11 @@ type ByteReader = ReadableStreamDefaultReader<Uint8Array>;
 function managedReader(reader: ByteReader, signal: AbortSignal) {
   let done = false;
   let cancellation: Promise<void> | undefined;
-  const cancel = () => cancellation ??= Promise.resolve().then(() => reader.cancel());
-  const onAbort = () => { void cancel().catch(() => undefined); };
-  signal.addEventListener("abort", onAbort, {once: true});
+  const cancel = () => (cancellation ??= Promise.resolve().then(() => reader.cancel()));
+  const onAbort = () => {
+    void cancel().catch(() => undefined);
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
   return {
     async read() {
       signal.throwIfAborted();
@@ -30,23 +32,34 @@ function managedReader(reader: ByteReader, signal: AbortSignal) {
     },
     async close() {
       signal.removeEventListener("abort", onAbort);
-      try { if (!done) await cancel(); }
-      catch { /* Core reports the request failure; reader details remain private. */ }
-      finally { try { reader.releaseLock(); } catch { /* The response owner will perform final cancellation. */ } }
+      try {
+        if (!done) await cancel();
+      } catch {
+        /* Core reports the request failure; reader details remain private. */
+      } finally {
+        try {
+          reader.releaseLock();
+        } catch {
+          /* The response owner will perform final cancellation. */
+        }
+      }
     },
   };
 }
 
-async function closeDownload(reader: {close(): Promise<void>}, handle: Pick<FileHandle, "close">): Promise<void> {
-  try { await reader.close(); }
-  finally { await handle.close(); }
+async function closeDownload(reader: { close(): Promise<void> }, handle: Pick<FileHandle, "close">): Promise<void> {
+  try {
+    await reader.close();
+  } finally {
+    await handle.close();
+  }
 }
 
 async function writeAll(handle: Pick<FileHandle, "write">, chunk: Uint8Array, signal: AbortSignal): Promise<void> {
   let offset = 0;
   while (offset < chunk.byteLength) {
     signal.throwIfAborted();
-    const {bytesWritten} = await handle.write(chunk, offset, chunk.byteLength - offset, null);
+    const { bytesWritten } = await handle.write(chunk, offset, chunk.byteLength - offset, null);
     signal.throwIfAborted();
     if (!Number.isInteger(bytesWritten) || bytesWritten <= 0 || bytesWritten > chunk.byteLength - offset) {
       throw new Error("Image write failed");
@@ -58,40 +71,70 @@ async function writeAll(handle: Pick<FileHandle, "write">, chunk: Uint8Array, si
 function safeUrl(value: string, base: URL): URL | undefined {
   try {
     const url = new URL(value, base);
-    if (url.protocol !== "https:" || url.username || url.password || !(url.hostname === HOST || url.hostname.endsWith(`.${HOST}`))) return;
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      !(url.hostname === HOST || url.hostname.endsWith(`.${HOST}`))
+    )
+      return;
     return url;
-  } catch { return; }
+  } catch {
+    return;
+  }
 }
 
 async function page(context: PluginContext, url: URL): Promise<string> {
-  return context.http.withResponse(url, {method: "GET", credentials: "omit", headers: {Accept: "text/html", "User-Agent": USER_AGENT}},
+  return context.http.withResponse(
+    url,
+    { method: "GET", credentials: "omit", headers: { Accept: "text/html", "User-Agent": USER_AGENT } },
     async (response, signal) => {
       if (response.status !== 200 || !response.body) throw new Error("Page unavailable");
       const type = response.headers.get("content-type") ?? "";
       if (type && !type.toLowerCase().includes("text/html")) throw new Error("Invalid page type");
-      const reader = managedReader(response.body.getReader(), signal); const decoder = new TextDecoder(); const parts: string[] = []; let total = 0;
+      const reader = managedReader(response.body.getReader(), signal);
+      const decoder = new TextDecoder();
+      const parts: string[] = [];
+      let total = 0;
       try {
-        for (;;) { const part = await reader.read(); if (part.done) break;
-          total += part.value.byteLength; if (total > 2 * 1024 * 1024) throw new Error("Page too large");
-          if (part.value.byteLength) parts.push(decoder.decode(part.value, {stream: true})); }
+        for (;;) {
+          const part = await reader.read();
+          if (part.done) break;
+          total += part.value.byteLength;
+          if (total > 2 * 1024 * 1024) throw new Error("Page too large");
+          if (part.value.byteLength) parts.push(decoder.decode(part.value, { stream: true }));
+        }
         return parts.join("") + decoder.decode();
-      } finally { await reader.close(); }
-    }, {timeoutMs: 30_000, signal: context.signal, redirects: {allowedHosts: [url.hostname], maxRedirects: 3}});
+      } finally {
+        await reader.close();
+      }
+    },
+    { timeoutMs: 30_000, signal: context.signal, redirects: { allowedHosts: [url.hostname], maxRedirects: 3 } },
+  );
 }
 
 function sets(html: string, base: URL): URL[] {
-  const $ = load(html); const found = new Map<string, URL>();
+  const $ = load(html);
+  const found = new Map<string, URL>();
   $("a[href]").each((_index, element) => {
     const url = safeUrl($(element).attr("href") ?? "", base);
-    if (!url || url.hash || !/^\/[a-z0-9-]+\/$/i.test(url.pathname) ||
-        /^\/(?:page|category|24-hours|3-day|7-day|explore-categories|best-cosplayer|feed|comments|top-search)(?:\/|$)/.test(url.pathname)) return;
+    if (
+      !url ||
+      url.hash ||
+      !/^\/[a-z0-9-]+\/$/i.test(url.pathname) ||
+      /^\/(?:page|category|24-hours|3-day|7-day|explore-categories|best-cosplayer|feed|comments|top-search)(?:\/|$)/.test(
+        url.pathname,
+      )
+    )
+      return;
     found.set(url.href, url);
   });
   return [...found.values()].slice(0, 200);
 }
 
 function gallery(html: string, base: URL): URL[] {
-  const $ = load(html); const found = new Map<string, URL>();
+  const $ = load(html);
+  const found = new Map<string, URL>();
   $("figure.gallery-item img[src]").each((_index, element) => {
     const url = safeUrl($(element).attr("src") ?? "", base);
     if (url && EXTENSIONS.has(path.extname(url.pathname).toLowerCase())) found.set(url.href, url);
@@ -100,32 +143,57 @@ function gallery(html: string, base: URL): URL[] {
 }
 
 function pick<T>(values: readonly T[], count: number): T[] {
-  const pool = [...values]; const result: T[] = [];
+  const pool = [...values];
+  const result: T[] = [];
   while (pool.length && result.length < count) result.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]!);
   return result;
 }
 
 async function download(context: PluginContext, url: URL, file: string): Promise<void> {
-  await context.http.withResponse(url, {method: "GET", credentials: "omit", headers: {Accept: "image/*", Referer: `https://${HOST}/`, "User-Agent": USER_AGENT}},
+  await context.http.withResponse(
+    url,
+    {
+      method: "GET",
+      credentials: "omit",
+      headers: { Accept: "image/*", Referer: `https://${HOST}/`, "User-Agent": USER_AGENT },
+    },
     async (response, signal) => {
-      if (response.status !== 200 || !response.body || !(response.headers.get("content-type") ?? "").toLowerCase().startsWith("image/")) throw new Error("Invalid image");
+      if (
+        response.status !== 200 ||
+        !response.body ||
+        !(response.headers.get("content-type") ?? "").toLowerCase().startsWith("image/")
+      )
+        throw new Error("Invalid image");
       const declared = Number(response.headers.get("content-length") ?? 0);
       if (declared > MAX_IMAGE_BYTES) throw new Error("Image too large");
-      const handle = await open(file, "wx", 0o600); const reader = managedReader(response.body.getReader(), signal); let total = 0;
+      const handle = await open(file, "wx", 0o600);
+      const reader = managedReader(response.body.getReader(), signal);
+      let total = 0;
       try {
-        for (;;) { const part = await reader.read(); if (part.done) break;
-          total += part.value.byteLength; if (total > MAX_IMAGE_BYTES) throw new Error("Image too large"); await writeAll(handle, part.value, signal); }
+        for (;;) {
+          const part = await reader.read();
+          if (part.done) break;
+          total += part.value.byteLength;
+          if (total > MAX_IMAGE_BYTES) throw new Error("Image too large");
+          await writeAll(handle, part.value, signal);
+        }
         if (!total) throw new Error("Empty image");
-      } finally { await closeDownload(reader, handle); }
-    }, {timeoutMs: 45_000, signal: context.signal, redirects: {allowedHosts: [url.hostname], maxRedirects: 3}});
+      } finally {
+        await closeDownload(reader, handle);
+      }
+    },
+    { timeoutMs: 45_000, signal: context.signal, redirects: { allowedHosts: [url.hostname], maxRedirects: 3 } },
+  );
 }
 
 async function downloadWithRetry(context: PluginContext, url: URL, file: string): Promise<void> {
   let failure: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
     context.signal.throwIfAborted();
-    try { await download(context, url, file); return; }
-    catch (error) {
+    try {
+      await download(context, url, file);
+      return;
+    } catch (error) {
       context.signal.throwIfAborted();
       failure = error;
       await unlink(file).catch(() => undefined);
@@ -134,7 +202,7 @@ async function downloadWithRetry(context: PluginContext, url: URL, file: string)
   throw failure;
 }
 
-async function find(context: PluginContext, count: number): Promise<{set: URL; title: string; images: URL[]}> {
+async function find(context: PluginContext, count: number): Promise<{ set: URL; title: string; images: URL[] }> {
   for (let attempt = 0; attempt < 6; attempt++) {
     context.signal.throwIfAborted();
     try {
@@ -144,8 +212,15 @@ async function find(context: PluginContext, count: number): Promise<{set: URL; t
       if (!candidates.length) continue;
       const selected = candidates[Math.floor(Math.random() * candidates.length)]!;
       const images = gallery(await page(context, selected), selected);
-      if (images.length >= count) return {set: selected, title: selected.pathname.split("/").filter(Boolean).at(-1)?.replace(/-/g, " ") || "Cosplay", images: pick(images, count)};
-    } catch { context.signal.throwIfAborted(); }
+      if (images.length >= count)
+        return {
+          set: selected,
+          title: selected.pathname.split("/").filter(Boolean).at(-1)?.replace(/-/g, " ") || "Cosplay",
+          images: pick(images, count),
+        };
+    } catch {
+      context.signal.throwIfAborted();
+    }
   }
   throw new Error("No photo set");
 }
@@ -155,59 +230,95 @@ function target(invocation: any) {
   return raw?.inputChat ?? raw?.peerId ?? returnBigInt(invocation.message.chatId);
 }
 
-async function sendSingle(client: any, peer: any, file: string, caption: string, replyTo: number | undefined,
-  signal: AbortSignal, CustomFile: any): Promise<void> {
+async function sendSingle(
+  client: any,
+  peer: any,
+  file: string,
+  caption: string,
+  replyTo: number | undefined,
+  signal: AbortSignal,
+  CustomFile: any,
+): Promise<void> {
   signal.throwIfAborted();
   const info = await stat(file);
   signal.throwIfAborted();
-  await client.sendFile(peer, {file: new CustomFile(path.basename(file), info.size, file), spoiler: true, caption, replyTo});
+  await client.sendFile(peer, {
+    file: new CustomFile(path.basename(file), info.size, file),
+    spoiler: true,
+    caption,
+    replyTo,
+  });
   signal.throwIfAborted();
 }
 
-async function sendAlbum(client: any, peer: any, files: readonly string[], caption: string,
-  replyTo: number | undefined, signal: AbortSignal, CustomFile: any): Promise<void> {
-  const {Api} = await import("teleproto");
-  const {getInputDocument, getInputPhoto} = await import("teleproto/Utils.js");
+async function sendAlbum(
+  client: any,
+  peer: any,
+  files: readonly string[],
+  caption: string,
+  replyTo: number | undefined,
+  signal: AbortSignal,
+  CustomFile: any,
+): Promise<void> {
+  const { Api } = await import("teleproto");
+  const { getInputDocument, getInputPhoto } = await import("teleproto/Utils.js");
   signal.throwIfAborted();
   const media: InstanceType<typeof Api.InputSingleMedia>[] = [];
   for (let index = 0; index < files.length; index++) {
     signal.throwIfAborted();
     const info = await stat(files[index]!);
     signal.throwIfAborted();
-    const uploadedFile = await client.uploadFile({file: new CustomFile(path.basename(files[index]!), info.size, files[index]!), workers: 1});
+    const uploadedFile = await client.uploadFile({
+      file: new CustomFile(path.basename(files[index]!), info.size, files[index]!),
+      workers: 1,
+    });
     signal.throwIfAborted();
-    const uploaded = await client.invoke(new Api.messages.UploadMedia({
-      peer,
-      media: new Api.InputMediaUploadedPhoto({file: uploadedFile}),
-    }));
+    const uploaded = await client.invoke(
+      new Api.messages.UploadMedia({
+        peer,
+        media: new Api.InputMediaUploadedPhoto({ file: uploadedFile }),
+      }),
+    );
     signal.throwIfAborted();
     let item: InstanceType<typeof Api.InputMediaPhoto> | InstanceType<typeof Api.InputMediaDocument>;
-    if (uploaded instanceof Api.MessageMediaPhoto) item = new Api.InputMediaPhoto({id: getInputPhoto(uploaded.photo), spoiler: true});
-    else if (uploaded instanceof Api.MessageMediaDocument) item = new Api.InputMediaDocument({id: getInputDocument(uploaded.document), spoiler: true});
+    if (uploaded instanceof Api.MessageMediaPhoto)
+      item = new Api.InputMediaPhoto({ id: getInputPhoto(uploaded.photo), spoiler: true });
+    else if (uploaded instanceof Api.MessageMediaDocument)
+      item = new Api.InputMediaDocument({ id: getInputDocument(uploaded.document), spoiler: true });
     else continue;
-    media.push(new Api.InputSingleMedia({media: item, message: index === 0 ? caption : "", entities: undefined}));
+    media.push(new Api.InputSingleMedia({ media: item, message: index === 0 ? caption : "", entities: undefined }));
   }
   if (!media.length) throw new Error("No uploadable image");
   signal.throwIfAborted();
-  await client.invoke(new Api.messages.SendMultiMedia({
-    peer,
-    multiMedia: media,
-    replyTo: replyTo === undefined ? undefined : new Api.InputReplyToMessage({replyToMsgId: replyTo}),
-  }));
+  await client.invoke(
+    new Api.messages.SendMultiMedia({
+      peer,
+      multiMedia: media,
+      replyTo: replyTo === undefined ? undefined : new Api.InputReplyToMessage({ replyToMsgId: replyTo }),
+    }),
+  );
   signal.throwIfAborted();
 }
 
-async function sendImages(context: PluginContext, client: any, peer: any, files: readonly string[], set: URL,
-  replyTo: number | undefined, signal: AbortSignal): Promise<void> {
-  const {CustomFile} = await import("teleproto/client/uploads.js");
+async function sendImages(
+  context: PluginContext,
+  client: any,
+  peer: any,
+  files: readonly string[],
+  set: URL,
+  replyTo: number | undefined,
+  signal: AbortSignal,
+): Promise<void> {
+  const { CustomFile } = await import("teleproto/client/uploads.js");
   signal.throwIfAborted();
   const caption = `套图链接: ${set.href}`;
   if (files.length === 1) {
     await sendSingle(client, peer, files[0]!, caption, replyTo, signal, CustomFile);
     return;
   }
-  try { await sendAlbum(client, peer, files, caption, replyTo, signal, CustomFile); }
-  catch {
+  try {
+    await sendAlbum(client, peer, files, caption, replyTo, signal, CustomFile);
+  } catch {
     signal.throwIfAborted();
     context.log.error("cosplay_album_failed");
     for (let index = 0; index < files.length; index++) {
@@ -219,26 +330,37 @@ async function sendImages(context: PluginContext, client: any, peer: any, files:
 async function run(invocation: any, context: PluginContext): Promise<void> {
   const parsed = invocation.args[0] === undefined ? 1 : Number(invocation.args[0]);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_IMAGES) {
-    await context.telegram.edit(invocation.message, `数量必须是 1 到 ${MAX_IMAGES} 的整数`); return;
+    await context.telegram.edit(invocation.message, `数量必须是 1 到 ${MAX_IMAGES} 的整数`);
+    return;
   }
   await context.telegram.edit(invocation.message, `正在从随机套图中获取 ${parsed} 张图片…`);
   try {
     const result = await find(context, parsed);
     context.signal.throwIfAborted();
-    await context.telegram.edit(invocation.message, `从套图"${result.title}"中找到 ${result.images.length} 张图片，正在下载…`);
+    await context.telegram.edit(
+      invocation.message,
+      `从套图"${result.title}"中找到 ${result.images.length} 张图片，正在下载…`,
+    );
     await context.files.withTemp(async (directory, signal) => {
       const files: string[] = [];
       let cursor = 0;
-      const worker = async () => { for (;;) {
-        signal.throwIfAborted();
-        const index = cursor++;
-        if (index >= result.images.length) return;
-        const url = result.images[index]!;
-        const file = path.join(directory, `${index}${path.extname(url.pathname).toLowerCase() || ".jpg"}`);
-        try { await downloadWithRetry(context, url, file); files[index] = file; }
-        catch { signal.throwIfAborted(); context.log.error("cosplay_download_failed"); }
-      } };
-      await Promise.allSettled(Array.from({length: Math.min(3, result.images.length)}, worker));
+      const worker = async () => {
+        for (;;) {
+          signal.throwIfAborted();
+          const index = cursor++;
+          if (index >= result.images.length) return;
+          const url = result.images[index]!;
+          const file = path.join(directory, `${index}${path.extname(url.pathname).toLowerCase() || ".jpg"}`);
+          try {
+            await downloadWithRetry(context, url, file);
+            files[index] = file;
+          } catch {
+            signal.throwIfAborted();
+            context.log.error("cosplay_download_failed");
+          }
+        }
+      };
+      await Promise.allSettled(Array.from({ length: Math.min(3, result.images.length) }, worker));
       signal.throwIfAborted();
       const ready = files.filter((file): file is string => Boolean(file));
       if (!ready.length) throw new Error("No downloaded image");
@@ -251,8 +373,11 @@ async function run(invocation: any, context: PluginContext): Promise<void> {
         await sendImages(context, client, target(invocation), ready, result.set, invocation.message.replyToId, active);
         active.throwIfAborted();
         if (typeof raw?.delete === "function") {
-          try { await raw.delete({revoke: true}); }
-          catch { if (!active.aborted) context.log.info("cosplay_receipt_cleanup_failed"); }
+          try {
+            await raw.delete({ revoke: true });
+          } catch {
+            if (!active.aborted) context.log.info("cosplay_receipt_cleanup_failed");
+          }
         }
       });
     });
@@ -264,7 +389,12 @@ async function run(invocation: any, context: PluginContext): Promise<void> {
 }
 
 export default function createCosplay() {
-  const command = {description: "从随机套图获取 Cosplay 图片", handle: run};
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "cosplay", description: "从 cosplaytele.com 获取同一套图中的随机图片",
-    commands: {cos: command, cosplay: command}});
+  const command = { description: "从随机套图获取 Cosplay 图片", handle: run };
+  return definePlugin({
+    renderHelp: renderPluginHelp,
+    apiVersion: 1,
+    id: "cosplay",
+    description: "从 cosplaytele.com 获取同一套图中的随机图片",
+    commands: { cos: command, cosplay: command },
+  });
 }

@@ -2,7 +2,7 @@ import * as crypto from "node:crypto";
 
 function hasTlType(value: unknown, expected: string): boolean {
   if (!value || typeof value !== "object") return false;
-  const object = value as {_: unknown; className?: unknown};
+  const object = value as { _: unknown; className?: unknown };
   const type = typeof object._ === "string" ? object._ : typeof object.className === "string" ? object.className : "";
   const wanted = expected.toLowerCase();
   return type.toLowerCase() === wanted || type.toLowerCase().endsWith(`.${wanted}`);
@@ -125,7 +125,10 @@ export const CLIENT_ENGINE_NOTE: Record<string, string> = {
 // ─── Color utilities ─────────────────────────────────────────────────────────
 
 function toHex(r: number, g: number, b: number, a = 255): string {
-  const c = (n: number) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0");
+  const c = (n: number) =>
+    Math.max(0, Math.min(255, Math.round(n)))
+      .toString(16)
+      .padStart(2, "0");
   if (a < 255) return `#${c(a)}${c(r)}${c(g)}${c(b)}`;
   return `#${c(r)}${c(g)}${c(b)}`;
 }
@@ -172,7 +175,9 @@ function parseColor(raw: string): string | null {
       // 8 hex digits → AARRGGBB
       if (s.length === 9) return toHex((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff, (n >> 24) & 0xff);
       return toHex((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff);
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
   try {
     // bare hex without # — must win over decimal parseInt("112233")
@@ -187,7 +192,9 @@ function parseColor(raw: string): string | null {
     const b = n & 0xff;
     if (a > 0 && a < 255) return toHex(r, g, b, a);
     return toHex(r, g, b);
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 function adjustBright(hex: string, pct: number): string {
@@ -200,7 +207,9 @@ function adjustBright(hex: string, pct: number): string {
   return toHex(Math.max(0, Math.min(255, r * f)), Math.max(0, Math.min(255, g * f)), Math.max(0, Math.min(255, b * f)));
 }
 
-function toRgb(hex: string): string { return hex.length === 9 ? "#" + hex.slice(3) : hex; }
+function toRgb(hex: string): string {
+  return hex.length === 9 ? "#" + hex.slice(3) : hex;
+}
 
 /** Fast stable content key for wallpaper bytes (slug reverse cache / disk) */
 function wallpaperContentHash(buf: Buffer): string {
@@ -216,7 +225,9 @@ function isPng(buf: Buffer): boolean {
   return buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
 }
 function isZip(buf: Buffer): boolean {
-  return buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b && (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07);
+  return (
+    buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b && (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07)
+  );
 }
 function detectImageExt(buf: Buffer): "jpg" | "png" | null {
   if (isJpeg(buf)) return "jpg";
@@ -229,10 +240,19 @@ function readJpegDimensions(buf: Buffer): { width: number; height: number } | nu
   if (!isJpeg(buf) || buf.length < 4) return null;
   let i = 2;
   while (i + 9 < buf.length) {
-    if (buf[i] !== 0xff) { i++; continue; }
+    if (buf[i] !== 0xff) {
+      i++;
+      continue;
+    }
     const marker = buf[i + 1];
-    if (marker === 0xd8 || marker === 0xd9) { i += 2; continue; } // SOI/EOI
-    if (marker >= 0xd0 && marker <= 0xd7) { i += 2; continue; } // RSTn
+    if (marker === 0xd8 || marker === 0xd9) {
+      i += 2;
+      continue;
+    } // SOI/EOI
+    if (marker >= 0xd0 && marker <= 0xd7) {
+      i += 2;
+      continue;
+    } // RSTn
     if (i + 3 >= buf.length) break;
     const segLen = buf.readUInt16BE(i + 2);
     if (segLen < 2) break;
@@ -265,7 +285,9 @@ function readPngDimensions(buf: Buffer): { width: number; height: number } | nul
   return null;
 }
 
-function readImageDimensions(buf: Buffer | null | undefined): { width: number; height: number; orient: "portrait" | "landscape" | "square" } | null {
+function readImageDimensions(
+  buf: Buffer | null | undefined,
+): { width: number; height: number; orient: "portrait" | "landscape" | "square" } | null {
   const wp = normalizeWallpaper(buf || null);
   if (!wp) return null;
   const d = detectImageExt(wp) === "png" ? readPngDimensions(wp) : readJpegDimensions(wp);
@@ -308,10 +330,18 @@ function crc32(buf: Buffer): number {
     c ^= buf[i];
     for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
   }
-  return (~c) >>> 0;
+  return ~c >>> 0;
 }
-function u16le(n: number): Buffer { const b = Buffer.alloc(2); b.writeUInt16LE(n >>> 0, 0); return b; }
-function u32le(n: number): Buffer { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0, 0); return b; }
+function u16le(n: number): Buffer {
+  const b = Buffer.alloc(2);
+  b.writeUInt16LE(n >>> 0, 0);
+  return b;
+}
+function u32le(n: number): Buffer {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(n >>> 0, 0);
+  return b;
+}
 
 /** Create a store-only ZIP (method 0) — enough for tdesktop theme packages */
 function makeZip(files: Array<[string, Buffer]>): Buffer {
@@ -322,14 +352,38 @@ function makeZip(files: Array<[string, Buffer]>): Buffer {
     const nameBuf = Buffer.from(name, "utf8");
     const crc = crc32(data);
     const local = Buffer.concat([
-      u32le(0x04034b50), u16le(20), u16le(0), u16le(0), u16le(0), u16le(0),
-      u32le(crc), u32le(data.length), u32le(data.length), u16le(nameBuf.length), u16le(0),
-      nameBuf, data,
+      u32le(0x04034b50),
+      u16le(20),
+      u16le(0),
+      u16le(0),
+      u16le(0),
+      u16le(0),
+      u32le(crc),
+      u32le(data.length),
+      u32le(data.length),
+      u16le(nameBuf.length),
+      u16le(0),
+      nameBuf,
+      data,
     ]);
     const central = Buffer.concat([
-      u32le(0x02014b50), u16le(20), u16le(20), u16le(0), u16le(0), u16le(0), u16le(0),
-      u32le(crc), u32le(data.length), u32le(data.length), u16le(nameBuf.length), u16le(0),
-      u16le(0), u16le(0), u16le(0), u32le(0), u32le(offset),
+      u32le(0x02014b50),
+      u16le(20),
+      u16le(20),
+      u16le(0),
+      u16le(0),
+      u16le(0),
+      u16le(0),
+      u32le(crc),
+      u32le(data.length),
+      u32le(data.length),
+      u16le(nameBuf.length),
+      u16le(0),
+      u16le(0),
+      u16le(0),
+      u16le(0),
+      u32le(0),
+      u32le(offset),
       nameBuf,
     ]);
     locals.push(local);
@@ -338,8 +392,14 @@ function makeZip(files: Array<[string, Buffer]>): Buffer {
   }
   const centralDir = Buffer.concat(centrals);
   const end = Buffer.concat([
-    u32le(0x06054b50), u16le(0), u16le(0), u16le(files.length), u16le(files.length),
-    u32le(centralDir.length), u32le(offset), u16le(0),
+    u32le(0x06054b50),
+    u16le(0),
+    u16le(0),
+    u16le(files.length),
+    u16le(files.length),
+    u32le(centralDir.length),
+    u32le(offset),
+    u16le(0),
   ]);
   return Buffer.concat([...locals, centralDir, end]);
 }
@@ -359,19 +419,26 @@ function parseZip(buf: Buffer): Record<string, Buffer> {
       throw new Error("Theme archive entry exceeds limits");
     }
     if (method === 8) {
-      return zlib.inflateRawSync(data, {maxOutputLength: maximumEntryBytes});
+      return zlib.inflateRawSync(data, { maxOutputLength: maximumEntryBytes });
     }
     return data;
   };
 
   const storeEntry = (name: string, data: Buffer) => {
     const parts = name.replace(/\\/g, "/").split("/");
-    if (!name || name.length > 240 || name.startsWith("/") || parts.some(part => part === "..") || data.length > maximumEntryBytes) {
+    if (
+      !name ||
+      name.length > 240 ||
+      name.startsWith("/") ||
+      parts.some(part => part === "..") ||
+      data.length > maximumEntryBytes
+    ) {
       throw new Error("Invalid theme archive entry");
     }
     entries += 1;
     expandedBytes += data.length;
-    if (entries > maximumEntries || expandedBytes > maximumExpandedBytes) throw new Error("Theme archive exceeds limits");
+    if (entries > maximumEntries || expandedBytes > maximumExpandedBytes)
+      throw new Error("Theme archive exceeds limits");
     out[name] = data;
     const base = name.split("/").pop() || name;
     if (base !== name) out[base] = data;
@@ -395,7 +462,7 @@ function parseZip(buf: Buffer): Record<string, Buffer> {
     let data: Buffer;
 
     // Bit 3: data descriptor — sizes in local header may be zero
-    if ((flags & 0x8) && (comp === 0 || uncomp === 0)) {
+    if (flags & 0x8 && (comp === 0 || uncomp === 0)) {
       let scan = start;
       let next = -1;
       while (scan + 4 <= buf.length) {
@@ -439,7 +506,10 @@ function parseZip(buf: Buffer): Record<string, Buffer> {
   // Find EOCD (PK\x05\x06) near end, then walk central headers
   let eocd = -1;
   for (let p = Math.max(0, buf.length - 22 - 65535); p + 22 <= buf.length; p++) {
-    if (buf.readUInt32LE(p) === 0x06054b50) { eocd = p; break; }
+    if (buf.readUInt32LE(p) === 0x06054b50) {
+      eocd = p;
+      break;
+    }
   }
   if (eocd >= 0) {
     const cdOffset = buf.readUInt32LE(eocd + 16);
@@ -481,7 +551,10 @@ export function parseDesktopColorText(text: string): Record<string, string> {
     // strip trailing // comment
     const noComment = s.replace(/\s+\/\/.*$/, "").trim();
     // Support: key: value;  OR  key: value  OR multi key: a: x; b: y;
-    const parts = noComment.split(";").map(p => p.trim()).filter(Boolean);
+    const parts = noComment
+      .split(";")
+      .map(p => p.trim())
+      .filter(Boolean);
     for (const part of parts) {
       const col = part.indexOf(":");
       if (col <= 0) continue;
@@ -554,9 +627,18 @@ function extractDesktopWallpaper(files: Record<string, Buffer>): { wallpaper: Bu
   const tiledBuf = find(["tiled.jpg", "tiled.jpeg", "tiled.png", "tiled.webp"]);
   const tiled = !!tiledBuf;
   let wp = find([
-    "background.jpg", "background.jpeg", "background.png", "background.webp",
-    "background", "bg.jpg", "bg.jpeg", "bg.png",
-    "tiled.jpg", "tiled.jpeg", "tiled.png", "tiled.webp",
+    "background.jpg",
+    "background.jpeg",
+    "background.png",
+    "background.webp",
+    "background",
+    "bg.jpg",
+    "bg.jpeg",
+    "bg.png",
+    "tiled.jpg",
+    "tiled.jpeg",
+    "tiled.png",
+    "tiled.webp",
   ]);
   if (!wp) {
     // last resort: largest jpeg/png in package (excluding colors file)
@@ -574,10 +656,7 @@ function extractDesktopWallpaper(files: Record<string, Buffer>): { wallpaper: Bu
 }
 
 /** Non-color attheme keys that must never enter the palette map */
-const ATTHEME_META_KEYS = new Set([
-  "wallpaperfileoffset",
-  "wallpaperfileoffset ",
-]);
+const ATTHEME_META_KEYS = new Set(["wallpaperfileoffset", "wallpaperfileoffset "]);
 
 function isAtthemeMetaKey(key: string): boolean {
   const k = key.trim().toLowerCase();
@@ -592,7 +671,10 @@ function toAndroidColorValue(hex: string): string {
   if (!hex) return "0";
   let h = hex.startsWith("#") ? hex.slice(1) : hex;
   if (h.length === 3) h = `${h[0]}${h[0]}${h[1]}${h[1]}${h[2]}${h[2]}`;
-  let a = 255, r = 0, g = 0, b = 0;
+  let a = 255,
+    r = 0,
+    g = 0,
+    b = 0;
   if (h.length === 8) {
     a = parseInt(h.slice(0, 2), 16) || 0;
     r = parseInt(h.slice(2, 4), 16) || 0;
@@ -637,15 +719,16 @@ function computeAtthemeWallpaperOffset(colorBodyUtf8: string): number {
  */
 function attachAtthemeWallpaper(colorText: string, wallpaper: Buffer | null | undefined): Buffer {
   // Drop any stale offset / empty lines from generator output
-  const body = colorText
-    .split("\n")
-    .filter((l) => {
-      const t = l.trim();
-      if (!t) return false;
-      if (isAtthemeMetaKey(t.split("=")[0] || "")) return false;
-      return true;
-    })
-    .join("\n") + "\n";
+  const body =
+    colorText
+      .split("\n")
+      .filter(l => {
+        const t = l.trim();
+        if (!t) return false;
+        if (isAtthemeMetaKey(t.split("=")[0] || "")) return false;
+        return true;
+      })
+      .join("\n") + "\n";
 
   const wp = normalizeWallpaper(wallpaper || null);
   if (!wp) {
@@ -653,11 +736,7 @@ function attachAtthemeWallpaper(colorText: string, wallpaper: Buffer | null | un
   }
   const offset = computeAtthemeWallpaperOffset(body);
   const header = `wallpaperFileOffset=${offset}\n${body}WPS\n`;
-  return Buffer.concat([
-    Buffer.from(header, "utf-8"),
-    wp,
-    Buffer.from("\nWPE\n"),
-  ]);
+  return Buffer.concat([Buffer.from(header, "utf-8"), wp, Buffer.from("\nWPE\n")]);
 }
 
 /** Build Desktop theme package: ZIP with colors + background when wallpaper present */
@@ -723,7 +802,9 @@ function expandColorAliases(colors: Record<string, string>): Record<string, stri
     if (!v || k.startsWith("__") || isAtthemeMetaKey(k)) continue;
     out[k] = v;
   }
-  const put = (k: string, v: string) => { if (v && !out[k] && !k.startsWith("__") && !isAtthemeMetaKey(k)) out[k] = v; };
+  const put = (k: string, v: string) => {
+    if (v && !out[k] && !k.startsWith("__") && !isAtthemeMetaKey(k)) out[k] = v;
+  };
 
   // Cross-map every known pair both directions
   for (const [a, d] of Object.entries(A2D_MAP)) {
@@ -741,16 +822,28 @@ function expandColorAliases(colors: Record<string, string>): Record<string, stri
 
   // Common semantic aliases (fill gaps for generators)
   const aliases: Array<[string, string[]]> = [
-    ["windowBackgroundWhite", ["windowBg", "filling", "background", "list.plainBg", "backgroundColor", "chatListBackground"]],
+    [
+      "windowBackgroundWhite",
+      ["windowBg", "filling", "background", "list.plainBg", "backgroundColor", "chatListBackground"],
+    ],
     ["windowBackgroundWhiteBlackText", ["windowFg", "text", "primaryText", "list.primaryText"]],
     ["windowBackgroundWhiteGrayText", ["windowSubTextFg", "textLight", "secondaryText", "list.secondaryText", "icon"]],
-    ["windowBackgroundWhiteBlueText", ["primaryColor", "textLink", "accentColor", "list.accent", "progress", "iconActive"]],
+    [
+      "windowBackgroundWhiteBlueText",
+      ["primaryColor", "textLink", "accentColor", "list.accent", "progress", "iconActive"],
+    ],
     ["windowBackgroundWhiteBlueText4", ["primaryColor", "textLink", "accentColor", "activeButtonFg"]],
     ["actionBarDefault", ["topBarBg", "headerBackground", "root.navBar.background", "navigationBarBackground"]],
     ["actionBarDefaultTitle", ["headerTitle", "navigationBarTitle", "windowFg"]],
     ["actionBarDefaultIcon", ["headerIcon", "menuIconFg", "navigationBarIcons"]],
-    ["chat_inBubble", ["msgInBg", "bubbleIn_background", "chatIncomingBubble", "chat.message.incoming.bubble.withoutWp.bg"]],
-    ["chat_outBubble", ["msgOutBg", "bubbleOut_background", "chatOutgoingBubble", "chat.message.outgoing.bubble.withoutWp.bg"]],
+    [
+      "chat_inBubble",
+      ["msgInBg", "bubbleIn_background", "chatIncomingBubble", "chat.message.incoming.bubble.withoutWp.bg"],
+    ],
+    [
+      "chat_outBubble",
+      ["msgOutBg", "bubbleOut_background", "chatOutgoingBubble", "chat.message.outgoing.bubble.withoutWp.bg"],
+    ],
     ["chat_messageTextIn", ["bubbleIn_text", "chatIncomingText", "historyTextInFg"]],
     ["chat_messageTextOut", ["bubbleOut_text", "chatOutgoingText", "historyTextOutFg"]],
     ["chat_messageLinkIn", ["bubbleIn_textLink", "chatIncomingLink", "historyLinkInFg", "textLink"]],
@@ -792,7 +885,10 @@ function expandColorAliases(colors: Record<string, string>): Record<string, stri
       for (const a of alts) put(a, out[canonical]);
     } else {
       for (const a of alts) {
-        if (out[a]) { put(canonical, out[a]); break; }
+        if (out[a]) {
+          put(canonical, out[a]);
+          break;
+        }
       }
       if (out[canonical]) {
         for (const a of alts) put(a, out[canonical]);
@@ -815,7 +911,10 @@ function expandColorAliases(colors: Record<string, string>): Record<string, stri
  * silently become the shared mobile wallpaper. Callers pick wallpaper via
  * pickMobileWallpaper() / pickDesktopWallpaper() after merge.
  */
-function mergeThemeDocs(docs: ThemeDoc[], preferredOrder: ThemeFormat[] = ["attheme", "ios-theme", "tgx-theme", "tdesktop-theme"]): ThemeDoc | null {
+function mergeThemeDocs(
+  docs: ThemeDoc[],
+  preferredOrder: ThemeFormat[] = ["attheme", "ios-theme", "tgx-theme", "tdesktop-theme"],
+): ThemeDoc | null {
   if (!docs.length) return null;
   const ordered = [...docs].sort((a, b) => {
     const ia = preferredOrder.indexOf(a.format);
@@ -852,7 +951,10 @@ function mergeThemeDocs(docs: ThemeDoc[], preferredOrder: ThemeFormat[] = ["atth
   // If no mobile slug, allow desktop-sourced slug only as last resort (rare)
   if (!wallpaperSlug) {
     for (const d of ordered) {
-      if (d.wallpaperSlug) { wallpaperSlug = d.wallpaperSlug; break; }
+      if (d.wallpaperSlug) {
+        wallpaperSlug = d.wallpaperSlug;
+        break;
+      }
     }
   }
   if (!Object.keys(colors).length && !wallpaperSlug) return null;
@@ -1599,11 +1701,7 @@ for (const [a, i] of Object.entries(A2I_MAP)) I2A_MAP[i] = a;
 
 // ─── Generators ──────────────────────────────────────────────────────────────
 
-function genDesktop(
-  colors: Record<string, string>,
-  wallpaperSlug?: string | null,
-  tiled = false,
-): string {
+function genDesktop(colors: Record<string, string>, wallpaperSlug?: string | null, tiled = false): string {
   const cx = remapAllColors(colors, "to-desktop");
   const f = (ak: string, fb: string) => cx[A2D_MAP[ak] || ak] || cx[ak] || fb;
   const p = toRgb(f("windowBackgroundWhiteBlueText", "#6750a4"));
@@ -1650,13 +1748,19 @@ function genDesktop(
   }
   for (const l of core.split("\n")) {
     const s = l.trim();
-    if (!s || s.startsWith("//")) { lines.push(l); continue; }
+    if (!s || s.startsWith("//")) {
+      lines.push(l);
+      continue;
+    }
     let skip = false;
     for (const part of s.split(";")) {
       const col = part.indexOf(":");
       if (col > 0) {
         const k = part.slice(0, col).trim();
-        if (known.has(k)) { skip = true; break; }
+        if (known.has(k)) {
+          skip = true;
+          break;
+        }
       }
     }
     if (!skip) {
@@ -1749,191 +1853,405 @@ function genAndroid(colors: Record<string, string>): string[] {
   const tb = cx["topBarBg"] || bg;
   const dark = isDarkHex(bg);
   const r: Record<string, string> = {};
-  const set = (k: string, v: string) => { r[k] = v; };
+  const set = (k: string, v: string) => {
+    r[k] = v;
+  };
   // Base explicit derived values
-  set("windowBackgroundWhite", bg); set("windowBackgroundWhiteBlackText", t);
-  set("windowBackgroundWhiteGrayText", st); set("windowBackgroundWhiteGrayText2", st);
-  set("windowBackgroundWhiteGrayText3", st); set("windowBackgroundWhiteHintText", st);
-  set("windowBackgroundWhiteValueText", t); set("windowBackgroundWhiteLinkText", p);
-  set("windowBackgroundWhiteBlueText", p); set("windowBackgroundWhiteBlueText2", p);
-  set("windowBackgroundWhiteBlueText3", p); set("windowBackgroundWhiteBlueText4", p);
-  set("windowBackgroundWhiteBlueText5", p); set("windowBackgroundWhiteBlueText6", p);
-  set("windowBackgroundWhiteBlueText7", p); set("windowBackgroundWhiteBlueButton", p);
-  set("windowBackgroundWhiteBlueIcon", p); set("windowBackgroundWhiteGreenText", "#4caf50");
-  set("windowBackgroundWhiteGreenText2", "#4caf50"); set("windowBackgroundWhiteInputField", bg + "3c");
-  set("windowBackgroundWhiteInputFieldActivated", p); set("divider", bg + "3c");
-  set("listSelectorSDK21", p + "1a"); set("actionBarDefault", tb);
-  set("actionBarDefaultIcon", p); set("actionBarDefaultTitle", t);
-  set("actionBarDefaultSubtitle", st); set("actionBarDefaultSearch", t);
-  set("actionBarDefaultSearchPlaceholder", st); set("actionBarDefaultSelector", p + "1a");
-  set("actionBarActionModeDefault", tb); set("actionBarActionModeDefaultIcon", p);
-  set("chats_menuBackground", bg); set("chats_name", t); set("chats_nameMessage", p);
-  set("chats_message", st); set("chats_message_threeLines", st); set("chats_date", st);
-  set("chats_pinnedIcon", p); set("chats_pinnedOverlay", p + "3c");
-  set("chats_tabletSelectedOverlay", p + "1a"); set("chats_unreadCounter", p);
-  set("chats_unreadCounterMuted", st); set("chats_unreadCounterText", "#ffffff");
-  set("chats_verifiedBackground", p); set("chats_verifiedCheck", "#ffffff");
-  set("chats_muteIcon", st); set("chats_mentionIcon", p); set("chats_sentCheck", p);
-  set("chats_sentCheckRead", p); set("chats_sentClock", st); set("chats_sentError", "#f44336");
-  set("chats_sentErrorIcon", "#f44336"); set("chats_draft", "#f44336");
-  set("chats_onlineCircle", "#4caf50"); set("chats_secretIcon", p);
-  set("chats_secretName", t); set("chats_menuItemIcon", p);
-  set("chats_menuItemText", t); set("chats_menuName", t); set("chats_menuPhone", st);
-  set("chats_menuPhoneCats", st); set("chats_menuTopShadow", "00000000");
-  set("chats_menuTopBackgroundCats", bg); set("chats_actionBackground", p);
-  set("chats_actionPressedBackground", adjustBright(p, 10)); set("chats_actionIcon", "#ffffff");
-  set("avatar_text", t); set("avatar_backgroundActionBarBlue", tb);
-  set("avatar_actionBarSelectorBlue", p + "1a"); set("avatar_actionBarIconBlue", p);
-  set("avatar_subtitleInProfileBlue", st); set("avatar_backgroundRed", "#f44336");
-  set("avatar_backgroundGreen", "#4caf50"); set("avatar_backgroundBlue", p);
-  set("avatar_backgroundOrange", "#ff9800"); set("avatar_nameInMessageRed", t);
-  set("avatar_nameInMessageGreen", t); set("avatar_nameInMessageBlue", t);
-  set("avatar_nameInMessageOrange", t); set("avatar_backgroundInProfileRed", "#f44336");
-  set("chat_messagePanelBackground", bg); set("chat_messagePanelHint", st);
-  set("chat_messagePanelText", t); set("chat_messagePanelSend", p);
-  set("chat_messagePanelIcons", p); set("chat_messagePanelVoiceBackground", p);
+  set("windowBackgroundWhite", bg);
+  set("windowBackgroundWhiteBlackText", t);
+  set("windowBackgroundWhiteGrayText", st);
+  set("windowBackgroundWhiteGrayText2", st);
+  set("windowBackgroundWhiteGrayText3", st);
+  set("windowBackgroundWhiteHintText", st);
+  set("windowBackgroundWhiteValueText", t);
+  set("windowBackgroundWhiteLinkText", p);
+  set("windowBackgroundWhiteBlueText", p);
+  set("windowBackgroundWhiteBlueText2", p);
+  set("windowBackgroundWhiteBlueText3", p);
+  set("windowBackgroundWhiteBlueText4", p);
+  set("windowBackgroundWhiteBlueText5", p);
+  set("windowBackgroundWhiteBlueText6", p);
+  set("windowBackgroundWhiteBlueText7", p);
+  set("windowBackgroundWhiteBlueButton", p);
+  set("windowBackgroundWhiteBlueIcon", p);
+  set("windowBackgroundWhiteGreenText", "#4caf50");
+  set("windowBackgroundWhiteGreenText2", "#4caf50");
+  set("windowBackgroundWhiteInputField", bg + "3c");
+  set("windowBackgroundWhiteInputFieldActivated", p);
+  set("divider", bg + "3c");
+  set("listSelectorSDK21", p + "1a");
+  set("actionBarDefault", tb);
+  set("actionBarDefaultIcon", p);
+  set("actionBarDefaultTitle", t);
+  set("actionBarDefaultSubtitle", st);
+  set("actionBarDefaultSearch", t);
+  set("actionBarDefaultSearchPlaceholder", st);
+  set("actionBarDefaultSelector", p + "1a");
+  set("actionBarActionModeDefault", tb);
+  set("actionBarActionModeDefaultIcon", p);
+  set("chats_menuBackground", bg);
+  set("chats_name", t);
+  set("chats_nameMessage", p);
+  set("chats_message", st);
+  set("chats_message_threeLines", st);
+  set("chats_date", st);
+  set("chats_pinnedIcon", p);
+  set("chats_pinnedOverlay", p + "3c");
+  set("chats_tabletSelectedOverlay", p + "1a");
+  set("chats_unreadCounter", p);
+  set("chats_unreadCounterMuted", st);
+  set("chats_unreadCounterText", "#ffffff");
+  set("chats_verifiedBackground", p);
+  set("chats_verifiedCheck", "#ffffff");
+  set("chats_muteIcon", st);
+  set("chats_mentionIcon", p);
+  set("chats_sentCheck", p);
+  set("chats_sentCheckRead", p);
+  set("chats_sentClock", st);
+  set("chats_sentError", "#f44336");
+  set("chats_sentErrorIcon", "#f44336");
+  set("chats_draft", "#f44336");
+  set("chats_onlineCircle", "#4caf50");
+  set("chats_secretIcon", p);
+  set("chats_secretName", t);
+  set("chats_menuItemIcon", p);
+  set("chats_menuItemText", t);
+  set("chats_menuName", t);
+  set("chats_menuPhone", st);
+  set("chats_menuPhoneCats", st);
+  set("chats_menuTopShadow", "00000000");
+  set("chats_menuTopBackgroundCats", bg);
+  set("chats_actionBackground", p);
+  set("chats_actionPressedBackground", adjustBright(p, 10));
+  set("chats_actionIcon", "#ffffff");
+  set("avatar_text", t);
+  set("avatar_backgroundActionBarBlue", tb);
+  set("avatar_actionBarSelectorBlue", p + "1a");
+  set("avatar_actionBarIconBlue", p);
+  set("avatar_subtitleInProfileBlue", st);
+  set("avatar_backgroundRed", "#f44336");
+  set("avatar_backgroundGreen", "#4caf50");
+  set("avatar_backgroundBlue", p);
+  set("avatar_backgroundOrange", "#ff9800");
+  set("avatar_nameInMessageRed", t);
+  set("avatar_nameInMessageGreen", t);
+  set("avatar_nameInMessageBlue", t);
+  set("avatar_nameInMessageOrange", t);
+  set("avatar_backgroundInProfileRed", "#f44336");
+  set("chat_messagePanelBackground", bg);
+  set("chat_messagePanelHint", st);
+  set("chat_messagePanelText", t);
+  set("chat_messagePanelSend", p);
+  set("chat_messagePanelIcons", p);
+  set("chat_messagePanelVoiceBackground", p);
   set("chat_messagePanelVoicePressed", adjustBright(p, 15));
   set("chat_messagePanelCancelInlineBot", st);
-  set("chat_recordedVoicePlayPause", p); set("chat_recordedVoicePlayPausePressed", adjustBright(p, 15));
-  set("chat_recordedVoiceDot", "#f44336"); set("chat_recordedVoiceBackground", bg);
-  set("chat_recordedVoiceProgress", p); set("chat_recordedVoiceProgressInner", st);
-  set("chat_recordTime", st); set("chat_recordVoiceCancel", st);
-  set("chat_inBubble", mi); set("chat_inBubbleSelected", adjustBright(mi, 15));
-  set("chat_inBubbleShadow", bg); set("chat_outBubble", mo);
-  set("chat_outBubbleSelected", adjustBright(mo, 15)); set("chat_outBubbleShadow", bg);
-  set("chat_outBubbleGradient1", mo); set("chat_outBubbleGradient2", mo);
-  set("chat_outBubbleGradient3", mo); set("chat_outBubbleGradientSelectedOverlay", adjustBright(mo, 15));
-  set("chat_messageTextIn", t); set("chat_messageTextOut", t);
-  set("chat_messageLinkIn", p); set("chat_messageLinkOut", p);
-  set("chat_inReplyLine", p); set("chat_outReplyLine", p);
-  set("chat_inReplyNameText", p); set("chat_outReplyNameText", p);
-  set("chat_inReplyMessageText", st); set("chat_outReplyMessageText", st);
-  set("chat_inReplyMediaMessageText", st); set("chat_outReplyMediaMessageText", st);
-  set("chat_inForwardedNameText", p); set("chat_outForwardedNameText", p);
-  set("chat_inViaBotNameText", p); set("chat_outViaBotNameText", p);
-  set("chat_inTimeText", st); set("chat_outTimeText", st);
-  set("chat_inTimeSelectedText", adjustBright(st, 15)); set("chat_outTimeSelectedText", adjustBright(st, 15));
-  set("chat_inViews", st); set("chat_outViews", st);
-  set("chat_inViewsSelected", adjustBright(st, 15)); set("chat_outViewsSelected", adjustBright(st, 15));
-  set("chat_inMenu", st); set("chat_outMenu", st);
-  set("chat_inMenuSelected", adjustBright(st, 15)); set("chat_outMenuSelected", adjustBright(st, 15));
-  set("chat_inSentCheck", p); set("chat_outSentCheck", p);
-  set("chat_outSentCheckRead", p); set("chat_outSentCheckSelected", p);
-  set("chat_outSentCheckReadSelected", p); set("chat_outSentClock", st);
-  set("chat_inSentClock", st); set("chat_mediaTimeText", st);
-  set("chat_mediaSentCheck", p); set("chat_mediaProgress", p);
-  set("chat_selectedBackground", p + "1a"); set("chat_status", p); set("chat_muteIcon", st);
-  set("chat_goDownButton", bg); set("chat_goDownButtonShadow", "00000000");
-  set("chat_goDownButtonIcon", p); set("chat_goDownButtonCounter", "#ffffff");
-  set("chat_goDownButtonCounterBackground", p); set("chat_inInstant", p);
-  set("chat_outInstant", p); set("chat_inInstantSelected", p);
-  set("chat_outInstantSelected", p); set("chat_sentError", "#f44336");
+  set("chat_recordedVoicePlayPause", p);
+  set("chat_recordedVoicePlayPausePressed", adjustBright(p, 15));
+  set("chat_recordedVoiceDot", "#f44336");
+  set("chat_recordedVoiceBackground", bg);
+  set("chat_recordedVoiceProgress", p);
+  set("chat_recordedVoiceProgressInner", st);
+  set("chat_recordTime", st);
+  set("chat_recordVoiceCancel", st);
+  set("chat_inBubble", mi);
+  set("chat_inBubbleSelected", adjustBright(mi, 15));
+  set("chat_inBubbleShadow", bg);
+  set("chat_outBubble", mo);
+  set("chat_outBubbleSelected", adjustBright(mo, 15));
+  set("chat_outBubbleShadow", bg);
+  set("chat_outBubbleGradient1", mo);
+  set("chat_outBubbleGradient2", mo);
+  set("chat_outBubbleGradient3", mo);
+  set("chat_outBubbleGradientSelectedOverlay", adjustBright(mo, 15));
+  set("chat_messageTextIn", t);
+  set("chat_messageTextOut", t);
+  set("chat_messageLinkIn", p);
+  set("chat_messageLinkOut", p);
+  set("chat_inReplyLine", p);
+  set("chat_outReplyLine", p);
+  set("chat_inReplyNameText", p);
+  set("chat_outReplyNameText", p);
+  set("chat_inReplyMessageText", st);
+  set("chat_outReplyMessageText", st);
+  set("chat_inReplyMediaMessageText", st);
+  set("chat_outReplyMediaMessageText", st);
+  set("chat_inForwardedNameText", p);
+  set("chat_outForwardedNameText", p);
+  set("chat_inViaBotNameText", p);
+  set("chat_outViaBotNameText", p);
+  set("chat_inTimeText", st);
+  set("chat_outTimeText", st);
+  set("chat_inTimeSelectedText", adjustBright(st, 15));
+  set("chat_outTimeSelectedText", adjustBright(st, 15));
+  set("chat_inViews", st);
+  set("chat_outViews", st);
+  set("chat_inViewsSelected", adjustBright(st, 15));
+  set("chat_outViewsSelected", adjustBright(st, 15));
+  set("chat_inMenu", st);
+  set("chat_outMenu", st);
+  set("chat_inMenuSelected", adjustBright(st, 15));
+  set("chat_outMenuSelected", adjustBright(st, 15));
+  set("chat_inSentCheck", p);
+  set("chat_outSentCheck", p);
+  set("chat_outSentCheckRead", p);
+  set("chat_outSentCheckSelected", p);
+  set("chat_outSentCheckReadSelected", p);
+  set("chat_outSentClock", st);
+  set("chat_inSentClock", st);
+  set("chat_mediaTimeText", st);
+  set("chat_mediaSentCheck", p);
+  set("chat_mediaProgress", p);
+  set("chat_selectedBackground", p + "1a");
+  set("chat_status", p);
+  set("chat_muteIcon", st);
+  set("chat_goDownButton", bg);
+  set("chat_goDownButtonShadow", "00000000");
+  set("chat_goDownButtonIcon", p);
+  set("chat_goDownButtonCounter", "#ffffff");
+  set("chat_goDownButtonCounterBackground", p);
+  set("chat_inInstant", p);
+  set("chat_outInstant", p);
+  set("chat_inInstantSelected", p);
+  set("chat_outInstantSelected", p);
+  set("chat_sentError", "#f44336");
   set("chat_sentErrorIcon", "#f44336");
-  set("chat_inAudioSeekbar", st); set("chat_inAudioSeekbarFill", p);
+  set("chat_inAudioSeekbar", st);
+  set("chat_inAudioSeekbarFill", p);
   set("chat_inAudioSeekbarSelected", adjustBright(st, 15));
-  set("chat_outAudioSeekbar", st); set("chat_outAudioSeekbarFill", p);
+  set("chat_outAudioSeekbar", st);
+  set("chat_outAudioSeekbarFill", p);
   set("chat_outAudioSeekbarSelected", adjustBright(st, 15));
-  set("chat_inVoiceSeekbar", st); set("chat_inVoiceSeekbarFill", p);
+  set("chat_inVoiceSeekbar", st);
+  set("chat_inVoiceSeekbarFill", p);
   set("chat_inVoiceSeekbarSelected", adjustBright(st, 15));
-  set("chat_outVoiceSeekbar", st); set("chat_outVoiceSeekbarFill", p);
+  set("chat_outVoiceSeekbar", st);
+  set("chat_outVoiceSeekbarFill", p);
   set("chat_outVoiceSeekbarSelected", adjustBright(st, 15));
-  set("chat_inFileNameText", t); set("chat_outFileNameText", t);
-  set("chat_inFileInfoText", st); set("chat_outFileInfoText", st);
-  set("chat_inFileProgress", p); set("chat_outFileProgress", p);
-  set("chat_inFileBackground", mi); set("chat_outFileBackground", mo);
+  set("chat_inFileNameText", t);
+  set("chat_outFileNameText", t);
+  set("chat_inFileInfoText", st);
+  set("chat_outFileInfoText", st);
+  set("chat_inFileProgress", p);
+  set("chat_outFileProgress", p);
+  set("chat_inFileBackground", mi);
+  set("chat_outFileBackground", mo);
   set("chat_inFileBackgroundSelected", adjustBright(mi, 15));
   set("chat_outFileBackgroundSelected", adjustBright(mo, 15));
-  set("chat_inLoader", p); set("chat_outLoader", p);
-  set("chat_inLoaderSelected", p); set("chat_outLoaderSelected", p);
-  set("chat_inLoaderPhoto", p); set("chat_outLoaderPhoto", p);
-  set("chat_inLoaderPhotoSelected", p); set("chat_outLoaderPhotoSelected", p);
-  set("chat_inContactName", p); set("chat_outContactName", p);
-  set("chat_emojiPanelBackground", bg); set("chat_emojiPanelIcon", st);
-  set("chat_emojiPanelIconSelected", p); set("chat_emojiPanelBadgeBackground", p);
-  set("chat_emojiPanelBadgeText", "#ffffff"); set("chat_emojiPanelNewUnread", p);
+  set("chat_inLoader", p);
+  set("chat_outLoader", p);
+  set("chat_inLoaderSelected", p);
+  set("chat_outLoaderSelected", p);
+  set("chat_inLoaderPhoto", p);
+  set("chat_outLoaderPhoto", p);
+  set("chat_inLoaderPhotoSelected", p);
+  set("chat_outLoaderPhotoSelected", p);
+  set("chat_inContactName", p);
+  set("chat_outContactName", p);
+  set("chat_emojiPanelBackground", bg);
+  set("chat_emojiPanelIcon", st);
+  set("chat_emojiPanelIconSelected", p);
+  set("chat_emojiPanelBadgeBackground", p);
+  set("chat_emojiPanelBadgeText", "#ffffff");
+  set("chat_emojiPanelNewUnread", p);
   set("chat_emojiPanelStickerPackSelector", p);
   set("chat_emojiPanelIconSelector", bg + "1a");
-  set("chat_botInlineInfo", st); set("chat_botInlineTitle", t);
+  set("chat_botInlineInfo", st);
+  set("chat_botInlineTitle", t);
   set("chat_botInlineDescription", st);
-  set("chat_serviceBackground", p + "3c"); set("chat_serviceText", "#ffffff");
-  set("chat_serviceLink", "#ffffff"); set("chat_serviceIcon", "#ffffff");
+  set("chat_serviceBackground", p + "3c");
+  set("chat_serviceText", "#ffffff");
+  set("chat_serviceLink", "#ffffff");
+  set("chat_serviceIcon", "#ffffff");
   set("chat_serviceIconSelected", "#ffffff");
-  set("profile_tabSelectedText", p); set("profile_tabSelectedLine", p);
-  set("profile_tabText", st); set("profile_actionBackground", p);
-  set("profile_actionIcon", "#ffffff"); set("profile_avatarIcon", t);
-  set("profile_status", st); set("profile_title", t);
-  set("calls_callReceivedGreenIcon", "#4caf50"); set("calls_callReceivedRedIcon", "#f44336");
+  set("profile_tabSelectedText", p);
+  set("profile_tabSelectedLine", p);
+  set("profile_tabText", st);
+  set("profile_actionBackground", p);
+  set("profile_actionIcon", "#ffffff");
+  set("profile_avatarIcon", t);
+  set("profile_status", st);
+  set("profile_title", t);
+  set("calls_callReceivedGreenIcon", "#4caf50");
+  set("calls_callReceivedRedIcon", "#f44336");
   set("calls_callReceivedGreenIconSelected", "#4caf50");
   set("calls_callReceivedRedIconSelected", "#f44336");
-  set("inappPlayerBackground", bg); set("inappPlayerPlayPause", t);
-  set("inappPlayerTitle", t); set("inappPlayerPerformer", st);
-  set("inappPlayerClose", st); set("player_progress", p);
-  set("player_progressBackground", st); set("player_progressCached", p + "3c");
-  set("switchTrack", st); set("switchTrackChecked", p);
-  set("switchTrackBlueSwitch", p); set("switchTrackBlueThumb", t);
-  set("switchThumb", p); set("checkboxSquareDefault", bg);
-  set("checkboxSquareChecked", p); set("checkboxSquareUnchecked", st);
-  set("checkboxSquareBackground", bg); set("checkboxSquareCheck", "#ffffff");
-  set("text_RedRegular", "#f44336"); set("text_RedBold", "#f44336");
+  set("inappPlayerBackground", bg);
+  set("inappPlayerPlayPause", t);
+  set("inappPlayerTitle", t);
+  set("inappPlayerPerformer", st);
+  set("inappPlayerClose", st);
+  set("player_progress", p);
+  set("player_progressBackground", st);
+  set("player_progressCached", p + "3c");
+  set("switchTrack", st);
+  set("switchTrackChecked", p);
+  set("switchTrackBlueSwitch", p);
+  set("switchTrackBlueThumb", t);
+  set("switchThumb", p);
+  set("checkboxSquareDefault", bg);
+  set("checkboxSquareChecked", p);
+  set("checkboxSquareUnchecked", st);
+  set("checkboxSquareBackground", bg);
+  set("checkboxSquareCheck", "#ffffff");
+  set("text_RedRegular", "#f44336");
+  set("text_RedBold", "#f44336");
   set("text_RedLight", adjustBright("#f44336", 30));
-  set("text_BlueBackground", p + "1a"); set("text_BlueText", p);
-  set("text_BlueIcon", p); set("text_BlueBold", p);
-  set("text_BlueLink", p); set("text_BluePressed", adjustBright(p, -15));
-  set("text_GreenRegular", "#4caf50"); set("text_link", p);
-  set("featuredStickers_addButton", p); set("featuredStickers_addButtonPressed", adjustBright(p, -15));
-  set("featuredStickers_unread", p); set("stickers_menu", bg);
+  set("text_BlueBackground", p + "1a");
+  set("text_BlueText", p);
+  set("text_BlueIcon", p);
+  set("text_BlueBold", p);
+  set("text_BlueLink", p);
+  set("text_BluePressed", adjustBright(p, -15));
+  set("text_GreenRegular", "#4caf50");
+  set("text_link", p);
+  set("featuredStickers_addButton", p);
+  set("featuredStickers_addButtonPressed", adjustBright(p, -15));
+  set("featuredStickers_unread", p);
+  set("stickers_menu", bg);
   set("stickers_menuSelector", p + "1a");
-  set("returnToCallBackground", p); set("returnToCallText", "#ffffff");
-  set("musicPicker_checkbox", p); set("musicPicker_buttonBackground", p);
+  set("returnToCallBackground", p);
+  set("returnToCallText", "#ffffff");
+  set("musicPicker_checkbox", p);
+  set("musicPicker_buttonBackground", p);
   set("musicPicker_buttonIcon", "#ffffff");
-  set("notification_alertBackground", p); set("notification_alertText", t);
+  set("notification_alertBackground", p);
+  set("notification_alertText", t);
   set("notification_alertInfo", st);
-  set("dialogBackground", bg); set("dialogTextBlack", t);
-  set("dialogTextGray", st); set("dialogTextGray2", st);
-  set("dialogTextGray3", st); set("dialogTextBlue", p);
-  set("dialogTextBlue2", p); set("dialogTextBlue3", p);
-  set("dialogTextRed", "#f44336"); set("dialogTextLink", p);
-  set("dialogButton", p); set("dialogButtonPressed", adjustBright(p, -15));
-  set("dialogIcon", st); set("dialogCheckboxSquareDefault", bg);
-  set("dialogCheckboxSquareChecked", p); set("dialogCheckboxSquareUnchecked", st);
-  set("dialogCheckboxSquareBackground", bg); set("dialogCheckboxSquareCheck", "#ffffff");
-  set("dialogInputField", bg + "3c"); set("dialogInputFieldActivated", p);
-  set("dialogRadioBackground", p); set("dialogRadioBackgroundChecked", p);
-  set("dialogProgressBar", p); set("dialogGrayLine", bg + "3c");
-  set("dialogTopBackground", bg); set("dialogBadgeBackground", p);
-  set("dialogBadgeText", "#ffffff"); set("dialogLineProgress", p);
-  set("dialogLineProgressBackground", st); set("dialogScrollRound", p);
+  set("dialogBackground", bg);
+  set("dialogTextBlack", t);
+  set("dialogTextGray", st);
+  set("dialogTextGray2", st);
+  set("dialogTextGray3", st);
+  set("dialogTextBlue", p);
+  set("dialogTextBlue2", p);
+  set("dialogTextBlue3", p);
+  set("dialogTextRed", "#f44336");
+  set("dialogTextLink", p);
+  set("dialogButton", p);
+  set("dialogButtonPressed", adjustBright(p, -15));
+  set("dialogIcon", st);
+  set("dialogCheckboxSquareDefault", bg);
+  set("dialogCheckboxSquareChecked", p);
+  set("dialogCheckboxSquareUnchecked", st);
+  set("dialogCheckboxSquareBackground", bg);
+  set("dialogCheckboxSquareCheck", "#ffffff");
+  set("dialogInputField", bg + "3c");
+  set("dialogInputFieldActivated", p);
+  set("dialogRadioBackground", p);
+  set("dialogRadioBackgroundChecked", p);
+  set("dialogProgressBar", p);
+  set("dialogGrayLine", bg + "3c");
+  set("dialogTopBackground", bg);
+  set("dialogBadgeBackground", p);
+  set("dialogBadgeText", "#ffffff");
+  set("dialogLineProgress", p);
+  set("dialogLineProgressBackground", st);
+  set("dialogScrollRound", p);
   set("dialogScrollRoundOver", adjustBright(p, 10));
-  set("dialog_inlineProgress", p); set("dialog_inlineProgressBackground", st);
+  set("dialog_inlineProgress", p);
+  set("dialog_inlineProgressBackground", st);
   set("dialogInputField", bg + "3c");
   // Fill any remaining known Android keys from cx
   const allKnown = new Set([
     ...Object.keys(A2D_MAP),
-    "switchTrack","switchTrackChecked","switchTrackBlueSwitch","switchTrackBlueThumb","switchThumb",
-    "checkboxSquareDefault","checkboxSquareChecked","checkboxSquareUnchecked","checkboxSquareBackground","checkboxSquareCheck",
-    "text_RedRegular","text_RedBold","text_RedLight","text_BlueBackground","text_BlueText","text_BlueIcon","text_BlueBold",
-    "text_BlueLink","text_BluePressed","text_GreenRegular","text_link",
-    "featuredStickers_addButton","featuredStickers_addButtonPressed","featuredStickers_unread",
-    "stickers_menu","stickers_menuSelector",
-    "returnToCallBackground","returnToCallText","musicPicker_checkbox","musicPicker_buttonBackground","musicPicker_buttonIcon",
-    "notification_alertBackground","notification_alertText","notification_alertInfo",
-    "dialogBackground","dialogTextBlack","dialogTextGray","dialogTextGray2","dialogTextGray3","dialogTextBlue",
-    "dialogTextBlue2","dialogTextBlue3","dialogTextRed","dialogTextLink","dialogButton","dialogButtonPressed",
-    "dialogIcon","dialogCheckboxSquareDefault","dialogCheckboxSquareChecked","dialogCheckboxSquareUnchecked",
-    "dialogCheckboxSquareBackground","dialogCheckboxSquareCheck","dialogInputField","dialogInputFieldActivated",
-    "dialogRadioBackground","dialogRadioBackgroundChecked","dialogProgressBar","dialogGrayLine",
-    "dialogTopBackground","dialogBadgeBackground","dialogBadgeText","dialogLineProgress","dialogLineProgressBackground",
-    "dialogScrollRound","dialogScrollRoundOver","dialog_inlineProgress","dialog_inlineProgressBackground",
-    "chat_outBubbleGradient1","chat_outBubbleGradient2","chat_outBubbleGradient3","chat_outBubbleGradientSelectedOverlay",
-    "chat_inInstantSelected","chat_outInstantSelected","chat_sentError","chat_sentErrorIcon",
-    "chat_botInlineInfo","chat_botInlineTitle","chat_botInlineDescription",
-    "chat_serviceIcon","chat_serviceIconSelected",
-    "profile_avatarIcon","profile_status","profile_title",
-    "inappPlayerTitle","inappPlayerPerformer","inappPlayerClose","player_progressCached",
-    "avatar_nameInMessageRed","avatar_nameInMessageGreen","avatar_nameInMessageBlue","avatar_nameInMessageOrange",
+    "switchTrack",
+    "switchTrackChecked",
+    "switchTrackBlueSwitch",
+    "switchTrackBlueThumb",
+    "switchThumb",
+    "checkboxSquareDefault",
+    "checkboxSquareChecked",
+    "checkboxSquareUnchecked",
+    "checkboxSquareBackground",
+    "checkboxSquareCheck",
+    "text_RedRegular",
+    "text_RedBold",
+    "text_RedLight",
+    "text_BlueBackground",
+    "text_BlueText",
+    "text_BlueIcon",
+    "text_BlueBold",
+    "text_BlueLink",
+    "text_BluePressed",
+    "text_GreenRegular",
+    "text_link",
+    "featuredStickers_addButton",
+    "featuredStickers_addButtonPressed",
+    "featuredStickers_unread",
+    "stickers_menu",
+    "stickers_menuSelector",
+    "returnToCallBackground",
+    "returnToCallText",
+    "musicPicker_checkbox",
+    "musicPicker_buttonBackground",
+    "musicPicker_buttonIcon",
+    "notification_alertBackground",
+    "notification_alertText",
+    "notification_alertInfo",
+    "dialogBackground",
+    "dialogTextBlack",
+    "dialogTextGray",
+    "dialogTextGray2",
+    "dialogTextGray3",
+    "dialogTextBlue",
+    "dialogTextBlue2",
+    "dialogTextBlue3",
+    "dialogTextRed",
+    "dialogTextLink",
+    "dialogButton",
+    "dialogButtonPressed",
+    "dialogIcon",
+    "dialogCheckboxSquareDefault",
+    "dialogCheckboxSquareChecked",
+    "dialogCheckboxSquareUnchecked",
+    "dialogCheckboxSquareBackground",
+    "dialogCheckboxSquareCheck",
+    "dialogInputField",
+    "dialogInputFieldActivated",
+    "dialogRadioBackground",
+    "dialogRadioBackgroundChecked",
+    "dialogProgressBar",
+    "dialogGrayLine",
+    "dialogTopBackground",
+    "dialogBadgeBackground",
+    "dialogBadgeText",
+    "dialogLineProgress",
+    "dialogLineProgressBackground",
+    "dialogScrollRound",
+    "dialogScrollRoundOver",
+    "dialog_inlineProgress",
+    "dialog_inlineProgressBackground",
+    "chat_outBubbleGradient1",
+    "chat_outBubbleGradient2",
+    "chat_outBubbleGradient3",
+    "chat_outBubbleGradientSelectedOverlay",
+    "chat_inInstantSelected",
+    "chat_outInstantSelected",
+    "chat_sentError",
+    "chat_sentErrorIcon",
+    "chat_botInlineInfo",
+    "chat_botInlineTitle",
+    "chat_botInlineDescription",
+    "chat_serviceIcon",
+    "chat_serviceIconSelected",
+    "profile_avatarIcon",
+    "profile_status",
+    "profile_title",
+    "inappPlayerTitle",
+    "inappPlayerPerformer",
+    "inappPlayerClose",
+    "player_progressCached",
+    "avatar_nameInMessageRed",
+    "avatar_nameInMessageGreen",
+    "avatar_nameInMessageBlue",
+    "avatar_nameInMessageOrange",
     "avatar_backgroundInProfileRed",
-    "calls_callReceivedGreenIconSelected","calls_callReceivedRedIconSelected",
-    "chat_emojiPanelNewUnread","chat_emojiPanelStickerPackSelector","chat_emojiPanelIconSelector",
+    "calls_callReceivedGreenIconSelected",
+    "calls_callReceivedRedIconSelected",
+    "chat_emojiPanelNewUnread",
+    "chat_emojiPanelStickerPackSelector",
+    "chat_emojiPanelIconSelector",
     "dialog_inlineProgress",
   ]);
   for (const key of allKnown) {
@@ -1962,69 +2280,198 @@ function genTgx(
 ): string {
   // Expand aliases so known cross-format keys map to TGX names
   const cx = remapAllColors(colors, "to-tgx");
-  const bg = pickColor(cx, ["filling", "background", "windowBackgroundWhite", "windowBg", "chatListBackground"], "#1C2733");
+  const bg = pickColor(
+    cx,
+    ["filling", "background", "windowBackgroundWhite", "windowBg", "chatListBackground"],
+    "#1C2733",
+  );
   const t = pickColor(cx, ["text", "windowBackgroundWhiteBlackText", "windowFg", "headerTitle"], "#E6E1E5");
-  const p = pickColor(cx, ["controlActive", "windowBackgroundWhiteBlueText", "textLink", "progress", "iconActive", "windowBackgroundWhiteBlueText4"], "#6750A4");
-  const st = pickColor(cx, ["textLight", "windowBackgroundWhiteGrayText", "icon", "windowSubTextFg", "textPlaceholder"], "#7D8E98");
+  const p = pickColor(
+    cx,
+    [
+      "controlActive",
+      "windowBackgroundWhiteBlueText",
+      "textLink",
+      "progress",
+      "iconActive",
+      "windowBackgroundWhiteBlueText4",
+    ],
+    "#6750A4",
+  );
+  const st = pickColor(
+    cx,
+    ["textLight", "windowBackgroundWhiteGrayText", "icon", "windowSubTextFg", "textPlaceholder"],
+    "#7D8E98",
+  );
   const mi = pickColor(cx, ["bubbleIn_background", "chat_inBubble", "msgInBg"], "#2B2930");
   const mo = pickColor(cx, ["bubbleOut_background", "chat_outBubble", "msgOutBg"], p);
   const tb = pickColor(cx, ["headerBackground", "actionBarDefault", "topBarBg"], bg);
   const sep = pickColor(cx, ["separator", "divider"], adjustBright(bg, 15));
   // Prefer explicit basedOn from source (day/night); else luminance
   const dark = basedOn
-    ? (String(basedOn).toLowerCase().includes("night") || String(basedOn).toLowerCase().includes("dark") ? 1 : 0)
-    : (isDarkHex(bg) ? 1 : 0);
+    ? String(basedOn).toLowerCase().includes("night") || String(basedOn).toLowerCase().includes("dark")
+      ? 1
+      : 0
+    : isDarkHex(bg)
+      ? 1
+      : 0;
   const c = (hex: string) => toTgxColor(hex);
 
   // Group ALL known TGX colors by value (official TGX export style)
   const colorGroups: Record<string, string[]> = {};
 
   const tgxKeys = [
-    "filling", "background", "overlayFilling", "chatBackground", "chatKeyboard", "passcode",
-    "headerBackground", "headerLightBackground",
-    "text", "background_text", "headerTitle", "headerText",
-    "icon", "textLight", "textPlaceholder", "textNeutral", "textNegative", "background_icon",
-    "bubbleIn_time", "bubbleIn_text", "bubbleIn_textLink", "bubbleIn_background", "bubbleIn_chatVerticalLine",
-    "bubbleIn_messageAuthor", "bubbleIn_waveformActive", "bubbleIn_waveformInactive", "bubbleIn_progress",
-    "bubbleIn_pressed", "bubbleIn_separator", "bubbleIn_outline", "bubbleIn_fillingPositive",
-    "bubbleOut_text", "bubbleOut_textLink", "bubbleOut_background", "bubbleOut_chatVerticalLine",
-    "bubbleOut_messageAuthor", "bubbleOut_waveformActive", "bubbleOut_waveformInactive", "bubbleOut_progress",
-    "bubbleOut_pressed", "bubbleOut_separator", "bubbleOut_outline", "bubbleOut_fillingPositive",
-    "bubbleOut_file", "bubbleOut_time", "bubbleOut_ticks", "bubbleOut_ticksRead",
-    "ticks", "ticksRead", "badge", "badgeMuted", "badgeText",
-    "progress", "textLink", "iconActive", "controlActive", "controlInactive", "controlContent",
-    "circleButtonRegular", "circleButtonTheme", "circleButtonActive", "circleButtonChat", "circleButtonChatIcon",
-    "circleButtonOverlay", "circleButtonOverlayIcon",
-    "unread", "unreadText",
-    "playerProgress", "playerBackground", "playerTitle", "playerSubtitle", "playerButton", "playerButtonActive", "playerTime",
-    "attachPhoto", "attachFile", "attachContact", "attachLocation", "attachInlineBot",
-    "chatListBackground", "chatListAction", "chatListVerify", "chatListIcon",
-    "headerTabActive", "headerTabActiveText", "headerTabInactiveText",
-    "bubble_date", "bubble_dateText", "bubble_date_noWallpaper",
-    "bubble_messageSelection", "bubble_messageSelectionNoWallpaper",
-    "bubble_button_noWallpaper", "bubble_buttonRipple_noWallpaper",
-    "bubble_chatSeparator", "bubble_mediaReply_noWallpaper", "bubble_unread_noWallpaper",
-    "chatSeparator", "chatSendButton", "chatKeyboard",
-    "separator", "shareSeparator",
-    "drawer", "drawerText",
-    "inputActive", "inputInactive", "fillingPressed",
-    "messageAuthor", "messageSwipeBackground",
-    "notificationLink", "notificationAccent",
-    "online", "onlineDot",
-    "promo", "introSectionActive",
-    "checkActive", "checkInactive",
-    "sliderActive", "seekDone", "seekBar",
-    "togglerActive", "togglerPositive", "togglerInactive",
-    "profileSectionActive", "profileSectionActiveContent",
-    "searchResult", "searchResultHighlight",
-    "snackbarUpdate", "textSearchQueryHighlight",
+    "filling",
+    "background",
+    "overlayFilling",
+    "chatBackground",
+    "chatKeyboard",
+    "passcode",
+    "headerBackground",
+    "headerLightBackground",
+    "text",
+    "background_text",
+    "headerTitle",
+    "headerText",
+    "icon",
+    "textLight",
+    "textPlaceholder",
+    "textNeutral",
+    "textNegative",
+    "background_icon",
+    "bubbleIn_time",
+    "bubbleIn_text",
+    "bubbleIn_textLink",
+    "bubbleIn_background",
+    "bubbleIn_chatVerticalLine",
+    "bubbleIn_messageAuthor",
+    "bubbleIn_waveformActive",
+    "bubbleIn_waveformInactive",
+    "bubbleIn_progress",
+    "bubbleIn_pressed",
+    "bubbleIn_separator",
+    "bubbleIn_outline",
+    "bubbleIn_fillingPositive",
+    "bubbleOut_text",
+    "bubbleOut_textLink",
+    "bubbleOut_background",
+    "bubbleOut_chatVerticalLine",
+    "bubbleOut_messageAuthor",
+    "bubbleOut_waveformActive",
+    "bubbleOut_waveformInactive",
+    "bubbleOut_progress",
+    "bubbleOut_pressed",
+    "bubbleOut_separator",
+    "bubbleOut_outline",
+    "bubbleOut_fillingPositive",
+    "bubbleOut_file",
+    "bubbleOut_time",
+    "bubbleOut_ticks",
+    "bubbleOut_ticksRead",
+    "ticks",
+    "ticksRead",
+    "badge",
+    "badgeMuted",
+    "badgeText",
+    "progress",
+    "textLink",
+    "iconActive",
+    "controlActive",
+    "controlInactive",
+    "controlContent",
+    "circleButtonRegular",
+    "circleButtonTheme",
+    "circleButtonActive",
+    "circleButtonChat",
+    "circleButtonChatIcon",
+    "circleButtonOverlay",
+    "circleButtonOverlayIcon",
+    "unread",
+    "unreadText",
+    "playerProgress",
+    "playerBackground",
+    "playerTitle",
+    "playerSubtitle",
+    "playerButton",
+    "playerButtonActive",
+    "playerTime",
+    "attachPhoto",
+    "attachFile",
+    "attachContact",
+    "attachLocation",
+    "attachInlineBot",
+    "chatListBackground",
+    "chatListAction",
+    "chatListVerify",
+    "chatListIcon",
+    "headerTabActive",
+    "headerTabActiveText",
+    "headerTabInactiveText",
+    "bubble_date",
+    "bubble_dateText",
+    "bubble_date_noWallpaper",
+    "bubble_messageSelection",
+    "bubble_messageSelectionNoWallpaper",
+    "bubble_button_noWallpaper",
+    "bubble_buttonRipple_noWallpaper",
+    "bubble_chatSeparator",
+    "bubble_mediaReply_noWallpaper",
+    "bubble_unread_noWallpaper",
+    "chatSeparator",
+    "chatSendButton",
+    "chatKeyboard",
+    "separator",
+    "shareSeparator",
+    "drawer",
+    "drawerText",
+    "inputActive",
+    "inputInactive",
+    "fillingPressed",
+    "messageAuthor",
+    "messageSwipeBackground",
+    "notificationLink",
+    "notificationAccent",
+    "online",
+    "onlineDot",
+    "promo",
+    "introSectionActive",
+    "checkActive",
+    "checkInactive",
+    "sliderActive",
+    "seekDone",
+    "seekBar",
+    "togglerActive",
+    "togglerPositive",
+    "togglerInactive",
+    "profileSectionActive",
+    "profileSectionActiveContent",
+    "searchResult",
+    "searchResultHighlight",
+    "snackbarUpdate",
+    "textSearchQueryHighlight",
     "themeBlackWhite",
-    "headerLightIcon", "headerLightText",
-    "iv_background", "iv_caption", "iv_chatLinkBackground", "iv_header", "iv_icon",
-    "iv_pageAuthor", "iv_pageFooter", "iv_pageTitle", "iv_preBlockBackground",
-    "iv_separator", "iv_text", "iv_textCode", "iv_textCodeBackground",
-    "iv_textCodeBackgroundPressed", "iv_textLink", "iv_textLinkPressHighlight",
-    "iv_textMarked", "iv_textMarkedLink", "iv_textReference", "iv_blockQuoteLine",
+    "headerLightIcon",
+    "headerLightText",
+    "iv_background",
+    "iv_caption",
+    "iv_chatLinkBackground",
+    "iv_header",
+    "iv_icon",
+    "iv_pageAuthor",
+    "iv_pageFooter",
+    "iv_pageTitle",
+    "iv_preBlockBackground",
+    "iv_separator",
+    "iv_text",
+    "iv_textCode",
+    "iv_textCodeBackground",
+    "iv_textCodeBackgroundPressed",
+    "iv_textLink",
+    "iv_textLinkPressHighlight",
+    "iv_textMarked",
+    "iv_textMarkedLink",
+    "iv_textReference",
+    "iv_blockQuoteLine",
   ];
 
   for (const key of tgxKeys) {
@@ -2084,7 +2531,11 @@ function genIos(
   const cx = remapAllColors(colors, "to-ios");
   const bg = pickColor(cx, ["windowBackgroundWhite", "backgroundColor", "windowBg", "list.plainBg"], "#1c1b1f");
   const t = pickColor(cx, ["windowBackgroundWhiteBlackText", "primaryText", "windowFg", "list.primaryText"], "#e6e1e5");
-  const p = pickColor(cx, ["windowBackgroundWhiteBlueText", "accentColor", "list.accent", "windowBackgroundWhiteBlueText4"], "#6750a4");
+  const p = pickColor(
+    cx,
+    ["windowBackgroundWhiteBlueText", "accentColor", "list.accent", "windowBackgroundWhiteBlueText4"],
+    "#6750a4",
+  );
   const st = pickColor(cx, ["windowBackgroundWhiteGrayText", "secondaryText", "list.secondaryText"], "#938f96");
   const mi = pickColor(cx, ["chat_inBubble", "chatIncomingBubble", "msgInBg"], "#2b2930");
   const mo = pickColor(cx, ["chat_outBubble", "chatOutgoingBubble", "msgOutBg"], p);
@@ -2092,26 +2543,31 @@ function genIos(
   const sep = pickColor(cx, ["divider", "separatorColor", "list.blocksSeparator"], adjustBright(bg, 15));
   // Prefer source basedOn (day/night/nightTinted/classic) over luminance guess
   const based = (options?.basedOn || "").toLowerCase();
-  const dark = based
-    ? (based.includes("night") || based.includes("dark"))
-    : isDarkHex(bg);
-  const basedOnOut = based.includes("night") ? (based.includes("tint") ? "nightTinted" : "night")
-    : based.includes("classic") ? "classic"
-    : based.includes("day") ? "day"
-    : (dark ? "night" : "day");
+  const dark = based ? based.includes("night") || based.includes("dark") : isDarkHex(bg);
+  const basedOnOut = based.includes("night")
+    ? based.includes("tint")
+      ? "nightTinted"
+      : "night"
+    : based.includes("classic")
+      ? "classic"
+      : based.includes("day")
+        ? "day"
+        : dark
+          ? "night"
+          : "day";
   const ic = (hex: string) => toIosColor(hex);
   // Derive semantic colors from cx when available
   const white = "ffffff";
   const black = "000000";
   const destructive = ic(cx["text_RedRegular"] || cx["destructiveText"] || cx["attentionButtonFg"] || "#ff3b30");
-  const outText = ic(isDarkHex(mo)
-    ? (cx["windowBackgroundWhiteBlackText"] || "#e6e1e5")
-    : (cx["windowBackgroundWhiteBlackText"] || "#000000"));
+  const outText = ic(
+    isDarkHex(mo)
+      ? cx["windowBackgroundWhiteBlackText"] || "#e6e1e5"
+      : cx["windowBackgroundWhiteBlackText"] || "#000000",
+  );
   const inText = ic(t);
   // Prefer cloud slug when available; otherwise solid color (client still installs)
-  const defaultWp = (wallpaperSlug && wallpaperSlug.trim())
-    ? wallpaperSlug.trim()
-    : ic(bg);
+  const defaultWp = wallpaperSlug && wallpaperSlug.trim() ? wallpaperSlug.trim() : ic(bg);
   const wpOpts = wallpaperSlug ? ` blur: ${options?.blur ?? 0} motion: ${options?.motion ?? true}` : "";
 
   // Minimal but valid nested structure accepted by Telegram iOS
@@ -2479,12 +2935,14 @@ export function colorsFromThemeSettings(settings: any): Record<string, string> {
     if (isNaN(n) || n === 0) return null;
     return toHex((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff);
   };
-  const accent = settings.accentColor != null
-    ? parseColor(String(settings.accentColor)) || parseColorInt(settings.accentColor)
-    : null;
-  const outAccent = settings.outboxAccentColor != null
-    ? parseColor(String(settings.outboxAccentColor)) || parseColorInt(settings.outboxAccentColor)
-    : accent;
+  const accent =
+    settings.accentColor != null
+      ? parseColor(String(settings.accentColor)) || parseColorInt(settings.accentColor)
+      : null;
+  const outAccent =
+    settings.outboxAccentColor != null
+      ? parseColor(String(settings.outboxAccentColor)) || parseColorInt(settings.outboxAccentColor)
+      : accent;
   const base = settings.baseTheme || "";
   const dark = String(base).toLowerCase().includes("night") || String(base).toLowerCase().includes("dark");
   const bg = dark ? "#0f0f0f" : "#ffffff";
@@ -2492,18 +2950,42 @@ export function colorsFromThemeSettings(settings: any): Record<string, string> {
   const sub = dark ? "#938f96" : "#8e8e93";
   const p = accent || (dark ? "#6750a4" : "#2481cc");
   const out = outAccent || p;
-  const assign = (keys: string[], hex: string) => { for (const k of keys) colors[k] = hex; };
+  const assign = (keys: string[], hex: string) => {
+    for (const k of keys) colors[k] = hex;
+  };
   assign(["windowBackgroundWhite", "windowBg", "filling", "background", "chatListBackground"], bg);
   assign(["windowBackgroundWhiteBlackText", "windowFg", "text", "primaryText"], text);
   assign(["windowBackgroundWhiteGrayText", "windowSubTextFg", "textLight", "secondaryText"], sub);
-  assign(["windowBackgroundWhiteBlueText", "windowBackgroundWhiteBlueText4", "textLink", "progress", "accentColor", "controlActive"], p);
-  assign(["actionBarDefault", "topBarBg", "headerBackground", "navigationBarBackground", "root.navBar.background"], dark ? "#1a1a1a" : p);
+  assign(
+    [
+      "windowBackgroundWhiteBlueText",
+      "windowBackgroundWhiteBlueText4",
+      "textLink",
+      "progress",
+      "accentColor",
+      "controlActive",
+    ],
+    p,
+  );
+  assign(
+    ["actionBarDefault", "topBarBg", "headerBackground", "navigationBarBackground", "root.navBar.background"],
+    dark ? "#1a1a1a" : p,
+  );
   assign(["chat_inBubble", "bubbleIn_background", "msgInBg", "chatIncomingBubble"], dark ? "#1e1e1e" : "#f1f1f4");
   assign(["chat_outBubble", "bubbleOut_background", "msgOutBg", "chatOutgoingBubble"], out);
   assign(["chats_unreadCounter", "badge", "unread"], p);
   assign(["divider", "separator", "list.blocksSeparator", "separatorColor"], dark ? "#2a2a2a" : "#c8c7cc");
   assign(["windowBackgroundWhiteGrayText2", "windowBackgroundWhiteGrayText3", "windowBackgroundWhiteHintText"], sub);
-  assign(["windowBackgroundWhiteBlueText2", "windowBackgroundWhiteBlueText3", "windowBackgroundWhiteBlueText5", "windowBackgroundWhiteBlueText6", "windowBackgroundWhiteBlueText7"], p);
+  assign(
+    [
+      "windowBackgroundWhiteBlueText2",
+      "windowBackgroundWhiteBlueText3",
+      "windowBackgroundWhiteBlueText5",
+      "windowBackgroundWhiteBlueText6",
+      "windowBackgroundWhiteBlueText7",
+    ],
+    p,
+  );
   assign(["windowBackgroundWhiteBlueButton", "windowBackgroundWhiteBlueIcon"], p);
   assign(["windowBackgroundWhiteLinkText", "windowBackgroundWhiteValueText"], text);
   assign(["windowBackgroundWhiteInputField"], dark ? "#2a2a2a" : "#e6e6ea");
@@ -2542,7 +3024,10 @@ export function colorsFromThemeSettings(settings: any): Record<string, string> {
   assign(["chat_messagePanelIcons", "historyComposeIconFg"], p);
   assign(["chat_messagePanelVoiceBackground", "chat_messagePanelVoicePressed"], p);
   assign(["chat_botInlineInfo", "chat_botInlineTitle", "chat_botInlineDescription"], sub);
-  assign(["chat_inBubbleSelected", "msgInBgSelected"], dark ? adjustBright("#1e1e1e", 15) : adjustBright("#f1f1f4", -10));
+  assign(
+    ["chat_inBubbleSelected", "msgInBgSelected"],
+    dark ? adjustBright("#1e1e1e", 15) : adjustBright("#f1f1f4", -10),
+  );
   assign(["chat_outBubbleSelected", "msgOutBgSelected"], adjustBright(out, -15));
   assign(["chat_messageTextIn", "chat_messageTextOut", "historyTextInFg", "historyTextOutFg"], text);
   assign(["chat_messageLinkIn", "chat_messageLinkOut", "historyLinkInFg", "historyLinkOutFg"], p);
@@ -2611,7 +3096,10 @@ export function colorsFromThemeSettings(settings: any): Record<string, string> {
 function hexToSignedColorInt(hex: string): number | null {
   const pv = parseColor(hex);
   if (!pv) return null;
-  let r = 0, g = 0, b = 0, a = 255;
+  let r = 0,
+    g = 0,
+    b = 0,
+    a = 255;
   if (pv.length === 9) {
     a = parseInt(pv.slice(1, 3), 16);
     r = parseInt(pv.slice(3, 5), 16);
@@ -2643,20 +3131,26 @@ export function genCloudThemeSettingsExport(
     }
     return null;
   };
-  const accentHex = pick(
-    "windowBackgroundWhiteBlueText4", "windowBackgroundWhiteBlueText",
-    "windowActiveTextFg", "accentColor", "controlActive", "textLink", "progress",
-  ) || "#2481cc";
-  const outHex = pick(
-    "chat_outBubble", "bubbleOut_background", "msgOutBg", "chatOutgoingBubble",
-  ) || accentHex;
-  const bgHex = pick(
-    "windowBackgroundWhite", "windowBg", "filling", "background", "chatListBackground",
-  ) || "#ffffff";
+  const accentHex =
+    pick(
+      "windowBackgroundWhiteBlueText4",
+      "windowBackgroundWhiteBlueText",
+      "windowActiveTextFg",
+      "accentColor",
+      "controlActive",
+      "textLink",
+      "progress",
+    ) || "#2481cc";
+  const outHex = pick("chat_outBubble", "bubbleOut_background", "msgOutBg", "chatOutgoingBubble") || accentHex;
+  const bgHex = pick("windowBackgroundWhite", "windowBg", "filling", "background", "chatListBackground") || "#ffffff";
   const dark = isDarkHex(bgHex) || /night|dark/i.test(meta?.basedOn || "");
   const baseTheme = dark
-    ? (/tinted/i.test(meta?.basedOn || "") ? "baseThemeTinted" : "baseThemeNight")
-    : (/classic/i.test(meta?.basedOn || "") ? "baseThemeClassic" : "baseThemeDay");
+    ? /tinted/i.test(meta?.basedOn || "")
+      ? "baseThemeTinted"
+      : "baseThemeNight"
+    : /classic/i.test(meta?.basedOn || "")
+      ? "baseThemeClassic"
+      : "baseThemeDay";
 
   const accent = hexToSignedColorInt(accentHex) ?? 0x2481cc;
   const outbox = hexToSignedColorInt(outHex) ?? accent;
@@ -2688,8 +3182,9 @@ export function genCloudThemeSettingsExport(
     teleboxExport: "cloud-theme-settings",
     version: 1,
     title: meta?.title || "TeleBox Theme",
-    note: "Unigram / Telegram Web 等无独立主题文件的客户端使用云端 themeSettings。"
-      + " 可用 theme cloud 上传生成 t.me/addtheme 链接；本 JSON 便于调试/二次导入。",
+    note:
+      "Unigram / Telegram Web 等无独立主题文件的客户端使用云端 themeSettings。" +
+      " 可用 theme cloud 上传生成 t.me/addtheme 链接；本 JSON 便于调试/二次导入。",
     clients: ["unigram", "web", "webk", "weba", "telegram-web"],
     officialFileFormats: {
       android: ".attheme",
@@ -2720,26 +3215,30 @@ export function parseCloudSettingsJson(buf: Buffer): ThemeDoc | null {
     let settings: any = null;
     if (obj.teleboxExport === "cloud-theme-settings" && obj.settings) settings = obj.settings;
     else if (hasTlType(obj, "themeSettings") || obj.accentColor != null) settings = obj;
-    else if (obj.settings && (hasTlType(obj.settings, "themeSettings") || obj.settings.accentColor != null)) settings = obj.settings;
+    else if (obj.settings && (hasTlType(obj.settings, "themeSettings") || obj.settings.accentColor != null))
+      settings = obj.settings;
     if (!settings) return null;
     const colors = colorsFromThemeSettings(settings);
     if (!Object.keys(colors).length) return null;
     const base = String(settings.baseTheme?._ || settings.baseTheme || obj.palettePreview?.basedOn || "");
     const basedOn = /night|dark/i.test(base) ? "night" : /classic/i.test(base) ? "classic" : "day";
     let wallpaperSlug: string | null =
-      (typeof settings.wallpaper?.slug === "string" && settings.wallpaper.slug.length > 4)
+      typeof settings.wallpaper?.slug === "string" && settings.wallpaper.slug.length > 4
         ? settings.wallpaper.slug
-        : (obj.palettePreview?.wallpaperSlug || null);
+        : obj.palettePreview?.wallpaperSlug || null;
     const wpSet = settings.wallpaper?.settings || {};
     return {
       format: "attheme",
       colors,
       basedOn,
       wallpaperSlug,
-      wallpaperBlur: typeof wpSet.blur === "number" ? wpSet.blur : (typeof wpSet.blur === "boolean" && wpSet.blur ? 1 : 0),
+      wallpaperBlur:
+        typeof wpSet.blur === "number" ? wpSet.blur : typeof wpSet.blur === "boolean" && wpSet.blur ? 1 : 0,
       wallpaperMotion: wpSet.motion !== false,
     };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 /** Unified parser: cloud JSON → format-specific parsers */
@@ -2786,7 +3285,9 @@ export function parseAttheme(buf: Buffer): ThemeDoc | null {
       wallpaper = normalizeWallpaper(buf.subarray(imgStart, imgEnd));
     }
     return { format: "attheme", colors, wallpaper };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export function parseDesktop(buf: Buffer): ThemeDoc | null {
@@ -2797,13 +3298,21 @@ export function parseDesktop(buf: Buffer): ThemeDoc | null {
       const names = Object.keys(files);
       const colorName = names.find(n => {
         const l = n.toLowerCase();
-        return l.endsWith("colors.tdesktop-theme") || l.endsWith("colors.tdesktop-palette") || l.endsWith(".tdesktop-theme") || l.endsWith(".tdesktop-palette");
+        return (
+          l.endsWith("colors.tdesktop-theme") ||
+          l.endsWith("colors.tdesktop-palette") ||
+          l.endsWith(".tdesktop-theme") ||
+          l.endsWith(".tdesktop-palette")
+        );
       });
       // Prefer explicit colors.* name
       let colorBuf: Buffer | null = null;
       for (const prefer of ["colors.tdesktop-theme", "colors.tdesktop-palette"]) {
         const hit = names.find(n => n.toLowerCase() === prefer || n.toLowerCase().endsWith("/" + prefer));
-        if (hit) { colorBuf = files[hit]; break; }
+        if (hit) {
+          colorBuf = files[hit];
+          break;
+        }
       }
       if (!colorBuf && colorName) colorBuf = files[colorName];
       if (!colorBuf) {
@@ -2811,7 +3320,8 @@ export function parseDesktop(buf: Buffer): ThemeDoc | null {
         for (const n of names) {
           const f = files[n];
           if (f && !detectImageExt(f) && f.toString("utf-8", 0, Math.min(200, f.length)).includes(":")) {
-            colorBuf = f; break;
+            colorBuf = f;
+            break;
           }
         }
       }
@@ -2826,7 +3336,7 @@ export function parseDesktop(buf: Buffer): ThemeDoc | null {
         wallpaper,
         wallpaperTiled: tiled || meta.wallpaperTiled,
         // Desktop palette may reference cloud bg via t.me/bg/SLUG when package has no image
-        wallpaperSlug: wallpaper ? null : (meta.wallpaperSlug || null),
+        wallpaperSlug: wallpaper ? null : meta.wallpaperSlug || null,
       };
     }
 
@@ -2851,16 +3361,23 @@ export function parseDesktop(buf: Buffer): ThemeDoc | null {
       colors,
       wallpaper,
       wallpaperTiled: meta.wallpaperTiled,
-      wallpaperSlug: wallpaper ? null : (meta.wallpaperSlug || null),
+      wallpaperSlug: wallpaper ? null : meta.wallpaperSlug || null,
     };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export function parseTgx(buf: Buffer): ThemeDoc | null {
   try {
     const text = buf.toString("utf-8");
     // Real TGX: sections ! / @ / # — parse # color lines
-    if (text.trimStart().startsWith("!") || /^#\s*$/m.test(text) || text.includes("\nbubbleIn_background") || text.includes("filling:")) {
+    if (
+      text.trimStart().startsWith("!") ||
+      /^#\s*$/m.test(text) ||
+      text.includes("\nbubbleIn_background") ||
+      text.includes("filling:")
+    ) {
       const colors: Record<string, string> = {};
       let wallpaperSlug: string | null = null;
       let basedOn: string | null = null;
@@ -2868,11 +3385,17 @@ export function parseTgx(buf: Buffer): ThemeDoc | null {
       for (const rawLine of text.split("\n")) {
         const line = rawLine.trim();
         if (!line || line.startsWith("//")) continue;
-        if (line === "!" || line === "@" || line === "#") { section = line; continue; }
+        if (line === "!" || line === "@" || line === "#") {
+          section = line;
+          continue;
+        }
         // In ! section: metadata — wallpaper / name
         if (section === "!") {
           if (line.startsWith("wallpaper:")) {
-            const slug = line.slice("wallpaper:".length).trim().replace(/^["']|["']$/g, "");
+            const slug = line
+              .slice("wallpaper:".length)
+              .trim()
+              .replace(/^["']|["']$/g, "");
             if (slug && slug.length > 8) wallpaperSlug = slug;
           }
           continue;
@@ -2881,10 +3404,10 @@ export function parseTgx(buf: Buffer): ThemeDoc | null {
         if (section === "@") {
           if (line.startsWith("dark:")) {
             const v = line.slice(5).trim();
-            basedOn = (v === "1" || v === "true") ? "night" : "day";
+            basedOn = v === "1" || v === "true" ? "night" : "day";
           } else if (line.startsWith("parentTheme:")) {
             const v = line.slice("parentTheme:".length).trim();
-            if (!basedOn) basedOn = (v === "1" || v === "true") ? "night" : "day";
+            if (!basedOn) basedOn = v === "1" || v === "true" ? "night" : "day";
           }
           continue;
         }
@@ -2919,25 +3442,38 @@ export function parseTgx(buf: Buffer): ThemeDoc | null {
     if (!Object.keys(colors).length) return null;
     const iosKeys = ["backgroundColor", "navigationBarBackground", "chatIncomingBubble", "keyboardBackground"];
     const hasIosKeys = iosKeys.some(k => colors[k] !== undefined);
-    const tgxKeys = ["bubbleIn_background", "bubbleOut_background", "chatListBackground", "headerBackground", "filling"];
+    const tgxKeys = [
+      "bubbleIn_background",
+      "bubbleOut_background",
+      "chatListBackground",
+      "headerBackground",
+      "filling",
+    ];
     const hasTgxKeys = tgxKeys.some(k => colors[k] !== undefined);
     if (hasIosKeys && !hasTgxKeys) return { format: "ios-theme", colors };
     return { format: "tgx-theme", colors };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export function parseIos(buf: Buffer): ThemeDoc | null {
   try {
     const text = buf.toString("utf-8");
     // Nested camelCase theme file
-    if (text.includes("basedOn:") || text.includes("navBar:") || text.includes("chatList:") || text.includes("primaryText:")) {
+    if (
+      text.includes("basedOn:") ||
+      text.includes("navBar:") ||
+      text.includes("chatList:") ||
+      text.includes("primaryText:")
+    ) {
       const colors: Record<string, string> = {};
       let wallpaperSlug: string | null = null;
       let basedOn: string | null = null;
       const stack: string[] = [];
       for (const rawLine of text.split("\n")) {
         if (!rawLine.trim()) continue;
-        const indent = (rawLine.match(/^ */)?.[0].length || 0);
+        const indent = rawLine.match(/^ */)?.[0].length || 0;
         const level = Math.floor(indent / 2);
         while (stack.length > level) stack.pop();
         const line = rawLine.trim();
@@ -2951,7 +3487,20 @@ export function parseIos(buf: Buffer): ThemeDoc | null {
         if (col <= 0) continue;
         const key = line.slice(0, col).trim();
         let val = line.slice(col + 1).trim();
-        if (!val || val === "true" || val === "false" || val === "clear" || val === "light" || val === "dark" || val === "black" || val === "white" || val === "day" || val === "night" || val === "nightTinted" || val === "classic") {
+        if (
+          !val ||
+          val === "true" ||
+          val === "false" ||
+          val === "clear" ||
+          val === "light" ||
+          val === "dark" ||
+          val === "black" ||
+          val === "white" ||
+          val === "day" ||
+          val === "night" ||
+          val === "nightTinted" ||
+          val === "classic"
+        ) {
           if (key === "basedOn") basedOn = val;
           stack[level] = key;
           stack.length = level + 1;
@@ -2965,7 +3514,9 @@ export function parseIos(buf: Buffer): ThemeDoc | null {
           const first = parts[0] || "";
           const hexOnly = first.replace(/^#/, "");
           // Parse optional wallpaper options: blur:N, motion:true/false, intensity:0..100
-          let blur = 0, motion = true, intensity = 100;
+          let blur = 0,
+            motion = true,
+            intensity = 100;
           for (const p of parts.slice(1)) {
             if (p.startsWith("blur:")) blur = parseInt(p.slice(5), 10) || 0;
             else if (p.startsWith("motion:")) motion = p.slice(7) === "true";
@@ -3002,7 +3553,9 @@ export function parseIos(buf: Buffer): ThemeDoc | null {
         if (!colors[key]) colors[key] = colors[path];
       }
       // Map common nested paths to flat keys used by converters
-      const mapIf = (from: string, to: string) => { if (colors[from] && !colors[to]) colors[to] = colors[from]; };
+      const mapIf = (from: string, to: string) => {
+        if (colors[from] && !colors[to]) colors[to] = colors[from];
+      };
       mapIf("list.plainBg", "windowBackgroundWhite");
       mapIf("list.primaryText", "windowBackgroundWhiteBlackText");
       mapIf("list.secondaryText", "windowBackgroundWhiteGrayText");
@@ -3019,7 +3572,15 @@ export function parseIos(buf: Buffer): ThemeDoc | null {
         delete (colors as any)["__wpBlur"];
         delete (colors as any)["__wpMotion"];
         delete (colors as any)["__wpIntensity"];
-        return { format: "ios-theme", colors, wallpaperSlug, basedOn, wallpaperBlur: wpBlur, wallpaperMotion: wpMotion, wallpaperIntensity: wpIntensity };
+        return {
+          format: "ios-theme",
+          colors,
+          wallpaperSlug,
+          basedOn,
+          wallpaperBlur: wpBlur,
+          wallpaperMotion: wpMotion,
+          wallpaperIntensity: wpIntensity,
+        };
       }
     }
     // Legacy JSON fallback
@@ -3032,7 +3593,9 @@ export function parseIos(buf: Buffer): ThemeDoc | null {
     }
     if (!Object.keys(colors).length) return null;
     return { format: "ios-theme", colors };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export function detectFmt(buf: Buffer): ThemeFormat | null {
@@ -3041,11 +3604,17 @@ export function detectFmt(buf: Buffer): ThemeFormat | null {
   if (isZip(buf)) return "tdesktop-theme";
   const t = buf.toString("utf-8", 0, Math.min(buf.length, 4096)).trim();
   // Real TGX text format
-  if (t.startsWith("!") || (t.includes("\n#\n") && (t.includes("filling") || t.includes("bubbleIn_background") || t.includes("parentTheme")))) {
+  if (
+    t.startsWith("!") ||
+    (t.includes("\n#\n") && (t.includes("filling") || t.includes("bubbleIn_background") || t.includes("parentTheme")))
+  ) {
     return "tgx-theme";
   }
   // Real iOS nested theme
-  if ((t.includes("basedOn:") || t.startsWith("name:")) && (t.includes("navBar:") || t.includes("chatList:") || t.includes("primaryText:"))) {
+  if (
+    (t.includes("basedOn:") || t.startsWith("name:")) &&
+    (t.includes("navBar:") || t.includes("chatList:") || t.includes("primaryText:"))
+  ) {
     return "ios-theme";
   }
   // JSON (legacy / cloud-settings export / accidental)
@@ -3055,24 +3624,30 @@ export function detectFmt(buf: Buffer): ThemeFormat | null {
       if (typeof obj === "object" && obj !== null && !Array.isArray(obj)) {
         // Our own cloud-settings export or raw themeSettings
         if (
-          obj.teleboxExport === "cloud-theme-settings"
-          || hasTlType(obj.settings, "themeSettings")
-          || (hasTlType(obj, "themeSettings") && (obj.accentColor != null || obj.baseTheme))
+          obj.teleboxExport === "cloud-theme-settings" ||
+          hasTlType(obj.settings, "themeSettings") ||
+          (hasTlType(obj, "themeSettings") && (obj.accentColor != null || obj.baseTheme))
         ) {
           // Synthesize as attheme-colored doc via colorsFromThemeSettings — detectFmt returns attheme
           // so parsers route through a dedicated path in listen/convert
           return "attheme";
         }
         if (obj.backgroundColor || obj.navigationBarBackground || obj.chatIncomingBubble) return "ios-theme";
-        if (obj.bubbleIn_background || obj.chatListBackground || obj.headerBackground || obj.filling) return "tgx-theme";
+        if (obj.bubbleIn_background || obj.chatListBackground || obj.headerBackground || obj.filling)
+          return "tgx-theme";
         for (const v of Object.values(obj)) {
           if (typeof v === "string" && v.startsWith("#")) return "tgx-theme";
         }
       }
-    } catch { /* */ }
+    } catch {
+      /* */
+    }
   }
   // Android with or without wallpaper
-  if (buf.includes(Buffer.from("WPS\n")) || t.split("\n").some((l: string) => l.includes("=") && !l.trim().startsWith("//") && !l.includes(":"))) {
+  if (
+    buf.includes(Buffer.from("WPS\n")) ||
+    t.split("\n").some((l: string) => l.includes("=") && !l.trim().startsWith("//") && !l.includes(":"))
+  ) {
     // prefer attheme if key=value color lines present
     if (t.split("\n").some((l: string) => /^[A-Za-z0-9_]+=/.test(l.trim()))) return "attheme";
   }
@@ -3084,12 +3659,17 @@ export function detectFmt(buf: Buffer): ThemeFormat | null {
       if (!s || s.startsWith("//") || s.startsWith("!")) return false;
       // desktop-like: identifier: value (value may be #hex, alias, or hex without #)
       return /^[A-Za-z][A-Za-z0-9_]*\s*:\s*(#[0-9a-fA-F]{3,8}|[0-9a-fA-F]{6,8}|[A-Za-z][A-Za-z0-9_]*)\s*;?\s*$/.test(s);
-    })
-    && (t.includes("windowBg") || t.includes("primaryColor") || t.includes("msgInBg") || t.includes("historyComposeAreaBg") || t.includes("dialogsBg"))
+    }) &&
+    (t.includes("windowBg") ||
+      t.includes("primaryColor") ||
+      t.includes("msgInBg") ||
+      t.includes("historyComposeAreaBg") ||
+      t.includes("dialogsBg"))
   ) {
     return "tdesktop-theme";
   }
-  if (t.split("\n").some((l: string) => (l.includes("=") && !l.trim().startsWith("//")) || l.includes("WPS"))) return "attheme";
+  if (t.split("\n").some((l: string) => (l.includes("=") && !l.trim().startsWith("//")) || l.includes("WPS")))
+    return "attheme";
   return null;
 }
 
@@ -3130,15 +3710,21 @@ export function renderDoc(doc: ThemeDoc, target: ThemeFormat, name = "TeleBox Th
 
     // Roundtrip validation: never emit a package that this converter cannot read back.
     try {
-      const parser = target === "attheme" ? parseAttheme
-        : target === "tdesktop-theme" ? parseDesktop
-        : target === "tgx-theme" ? parseTgx
-        : parseIos;
+      const parser =
+        target === "attheme"
+          ? parseAttheme
+          : target === "tdesktop-theme"
+            ? parseDesktop
+            : target === "tgx-theme"
+              ? parseTgx
+              : parseIos;
       const back = parser(buf);
       if (!back || Object.keys(back.colors).length === 0) return null;
     } catch {
       return null;
     }
     return buf;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }

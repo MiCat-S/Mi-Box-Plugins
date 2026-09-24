@@ -1,28 +1,399 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
-import {setTimeout as sleep} from "node:timers/promises";
-import {returnBigInt} from "teleproto/Helpers";
+import { renderHelp as renderPluginHelp } from "./v2/help";
+import { definePlugin, type MessageEnvelope, type PluginContext } from "telebox/sdk";
+import { setTimeout as sleep } from "node:timers/promises";
+import { returnBigInt } from "teleproto/Helpers";
 
-const esc=(v:unknown)=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]!);
-const err=(e:unknown)=>String((e as any)?.message??e);
-const wait=async(e:unknown,signal:AbortSignal)=>{const m=err(e).match(/FLOOD_WAIT[_ ]?(\d+)/);if(!m)return false;await sleep((Number(m[1])+1)*1000,undefined,{signal});return true;};
-const group=(m:MessageEnvelope)=>(m.raw as any)?.isGroup||(m.raw as any)?.isChannel||m.chatId.startsWith("-");
+const esc = (v: unknown) =>
+  String(v ?? "").replace(
+    /[&<>"']/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+  );
+const err = (e: unknown) => String((e as any)?.message ?? e);
+const wait = async (e: unknown, signal: AbortSignal) => {
+  const m = err(e).match(/FLOOD_WAIT[_ ]?(\d+)/);
+  if (!m) return false;
+  await sleep((Number(m[1]) + 1) * 1000, undefined, { signal });
+  return true;
+};
+const group = (m: MessageEnvelope) => (m.raw as any)?.isGroup || (m.raw as any)?.isChannel || m.chatId.startsWith("-");
 
-function deleteReceiptLater(ctx:PluginContext,message:MessageEnvelope,seconds:number){
-  const {chatId,id}=message,peer=(message.raw as any)?.peerId??returnBigInt(chatId);
-  void ctx.tasks.run(`clean:receipt:${chatId}:${id}`,async signal=>{
-    try{await sleep(seconds*1000,undefined,{signal});signal.throwIfAborted();await ctx.telegram.withClient(async client=>{signal.throwIfAborted();return client.deleteMessages(peer,[id],{revoke:true});});}
-    catch{if(!signal.aborted)ctx.log.error("clean:receipt_cleanup_failed",{chatId,messageId:id});}
-  }).catch(()=>undefined);
+function deleteReceiptLater(ctx: PluginContext, message: MessageEnvelope, seconds: number) {
+  const { chatId, id } = message,
+    peer = (message.raw as any)?.peerId ?? returnBigInt(chatId);
+  void ctx.tasks
+    .run(`clean:receipt:${chatId}:${id}`, async signal => {
+      try {
+        await sleep(seconds * 1000, undefined, { signal });
+        signal.throwIfAborted();
+        await ctx.telegram.withClient(async client => {
+          signal.throwIfAborted();
+          return client.deleteMessages(peer, [id], { revoke: true });
+        });
+      } catch {
+        if (!signal.aborted) ctx.log.error("clean:receipt_cleanup_failed", { chatId, messageId: id });
+      }
+    })
+    .catch(() => undefined);
 }
 
-async function permission(client:any,chat:any,Api:any,signal:AbortSignal){try{const me=await client.getMe();signal.throwIfAborted();if(chat.className==="Chat")return !!chat.creator||!!chat.adminRights;const p=(await client.invoke(new Api.channels.GetParticipant({channel:chat,participant:new Api.InputPeerSelf()}))).participant;signal.throwIfAborted();return p?.className==="ChannelParticipantCreator"||(p?.className==="ChannelParticipantAdmin"&&!!p.adminRights?.banUsers);}catch(e){signal.throwIfAborted();return false;}}
-async function deletedPm(message:MessageEnvelope,remove:boolean,ctx:PluginContext){await ctx.telegram.edit(message,remove?"🔍 正在扫描并从对话列表中移除已注销账号...":"🔍 正在扫描私聊已注销账号...");await ctx.telegram.withClient(async(client:any,signal)=>{const found=new Map<string,any>();const collect=async(folder:number)=>{signal.throwIfAborted();for await(const d of client.iterDialogs({folder})){signal.throwIfAborted();if(d.isUser&&d.entity?.className==="User"&&d.entity.deleted)found.set(String(d.entity.id),d);}signal.throwIfAborted();};await collect(0);try{await collect(1);}catch(e){signal.throwIfAborted();ctx.log.error("clean:archive_scan_failed",{chatId:message.chatId,messageId:message.id});}
-  signal.throwIfAborted();let ok=0,failed=0;if(remove)for(const d of found.values()){signal.throwIfAborted();try{await client.deleteDialog(d.inputEntity);signal.throwIfAborted();ok++;await sleep(150,undefined,{signal});}catch(e){signal.throwIfAborted();if(await wait(e,signal)){signal.throwIfAborted();try{await client.deleteDialog(d.inputEntity);signal.throwIfAborted();ok++;}catch(retryError){signal.throwIfAborted();failed++;}}else failed++;}}
-  const rows=[...found.keys()].slice(0,15).map(id=>`• <a href="tg://user?id=${esc(id)}">已注销账号</a> (ID: <code>${esc(id)}</code>)`).join("\n");const title=remove?"清理完成":"扫描完成";await ctx.telegram.edit(message,found.size?`✅ <b>${title}</b>\n\n共找到 <code>${found.size}</code> 个已注销对话${remove?`，成功移除 <code>${ok}</code>${failed?`，失败 <code>${failed}</code>`:""}`:""}:\n\n${rows}${found.size>15?`\n... 以及其他 ${found.size-15} 个会话`:""}`:`✅ <b>${title}</b>\n\n对话列表中未发现已注销账号。`,{parseMode:"html"});});}
-async function deletedMembers(message:MessageEnvelope,remove:boolean,ctx:PluginContext){if(!group(message)){await ctx.telegram.edit(message,"❌ <b>错误:</b> 此命令仅在群组中可用",{parseMode:"html"});return;}await ctx.telegram.withClient(async(client:any,signal)=>{const {Api}=await import("teleproto");const raw:any=message.raw;signal.throwIfAborted();const chat=await client.getEntity(raw?.peerId??message.chatId);signal.throwIfAborted();const input=await client.getInputEntity(chat);signal.throwIfAborted();if(remove&&!await permission(client,chat,Api,signal)){await ctx.telegram.edit(message,"❌ <b>错误:</b> 没有封禁用户权限，无法执行清理",{parseMode:"html"});return;}signal.throwIfAborted();await ctx.telegram.edit(message,remove?"🔍 正在扫描并清理群组已注销账号...":"🔍 正在扫描群组已注销账号...");let found=0,ok=0,failed=0;const ids:string[]=[];for await(const user of client.iterParticipants(chat)){signal.throwIfAborted();if(user.className!=="User"||!user.deleted)continue;found++;ids.push(String(user.id));if(remove)try{const target=await client.getInputEntity(user);signal.throwIfAborted();if(chat.className==="Chat"){await client.invoke(new Api.messages.DeleteChatUser({chatId:chat.id,userId:target,revokeHistory:false}));signal.throwIfAborted();}else{await client.invoke(new Api.channels.EditBanned({channel:input,participant:target,bannedRights:new Api.ChatBannedRights({viewMessages:true,untilDate:0})}));signal.throwIfAborted();await client.invoke(new Api.channels.EditBanned({channel:input,participant:target,bannedRights:new Api.ChatBannedRights({untilDate:0})}));signal.throwIfAborted();}ok++;}catch(e){signal.throwIfAborted();failed++;if(await wait(e,signal))ctx.log.info("clean:flood-resumed");}await sleep(150,undefined,{signal});}
-  const list=ids.slice(0,15).map(id=>`• <a href="tg://user?id=${esc(id)}">${esc(id)}</a>`).join("\n");await ctx.telegram.edit(message,found?`✅ <b>${remove?"清理":"扫描"}完成</b>\n\n发现 <code>${found}</code> 个已注销账号${remove?`\n成功移出 <code>${ok}</code> 个${failed?` · 失败 <code>${failed}</code> 个`:""}`:""}:\n\n${list}${found>15?`\n... 还有 ${found-15} 个未显示`:""}`:`✅ <b>扫描完成</b>\n\n此群组中没有发现已注销账号。`,{parseMode:"html"});});}
-async function blockedPm(message:MessageEnvelope,all:boolean,ctx:PluginContext){await ctx.telegram.edit(message,`🧹 开始清理拉黑用户\n\n模式: ${all?"全量清理":"智能清理"}`);await ctx.telegram.withClient(async(client:any,signal)=>{const {Api}=await import("teleproto");let offset=0,total=0;const users:any[]=[];while(true){signal.throwIfAborted();const r:any=await client.invoke(new Api.contacts.GetBlocked({offset,limit:100}));signal.throwIfAborted();const page=r.users||[];users.push(...page);total=Number(r.count??users.length);if(page.length<100||users.length>=total)break;offset+=page.length;}let ok=0,failed=0,skipped=0,processed=0;for(const user of users){signal.throwIfAborted();processed++;if(!all&&(user.bot||user.scam||user.fake)){skipped++;continue;}try{await client.invoke(new Api.contacts.Unblock({id:user}));signal.throwIfAborted();ok++;}catch(e){signal.throwIfAborted();if(await wait(e,signal)){signal.throwIfAborted();try{await client.invoke(new Api.contacts.Unblock({id:user}));signal.throwIfAborted();ok++;}catch(retryError){signal.throwIfAborted();failed++;}}else failed++;}if(processed%10===0)await ctx.telegram.edit(message,`🧹 <b>清理拉黑用户进行中</b>\n\n进度: ${processed}/${total}\n成功: ${ok} · 失败: ${failed} · 跳过: ${skipped}`,{parseMode:"html"});await sleep(all?1000:200,undefined,{signal});}await ctx.telegram.edit(message,`✅ <b>清理拉黑用户完成</b>\n\n总计用户: ${total}\n成功清理: ${ok}\n清理失败: ${failed}\n跳过处理: ${skipped}\n清理模式: ${all?"全量清理":"智能清理"}`,{parseMode:"html"});});}
-async function blockedMembers(message:MessageEnvelope,all:boolean,ctx:PluginContext){if(!group(message)){await ctx.telegram.edit(message,"❌ <b>错误:</b> 此命令只能在群组中使用",{parseMode:"html"});return;}await ctx.telegram.withClient(async(client:any,signal)=>{const {Api}=await import("teleproto");const raw:any=message.raw;signal.throwIfAborted();const chat=await client.getEntity(raw?.peerId??message.chatId);signal.throwIfAborted();if(chat.className!=="Channel"){await ctx.telegram.edit(message,"❌ 基本群不支持封禁列表");return;}if(!await permission(client,chat,Api,signal)){await ctx.telegram.edit(message,"❌ <b>错误:</b> 没有封禁用户权限",{parseMode:"html"});return;}signal.throwIfAborted();const me=await client.getMe();signal.throwIfAborted();const input=await client.getInputEntity(chat);signal.throwIfAborted();const targets:any[]=[],users=new Map<string,any>();let offset=0;while(true){signal.throwIfAborted();const r:any=await client.invoke(new Api.channels.GetParticipants({channel:input,filter:new Api.ChannelParticipantsKicked({q:""}),offset,limit:200,hash:0 as any}));signal.throwIfAborted();for(const u of r.users||[])users.set(String(u.id),u);const page=r.participants||[];targets.push(...page.filter((p:any)=>all||String(p.kickedBy)===String(me.id)));if(page.length<200)break;offset+=page.length;}if(!targets.length){await ctx.telegram.edit(message,"ℹ️ 没有找到需要解封的实体");deleteReceiptLater(ctx,message,3);return;}const stats={users:0,channels:0,chats:0};for(const p of targets){const type=p.peer?.className;if(type==="PeerChannel")stats.channels++;else if(type==="PeerChat")stats.chats++;else stats.users++;}let ok=0,failed=0;for(const p of targets){signal.throwIfAborted();try{const u=users.get(String(p.peer?.userId??p.userId))??p.peer??p.userId;const target=await client.getInputEntity(u);signal.throwIfAborted();await client.invoke(new Api.channels.EditBanned({channel:input,participant:target,bannedRights:new Api.ChatBannedRights({untilDate:0})}));signal.throwIfAborted();ok++;}catch(e){signal.throwIfAborted();failed++;}await sleep(500,undefined,{signal});}const statsText=[stats.users?`👤 用户: ${stats.users}`:"",stats.channels?`📢 频道: ${stats.channels}`:"",stats.chats?`💬 群组: ${stats.chats}`:""].filter(Boolean).join(" ");await ctx.telegram.edit(message,`✅ <b>解封完成</b>\n\n${statsText}\n成功: <code>${ok}</code> 个\n失败: <code>${failed}</code> 个`,{parseMode:"html"});deleteReceiptLater(ctx,message,5);});}
+async function permission(client: any, chat: any, Api: any, signal: AbortSignal) {
+  try {
+    const me = await client.getMe();
+    signal.throwIfAborted();
+    if (chat.className === "Chat") return !!chat.creator || !!chat.adminRights;
+    const p = (
+      await client.invoke(new Api.channels.GetParticipant({ channel: chat, participant: new Api.InputPeerSelf() }))
+    ).participant;
+    signal.throwIfAborted();
+    return (
+      p?.className === "ChannelParticipantCreator" ||
+      (p?.className === "ChannelParticipantAdmin" && !!p.adminRights?.banUsers)
+    );
+  } catch (e) {
+    signal.throwIfAborted();
+    return false;
+  }
+}
+async function deletedPm(message: MessageEnvelope, remove: boolean, ctx: PluginContext) {
+  await ctx.telegram.edit(
+    message,
+    remove ? "🔍 正在扫描并从对话列表中移除已注销账号..." : "🔍 正在扫描私聊已注销账号...",
+  );
+  await ctx.telegram.withClient(async (client: any, signal) => {
+    const found = new Map<string, any>();
+    const collect = async (folder: number) => {
+      signal.throwIfAborted();
+      for await (const d of client.iterDialogs({ folder })) {
+        signal.throwIfAborted();
+        if (d.isUser && d.entity?.className === "User" && d.entity.deleted) found.set(String(d.entity.id), d);
+      }
+      signal.throwIfAborted();
+    };
+    await collect(0);
+    try {
+      await collect(1);
+    } catch (e) {
+      signal.throwIfAborted();
+      ctx.log.error("clean:archive_scan_failed", { chatId: message.chatId, messageId: message.id });
+    }
+    signal.throwIfAborted();
+    let ok = 0,
+      failed = 0;
+    if (remove)
+      for (const d of found.values()) {
+        signal.throwIfAborted();
+        try {
+          await client.deleteDialog(d.inputEntity);
+          signal.throwIfAborted();
+          ok++;
+          await sleep(150, undefined, { signal });
+        } catch (e) {
+          signal.throwIfAborted();
+          if (await wait(e, signal)) {
+            signal.throwIfAborted();
+            try {
+              await client.deleteDialog(d.inputEntity);
+              signal.throwIfAborted();
+              ok++;
+            } catch (retryError) {
+              signal.throwIfAborted();
+              failed++;
+            }
+          } else failed++;
+        }
+      }
+    const rows = [...found.keys()]
+      .slice(0, 15)
+      .map(id => `• <a href="tg://user?id=${esc(id)}">已注销账号</a> (ID: <code>${esc(id)}</code>)`)
+      .join("\n");
+    const title = remove ? "清理完成" : "扫描完成";
+    await ctx.telegram.edit(
+      message,
+      found.size
+        ? `✅ <b>${title}</b>\n\n共找到 <code>${found.size}</code> 个已注销对话${remove ? `，成功移除 <code>${ok}</code>${failed ? `，失败 <code>${failed}</code>` : ""}` : ""}:\n\n${rows}${found.size > 15 ? `\n... 以及其他 ${found.size - 15} 个会话` : ""}`
+        : `✅ <b>${title}</b>\n\n对话列表中未发现已注销账号。`,
+      { parseMode: "html" },
+    );
+  });
+}
+async function deletedMembers(message: MessageEnvelope, remove: boolean, ctx: PluginContext) {
+  if (!group(message)) {
+    await ctx.telegram.edit(message, "❌ <b>错误:</b> 此命令仅在群组中可用", { parseMode: "html" });
+    return;
+  }
+  await ctx.telegram.withClient(async (client: any, signal) => {
+    const { Api } = await import("teleproto");
+    const raw: any = message.raw;
+    signal.throwIfAborted();
+    const chat = await client.getEntity(raw?.peerId ?? message.chatId);
+    signal.throwIfAborted();
+    const input = await client.getInputEntity(chat);
+    signal.throwIfAborted();
+    if (remove && !(await permission(client, chat, Api, signal))) {
+      await ctx.telegram.edit(message, "❌ <b>错误:</b> 没有封禁用户权限，无法执行清理", { parseMode: "html" });
+      return;
+    }
+    signal.throwIfAborted();
+    await ctx.telegram.edit(message, remove ? "🔍 正在扫描并清理群组已注销账号..." : "🔍 正在扫描群组已注销账号...");
+    let found = 0,
+      ok = 0,
+      failed = 0;
+    const ids: string[] = [];
+    for await (const user of client.iterParticipants(chat)) {
+      signal.throwIfAborted();
+      if (user.className !== "User" || !user.deleted) continue;
+      found++;
+      ids.push(String(user.id));
+      if (remove)
+        try {
+          const target = await client.getInputEntity(user);
+          signal.throwIfAborted();
+          if (chat.className === "Chat") {
+            await client.invoke(
+              new Api.messages.DeleteChatUser({ chatId: chat.id, userId: target, revokeHistory: false }),
+            );
+            signal.throwIfAborted();
+          } else {
+            await client.invoke(
+              new Api.channels.EditBanned({
+                channel: input,
+                participant: target,
+                bannedRights: new Api.ChatBannedRights({ viewMessages: true, untilDate: 0 }),
+              }),
+            );
+            signal.throwIfAborted();
+            await client.invoke(
+              new Api.channels.EditBanned({
+                channel: input,
+                participant: target,
+                bannedRights: new Api.ChatBannedRights({ untilDate: 0 }),
+              }),
+            );
+            signal.throwIfAborted();
+          }
+          ok++;
+        } catch (e) {
+          signal.throwIfAborted();
+          failed++;
+          if (await wait(e, signal)) ctx.log.info("clean:flood-resumed");
+        }
+      await sleep(150, undefined, { signal });
+    }
+    const list = ids
+      .slice(0, 15)
+      .map(id => `• <a href="tg://user?id=${esc(id)}">${esc(id)}</a>`)
+      .join("\n");
+    await ctx.telegram.edit(
+      message,
+      found
+        ? `✅ <b>${remove ? "清理" : "扫描"}完成</b>\n\n发现 <code>${found}</code> 个已注销账号${remove ? `\n成功移出 <code>${ok}</code> 个${failed ? ` · 失败 <code>${failed}</code> 个` : ""}` : ""}:\n\n${list}${found > 15 ? `\n... 还有 ${found - 15} 个未显示` : ""}`
+        : `✅ <b>扫描完成</b>\n\n此群组中没有发现已注销账号。`,
+      { parseMode: "html" },
+    );
+  });
+}
+async function blockedPm(message: MessageEnvelope, all: boolean, ctx: PluginContext) {
+  await ctx.telegram.edit(message, `🧹 开始清理拉黑用户\n\n模式: ${all ? "全量清理" : "智能清理"}`);
+  await ctx.telegram.withClient(async (client: any, signal) => {
+    const { Api } = await import("teleproto");
+    let offset = 0,
+      total = 0;
+    const users: any[] = [];
+    while (true) {
+      signal.throwIfAborted();
+      const r: any = await client.invoke(new Api.contacts.GetBlocked({ offset, limit: 100 }));
+      signal.throwIfAborted();
+      const page = r.users || [];
+      users.push(...page);
+      total = Number(r.count ?? users.length);
+      if (page.length < 100 || users.length >= total) break;
+      offset += page.length;
+    }
+    let ok = 0,
+      failed = 0,
+      skipped = 0,
+      processed = 0;
+    for (const user of users) {
+      signal.throwIfAborted();
+      processed++;
+      if (!all && (user.bot || user.scam || user.fake)) {
+        skipped++;
+        continue;
+      }
+      try {
+        await client.invoke(new Api.contacts.Unblock({ id: user }));
+        signal.throwIfAborted();
+        ok++;
+      } catch (e) {
+        signal.throwIfAborted();
+        if (await wait(e, signal)) {
+          signal.throwIfAborted();
+          try {
+            await client.invoke(new Api.contacts.Unblock({ id: user }));
+            signal.throwIfAborted();
+            ok++;
+          } catch (retryError) {
+            signal.throwIfAborted();
+            failed++;
+          }
+        } else failed++;
+      }
+      if (processed % 10 === 0)
+        await ctx.telegram.edit(
+          message,
+          `🧹 <b>清理拉黑用户进行中</b>\n\n进度: ${processed}/${total}\n成功: ${ok} · 失败: ${failed} · 跳过: ${skipped}`,
+          { parseMode: "html" },
+        );
+      await sleep(all ? 1000 : 200, undefined, { signal });
+    }
+    await ctx.telegram.edit(
+      message,
+      `✅ <b>清理拉黑用户完成</b>\n\n总计用户: ${total}\n成功清理: ${ok}\n清理失败: ${failed}\n跳过处理: ${skipped}\n清理模式: ${all ? "全量清理" : "智能清理"}`,
+      { parseMode: "html" },
+    );
+  });
+}
+async function blockedMembers(message: MessageEnvelope, all: boolean, ctx: PluginContext) {
+  if (!group(message)) {
+    await ctx.telegram.edit(message, "❌ <b>错误:</b> 此命令只能在群组中使用", { parseMode: "html" });
+    return;
+  }
+  await ctx.telegram.withClient(async (client: any, signal) => {
+    const { Api } = await import("teleproto");
+    const raw: any = message.raw;
+    signal.throwIfAborted();
+    const chat = await client.getEntity(raw?.peerId ?? message.chatId);
+    signal.throwIfAborted();
+    if (chat.className !== "Channel") {
+      await ctx.telegram.edit(message, "❌ 基本群不支持封禁列表");
+      return;
+    }
+    if (!(await permission(client, chat, Api, signal))) {
+      await ctx.telegram.edit(message, "❌ <b>错误:</b> 没有封禁用户权限", { parseMode: "html" });
+      return;
+    }
+    signal.throwIfAborted();
+    const me = await client.getMe();
+    signal.throwIfAborted();
+    const input = await client.getInputEntity(chat);
+    signal.throwIfAborted();
+    const targets: any[] = [],
+      users = new Map<string, any>();
+    let offset = 0;
+    while (true) {
+      signal.throwIfAborted();
+      const r: any = await client.invoke(
+        new Api.channels.GetParticipants({
+          channel: input,
+          filter: new Api.ChannelParticipantsKicked({ q: "" }),
+          offset,
+          limit: 200,
+          hash: 0 as any,
+        }),
+      );
+      signal.throwIfAborted();
+      for (const u of r.users || []) users.set(String(u.id), u);
+      const page = r.participants || [];
+      targets.push(...page.filter((p: any) => all || String(p.kickedBy) === String(me.id)));
+      if (page.length < 200) break;
+      offset += page.length;
+    }
+    if (!targets.length) {
+      await ctx.telegram.edit(message, "ℹ️ 没有找到需要解封的实体");
+      deleteReceiptLater(ctx, message, 3);
+      return;
+    }
+    const stats = { users: 0, channels: 0, chats: 0 };
+    for (const p of targets) {
+      const type = p.peer?.className;
+      if (type === "PeerChannel") stats.channels++;
+      else if (type === "PeerChat") stats.chats++;
+      else stats.users++;
+    }
+    let ok = 0,
+      failed = 0;
+    for (const p of targets) {
+      signal.throwIfAborted();
+      try {
+        const u = users.get(String(p.peer?.userId ?? p.userId)) ?? p.peer ?? p.userId;
+        const target = await client.getInputEntity(u);
+        signal.throwIfAborted();
+        await client.invoke(
+          new Api.channels.EditBanned({
+            channel: input,
+            participant: target,
+            bannedRights: new Api.ChatBannedRights({ untilDate: 0 }),
+          }),
+        );
+        signal.throwIfAborted();
+        ok++;
+      } catch (e) {
+        signal.throwIfAborted();
+        failed++;
+      }
+      await sleep(500, undefined, { signal });
+    }
+    const statsText = [
+      stats.users ? `👤 用户: ${stats.users}` : "",
+      stats.channels ? `📢 频道: ${stats.channels}` : "",
+      stats.chats ? `💬 群组: ${stats.chats}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    await ctx.telegram.edit(
+      message,
+      `✅ <b>解封完成</b>\n\n${statsText}\n成功: <code>${ok}</code> 个\n失败: <code>${failed}</code> 个`,
+      { parseMode: "html" },
+    );
+    deleteReceiptLater(ctx, message, 5);
+  });
+}
 
-export default function createClean(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"clean",description:"清理已注销账号、拉黑用户和群组封禁",commands:{clean:{helpArgs: ["help","h"], helpOnEmpty: true, description:"账号与封禁清理",ignoreEdited:true,async handle({message,args,prefix},ctx){try{const kind=args[0]?.toLowerCase(),scope=args[1]?.toLowerCase(),mode=args[2]?.toLowerCase();if(!kind||["help","h"].includes(kind)){await ctx.telegram.edit(message,renderPluginHelp(prefix),{parseMode:"html"});return;}if(kind==="deleted"&&scope==="pm")await deletedPm(message,mode==="rm",ctx);else if(kind==="deleted"&&scope==="member")await deletedMembers(message,mode==="rm",ctx);else if(kind==="blocked"&&scope==="pm")await blockedPm(message,mode==="all",ctx);else if(kind==="blocked"&&scope==="member")await blockedMembers(message,mode==="all",ctx);else if(kind!=="deleted"&&kind!=="blocked")await ctx.telegram.edit(message,`❌ <b>错误:</b> 未知子命令: ${esc(kind)}`,{parseMode:"html"});else await ctx.telegram.edit(message,`❌ <b>错误:</b> ${scope?`未知类型: ${esc(scope)}`:"请指定清理类型: pm 或 member"}`,{parseMode:"html"});}catch(e){if(!ctx.signal.aborted){ctx.log.error("clean:command_failed",{chatId:message.chatId,messageId:message.id});await ctx.telegram.edit(message,err(e).includes("FLOOD_WAIT")?"⏳ 请求过于频繁，请稍后重试":"❌ <b>操作失败:</b> 未知错误",{parseMode:"html"});}}}}}});}
+export default function createClean() {
+  return definePlugin({
+    renderHelp: renderPluginHelp,
+    apiVersion: 1,
+    id: "clean",
+    description: "清理已注销账号、拉黑用户和群组封禁",
+    commands: {
+      clean: {
+        helpArgs: ["help", "h"],
+        helpOnEmpty: true,
+        description: "账号与封禁清理",
+        ignoreEdited: true,
+        async handle({ message, args, prefix }, ctx) {
+          try {
+            const kind = args[0]?.toLowerCase(),
+              scope = args[1]?.toLowerCase(),
+              mode = args[2]?.toLowerCase();
+            if (!kind || ["help", "h"].includes(kind)) {
+              await ctx.telegram.edit(message, renderPluginHelp(prefix), { parseMode: "html" });
+              return;
+            }
+            if (kind === "deleted" && scope === "pm") await deletedPm(message, mode === "rm", ctx);
+            else if (kind === "deleted" && scope === "member") await deletedMembers(message, mode === "rm", ctx);
+            else if (kind === "blocked" && scope === "pm") await blockedPm(message, mode === "all", ctx);
+            else if (kind === "blocked" && scope === "member") await blockedMembers(message, mode === "all", ctx);
+            else if (kind !== "deleted" && kind !== "blocked")
+              await ctx.telegram.edit(message, `❌ <b>错误:</b> 未知子命令: ${esc(kind)}`, { parseMode: "html" });
+            else
+              await ctx.telegram.edit(
+                message,
+                `❌ <b>错误:</b> ${scope ? `未知类型: ${esc(scope)}` : "请指定清理类型: pm 或 member"}`,
+                { parseMode: "html" },
+              );
+          } catch (e) {
+            if (!ctx.signal.aborted) {
+              ctx.log.error("clean:command_failed", { chatId: message.chatId, messageId: message.id });
+              await ctx.telegram.edit(
+                message,
+                err(e).includes("FLOOD_WAIT") ? "⏳ 请求过于频繁，请稍后重试" : "❌ <b>操作失败:</b> 未知错误",
+                { parseMode: "html" },
+              );
+            }
+          }
+        },
+      },
+    },
+  });
+}

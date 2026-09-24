@@ -1,34 +1,151 @@
-import {createHash} from "node:crypto";
-import {constants, createReadStream} from "node:fs";
-import {lstat, mkdir, open, readFile, writeFile} from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { constants, createReadStream } from "node:fs";
+import { lstat, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import {Readable} from "node:stream";
-import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition, type CommandInvocation, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import { Readable } from "node:stream";
+import {
+  STRUCTURED_PLUGIN_API_VERSION,
+  definePlugin,
+  renderCommandHelp,
+  type CommandDefinition,
+  type CommandInvocation,
+  type MessageEnvelope,
+  type PluginContext,
+} from "telebox/sdk";
 
-type State={schemaVersion:1;username:string;password:string;defaultPath:string;port:number;legacyImported:boolean;[key:string]:unknown};
-type Release={asset:string;sha256:string};
-type Dependencies={releaseBinary?:(context:PluginContext,directory:string)=>Promise<string>;ordinary?:(target:string,kind:"file"|"directory")=>Promise<boolean>;configPath?:string};
-const defaults:State={schemaVersion:1,username:"",password:"",defaultPath:"",port:5244,legacyImported:false};
-const VERSION="v4.2.2";
-const RELEASES:Readonly<Record<string,Release>>={
-  x64:{asset:"openlist-linux-musl-amd64.tar.gz",sha256:"9a08dd3c51caffcfd647dee60e6dd288aba769e703b0235fe02424ee7733a0d9"},
-  arm64:{asset:"openlist-linux-musl-arm64.tar.gz",sha256:"de8cf8b9a5105635dee3d893e5d1e70948f89c404a34d18223ddbd392e43ec23"},
-  loong64:{asset:"openlist-linux-musl-loong64.tar.gz",sha256:"9c10070a534f71fe2114eed41f95613abffa784c9771aca42f0c46924b5430e6"},
-  s390x:{asset:"openlist-linux-musl-s390x.tar.gz",sha256:"a1afe5eed6c7cadbf35dc332dd2811261fa46ad974cba4947339798b40a91a30"},
+type State = {
+  schemaVersion: 1;
+  username: string;
+  password: string;
+  defaultPath: string;
+  port: number;
+  legacyImported: boolean;
+  [key: string]: unknown;
 };
-const INSTALL="/opt/openlist",BIN=`${INSTALL}/openlist`,SERVICE="/etc/systemd/system/openlist.service",BACKUPS="/opt/openlist_backups";
-const commands={systemctl:"/usr/bin/systemctl",mkdir:"/bin/mkdir",rm:"/bin/rm",cp:"/bin/cp",mv:"/bin/mv",tar:"/usr/bin/tar",install:"/usr/bin/install",date:"/bin/date"} as const;
-const store=(context:PluginContext)=>context.storage.json<State>("credentials-v2.json",defaults);
-const esc=(value:unknown)=>String(value??"").replace(/[&<>"']/g,character=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[character]!);
-const activePort=(state:Partial<State>)=>Number.isInteger(state.port)&&Number(state.port)>=1&&Number(state.port)<=65535?Number(state.port):5244;
-const endpoint=(state:Partial<State>,pathname:string)=>`http://127.0.0.1:${activePort(state)}${pathname}`;
-type ReadResult={done:boolean;value?:Uint8Array};
-async function writeAll(handle:Awaited<ReturnType<typeof open>>,chunk:Uint8Array,signal:AbortSignal){let offset=0;while(offset<chunk.length){signal.throwIfAborted();const result=await handle.write(chunk,offset,chunk.length-offset);signal.throwIfAborted();if(result.bytesWritten<=0)throw new Error("文件写入失败");offset+=result.bytesWritten;}}
-function readPart(reader:ReadableStreamDefaultReader<Uint8Array>,signal:AbortSignal,cancel:()=>Promise<void>):Promise<ReadResult>{signal.throwIfAborted();return new Promise((resolve,reject)=>{const abort=()=>{void cancel();reject(signal.reason??new DOMException("Aborted","AbortError"));};signal.addEventListener("abort",abort,{once:true});reader.read().then(resolve,reject).finally(()=>signal.removeEventListener("abort",abort));});}
-async function withBusinessTemp<T>(context:PluginContext,operation:string,use:(directory:string,signal:AbortSignal)=>Promise<T>):Promise<T>{let completed=false,value:T|undefined;try{return await context.files.withTemp(async(directory,signal)=>{value=await use(directory,signal);completed=true;return value;});}catch(error){if(context.signal.aborted||!completed)throw error;context.log.error("openlist_temp_cleanup_failed",{operation});return value as T;}}
+type Release = { asset: string; sha256: string };
+type Dependencies = {
+  releaseBinary?: (context: PluginContext, directory: string) => Promise<string>;
+  ordinary?: (target: string, kind: "file" | "directory") => Promise<boolean>;
+  configPath?: string;
+};
+const defaults: State = {
+  schemaVersion: 1,
+  username: "",
+  password: "",
+  defaultPath: "",
+  port: 5244,
+  legacyImported: false,
+};
+const VERSION = "v4.2.2";
+const RELEASES: Readonly<Record<string, Release>> = {
+  x64: {
+    asset: "openlist-linux-musl-amd64.tar.gz",
+    sha256: "9a08dd3c51caffcfd647dee60e6dd288aba769e703b0235fe02424ee7733a0d9",
+  },
+  arm64: {
+    asset: "openlist-linux-musl-arm64.tar.gz",
+    sha256: "de8cf8b9a5105635dee3d893e5d1e70948f89c404a34d18223ddbd392e43ec23",
+  },
+  loong64: {
+    asset: "openlist-linux-musl-loong64.tar.gz",
+    sha256: "9c10070a534f71fe2114eed41f95613abffa784c9771aca42f0c46924b5430e6",
+  },
+  s390x: {
+    asset: "openlist-linux-musl-s390x.tar.gz",
+    sha256: "a1afe5eed6c7cadbf35dc332dd2811261fa46ad974cba4947339798b40a91a30",
+  },
+};
+const INSTALL = "/opt/openlist",
+  BIN = `${INSTALL}/openlist`,
+  SERVICE = "/etc/systemd/system/openlist.service",
+  BACKUPS = "/opt/openlist_backups";
+const commands = {
+  systemctl: "/usr/bin/systemctl",
+  mkdir: "/bin/mkdir",
+  rm: "/bin/rm",
+  cp: "/bin/cp",
+  mv: "/bin/mv",
+  tar: "/usr/bin/tar",
+  install: "/usr/bin/install",
+  date: "/bin/date",
+} as const;
+const store = (context: PluginContext) => context.storage.json<State>("credentials-v2.json", defaults);
+const esc = (value: unknown) =>
+  String(value ?? "").replace(
+    /[&<>"']/g,
+    character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!,
+  );
+const activePort = (state: Partial<State>) =>
+  Number.isInteger(state.port) && Number(state.port) >= 1 && Number(state.port) <= 65535 ? Number(state.port) : 5244;
+const endpoint = (state: Partial<State>, pathname: string) => `http://127.0.0.1:${activePort(state)}${pathname}`;
+type ReadResult = { done: boolean; value?: Uint8Array };
+async function writeAll(handle: Awaited<ReturnType<typeof open>>, chunk: Uint8Array, signal: AbortSignal) {
+  let offset = 0;
+  while (offset < chunk.length) {
+    signal.throwIfAborted();
+    const result = await handle.write(chunk, offset, chunk.length - offset);
+    signal.throwIfAborted();
+    if (result.bytesWritten <= 0) throw new Error("文件写入失败");
+    offset += result.bytesWritten;
+  }
+}
+function readPart(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+  cancel: () => Promise<void>,
+): Promise<ReadResult> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      void cancel();
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    reader
+      .read()
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+async function withBusinessTemp<T>(
+  context: PluginContext,
+  operation: string,
+  use: (directory: string, signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  let completed = false,
+    value: T | undefined;
+  try {
+    return await context.files.withTemp(async (directory, signal) => {
+      value = await use(directory, signal);
+      completed = true;
+      return value;
+    });
+  } catch (error) {
+    if (context.signal.aborted || !completed) throw error;
+    context.log.error("openlist_temp_cleanup_failed", { operation });
+    return value as T;
+  }
+}
 
-async function run(context:PluginContext,command:keyof typeof commands,args:string[],options:Record<string,unknown>={}){return context.processes.run(commands[command],args,{timeoutMs:30_000,maxOutputBytes:256*1024,...options});}
-async function ordinary(target:string,kind:"file"|"directory"):Promise<boolean>{try{const info=await lstat(target);if(info.isSymbolicLink()||(kind==="file"?!info.isFile():!info.isDirectory()))throw new Error("OpenList 路径类型异常");return true;}catch(error){if(error instanceof Error&&"code" in error&&error.code==="ENOENT")return false;throw error;}}
+async function run(
+  context: PluginContext,
+  command: keyof typeof commands,
+  args: string[],
+  options: Record<string, unknown> = {},
+) {
+  return context.processes.run(commands[command], args, { timeoutMs: 30_000, maxOutputBytes: 256 * 1024, ...options });
+}
+async function ordinary(target: string, kind: "file" | "directory"): Promise<boolean> {
+  try {
+    const info = await lstat(target);
+    if (info.isSymbolicLink() || (kind === "file" ? !info.isFile() : !info.isDirectory()))
+      throw new Error("OpenList 路径类型异常");
+    return true;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+    throw error;
+  }
+}
 /**
  * Reads the pre-V2 credentials file. Only a regular file is read: a FIFO or
  * device at this path would block in a read that the abort signal cannot
@@ -39,112 +156,770 @@ async function readLegacyCredentials(file: string, signal: AbortSignal): Promise
   const handle = await open(file, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
     if (!(await handle.stat()).isFile()) throw new Error("Legacy credentials are not a regular file");
-    return await handle.readFile({encoding: "utf8", signal});
+    return await handle.readFile({ encoding: "utf8", signal });
   } finally {
     await handle.close();
   }
 }
 
-async function migrate(context:PluginContext){const current=await store(context).read();if(current.legacyImported&&Number.isInteger(current.port))return;let legacy:any={};try{const parsed:unknown=JSON.parse(await readLegacyCredentials(context.files.dataPath("credentials.json"),context.signal));if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))throw new Error("Invalid legacy credentials");legacy=parsed;}catch(error){context.signal.throwIfAborted();if(!(error instanceof Error&&"code" in error&&error.code==="ENOENT")){context.log.error("openlist_legacy_migration_failed");throw new Error("OpenList 旧凭据迁移失败");}}context.signal.throwIfAborted();await store(context).update(value=>({...value,username:value.username||String(legacy.username??""),password:value.password||String(legacy.password??""),defaultPath:value.defaultPath||String(legacy.defaultPath??""),port:activePort(value),legacyImported:true}));}
-
-async function api(context:PluginContext,url:string,init:RequestInit){return context.http.withResponse(url,init,async(response,signal)=>{const reader=response.body?.getReader();if(!reader)throw new Error("OpenList 返回空响应");const chunks:Buffer[]=[];let total=0,cancelPromise:Promise<void>|undefined;const cancel=()=>cancelPromise??=reader.cancel().then(()=>undefined,()=>undefined);try{for(;;){const item=await readPart(reader,signal,cancel);signal.throwIfAborted();if(item.done)break;if(!item.value)continue;total+=item.value.length;if(total>1024*1024)throw new Error("OpenList 响应过大");chunks.push(Buffer.from(item.value));}}finally{try{await cancel();}finally{reader.releaseLock();}}let data:any;try{data=JSON.parse(Buffer.concat(chunks,total).toString("utf8"));}catch{throw new Error("OpenList 返回无效 JSON");}if(!response.ok)throw new Error(`HTTP ${response.status}`);if(data?.code!==200)throw new Error(typeof data?.message==="string"?"OpenList 操作失败":"OpenList 响应结构异常");return data.data;},{timeoutMs:30_000,signal:context.signal,redirects:{allowedHosts:["127.0.0.1"],maxRedirects:0}});}
-async function token(context:PluginContext,state?:State){const current=state??await store(context).read();if(!current.username||!current.password)throw new Error("请先配置 OpenList 账号");const data=await api(context,endpoint(current,"/api/auth/login"),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({username:current.username,password:current.password})});if(typeof data?.token!=="string"||!data.token)throw new Error("OpenList 登录响应无令牌");return data.token;}
-const safePath=(value:string)=>{const normalized=path.posix.normalize(value.startsWith("/")?value:`/${value}`);if(!normalized.startsWith("/")||normalized.includes("\0"))throw new Error("目标路径无效");return normalized;};
-async function status(context:PluginContext){try{const result=await run(context,"systemctl",["is-active","openlist"],{timeoutMs:10_000});return result.stdout.toString().trim()==="active"?`OpenList ${VERSION} 服务运行中。`:`OpenList ${VERSION} 服务未运行。`;}catch{return`OpenList ${VERSION} 服务未运行或未安装。`;}}
-async function serviceActive(context:PluginContext){try{return(await run(context,"systemctl",["is-active","openlist"],{timeoutMs:10_000})).stdout.toString().trim()==="active";}catch{return false;}}
-async function serviceEnabled(context:PluginContext){try{return(await run(context,"systemctl",["is-enabled","openlist"],{timeoutMs:10_000})).stdout.toString().trim()==="enabled";}catch{return false;}}
-const failure=(error:unknown)=>error instanceof Error?error.message:String(error);
-const publicFailure=(error:unknown)=>{const message=failure(error),fixed=new Set([
-  "此操作仅支持 Linux systemd","不支持当前架构","OpenList 尚未安装","OpenList 已安装，请使用 update","OpenList 配置不存在","OpenList 配置结构异常",
-  "OpenList 当前数据目录不存在","OpenList 初始账号信息未能读取","OpenList 登录响应无令牌","OpenList 返回空响应","OpenList 响应过大","OpenList 返回无效 JSON",
-  "OpenList 操作失败","OpenList 响应结构异常","请先配置 OpenList 账号","请回复媒体文件","请提供有效的 OpenList 备份名","备份不存在或路径无效",
-  "缺少新凭据","端口必须是 1 到 65535 的整数","目标路径无效","媒体超过 2 GiB","媒体下载为空","OpenList 安装包 SHA-256 校验失败",
-  "OpenList 安装包成员不符合预期","OpenList 安装包缺少二进制文件","安装包过大","下载为空","用法：op login 用户 密码","用法：op admin setuser|setpass|random",
-]);return fixed.has(message)?message:"OpenList 操作失败，请稍后重试";};
-async function rethrowAfterRollback(original:unknown,steps:ReadonlyArray<()=>Promise<unknown>>):Promise<never>{const failures:string[]=[];for(const step of steps)try{await step();}catch(error){failures.push(failure(error).slice(0,160));}if(failures.length)throw new Error(`${failure(original)}；回滚未完成：${failures.join("；")}`,{cause:original});throw original;}
-
-async function admin(context:PluginContext,sub:"setuser"|"setpass"|"random",value?:string){const argv=sub==="setuser"?["admin","setuser",value??""]:sub==="setpass"?["admin","set",value??""]:["admin","random"];if(argv.at(-1)==="")throw new Error("缺少新凭据");const output=(await context.processes.run(BIN,argv,{cwd:INSTALL,timeoutMs:30_000,maxOutputBytes:64*1024})).stdout.toString();let username=sub==="setuser"?value??"":"",password=sub==="setpass"?value??"":"";if(sub==="random"){username=output.match(/username:\s*(\S+)/i)?.[1]??"";password=output.match(/password:\s*(\S+)/i)?.[1]??"";}if(username||password)await store(context).update(current=>({...current,username:username||current.username,password:password||current.password}));return"管理命令执行成功，凭据已同步且密码不回显。";}
-
-async function setPort(context:PluginContext,value:string|undefined,dependencies:Dependencies){
-  const port=Number(value);if(!Number.isInteger(port)||port<1||port>65535)throw new Error("端口必须是 1 到 65535 的整数");
-  const config=dependencies.configPath??`${INSTALL}/data/config.json`,pathIsOrdinary=dependencies.ordinary??ordinary;if(!await pathIsOrdinary(config,"file"))throw new Error("OpenList 配置不存在");
-  const recovery=await context.files.dataDirectory(`recovery/${Date.now()}-${Math.random().toString(36).slice(2,10)}`),backup=path.join(recovery,"config.previous.json");
-  let keepRecovery=true;
-  try{
-    await run(context,"cp",["-a",config,backup]);
-    return await withBusinessTemp(context,"setport",async directory=>{
-      const temporary=path.join(directory,"config.next.json"),document=JSON.parse(await readFile(config,{encoding:"utf8",signal:context.signal}));
-      if(!document?.scheme||typeof document.scheme!=="object")throw new Error("OpenList 配置结构异常");
-      document.scheme.http_port=port;await writeFile(temporary,`${JSON.stringify(document,null,2)}\n`,{mode:0o600,flag:"wx",signal:context.signal});
-      const wasActive=await serviceActive(context);let replaced=false,startAttempted=false;
-      try{if(wasActive)await run(context,"systemctl",["stop","openlist"]);await run(context,"install",["-m","0600",temporary,config]);replaced=true;startAttempted=true;await run(context,"systemctl",["start","openlist"]);await store(context).update(current=>({...current,port}));}
-      catch(error){const steps:Array<()=>Promise<unknown>>=[];if(startAttempted)steps.push(()=>run(context,"systemctl",["stop","openlist"]));if(replaced)steps.push(()=>run(context,"cp",["-a",backup,config]));if(wasActive)steps.push(()=>run(context,"systemctl",["start","openlist"]));try{await rethrowAfterRollback(error,steps);}catch(rolled){if(!context.signal.aborted&&!failure(rolled).includes("回滚未完成")){try{await run(context,"rm",["-rf",recovery]);keepRecovery=false;}catch{}}throw rolled;}}
-      try{await run(context,"rm",["-rf",recovery]);keepRecovery=false;}catch{context.log.error("openlist_recovery_snapshot_retained");}
-      return`OpenList 端口已修改为 ${port}，后续登录与上传将使用该端口。`;
-    });
-  }catch(error){if(keepRecovery)context.log.error("openlist_recovery_snapshot_retained");throw error;}
-}
-
-async function save(context:PluginContext,message:MessageEnvelope,target?:string){const reply=await context.telegram.getReply(message),raw:any=reply?.raw;if(!raw?.media)throw new Error("请回复媒体文件");const name=String(raw?.file?.name??raw?.document?.attributes?.find((item:any)=>item?.className==="DocumentAttributeFilename")?.fileName??`media_${reply!.id}`).replace(/[\\/:*?"<>|\x00-\x1f]/g,"_").slice(0,120);const state=await store(context).read(),destination=safePath(path.posix.join(target??state.defaultPath??"/",name)),auth=await token(context,state);await withBusinessTemp(context,"save",async(directory,signal)=>{const file=path.join(directory,name),handle=await open(file,"wx",0o600);let total=0;try{await context.telegram.withClient(async client=>{for await(const chunk of client.iterDownload(raw.media,{})){signal.throwIfAborted();total+=chunk.length;if(total>2*1024*1024*1024)throw new Error("媒体超过 2 GiB");await writeAll(handle,chunk,signal);}});}finally{await handle.close();}if(!total)throw new Error("媒体下载为空");signal.throwIfAborted();const stream=Readable.toWeb(createReadStream(file));await api(context,endpoint(state,"/api/fs/put"),{method:"PUT",headers:{authorization:auth,"file-path":encodeURIComponent(destination),"content-type":"application/octet-stream","as-task":"false"},body:stream as never,...({duplex:"half"} as any)});});return`文件已上传到 <code>${esc(destination)}</code>`;}
-
-async function releaseBinary(context:PluginContext,directory:string):Promise<string>{const release=RELEASES[process.arch];if(!release)throw new Error("不支持当前架构");const archive=path.join(directory,release.asset),hash=createHash("sha256"),url=new URL(`https://github.com/OpenListTeam/OpenList/releases/download/${VERSION}/${release.asset}`);const bytes=await context.http.withResponse(url,{},async(response,signal)=>{if(!response.ok)throw new Error(`HTTP ${response.status}`);const reader=response.body?.getReader();if(!reader)throw new Error("下载为空");let file:Awaited<ReturnType<typeof open>>|undefined,total=0,cancelPromise:Promise<void>|undefined;const cancel=()=>cancelPromise??=reader.cancel().then(()=>undefined,()=>undefined);try{file=await open(archive,"wx",0o600);for(;;){const item=await readPart(reader,signal,cancel);signal.throwIfAborted();if(item.done)break;if(!item.value)continue;total+=item.value.length;if(total>256*1024*1024)throw new Error("安装包过大");hash.update(item.value);await writeAll(file,item.value,signal);}}finally{try{if(file)await file.close();}finally{try{await cancel();}finally{reader.releaseLock();}}}return total;},{timeoutMs:120_000,signal:context.signal,redirects:{allowedHosts:["github.com","objects.githubusercontent.com","release-assets.githubusercontent.com"],maxRedirects:5}});if(!bytes)throw new Error("下载为空");context.signal.throwIfAborted();if(hash.digest("hex")!==release.sha256)throw new Error("OpenList 安装包 SHA-256 校验失败");const listing=await run(context,"tar",["-tzf",archive],{timeoutMs:30_000,maxOutputBytes:64*1024});const members=listing.stdout.toString("utf8").split(/\r?\n/).filter(Boolean);if(members.length!==1||members[0]!=="openlist")throw new Error("OpenList 安装包成员不符合预期");const stage=path.join(directory,"release");await mkdir(stage,{mode:0o700});await run(context,"tar",["-xzf",archive,"-C",stage,"--no-same-owner","--no-same-permissions","--","openlist"],{timeoutMs:120_000,maxOutputBytes:64*1024});const binary=path.join(stage,"openlist");if(!await ordinary(binary,"file"))throw new Error("OpenList 安装包缺少二进制文件");return binary;}
-
-async function installOrUpdate(context:PluginContext,update:boolean,dependencies:Dependencies){
-  if(process.platform!=="linux")throw new Error("此操作仅支持 Linux systemd");
-  const getReleaseBinary=dependencies.releaseBinary??releaseBinary,pathIsOrdinary=dependencies.ordinary??ordinary;
-  let recovery:string|undefined,keepRecovery=false;
-  try{return await withBusinessTemp(context,update?"update":"install",async directory=>{
-    const binary=await getReleaseBinary(context,directory),service=path.join(directory,"openlist.service");
-    await writeFile(service,`[Unit]\nDescription=OpenList service\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory=${INSTALL}\nExecStart=${BIN} server\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n`,{mode:0o600});
-    const data=`${INSTALL}/data`,binExisted=await pathIsOrdinary(BIN,"file"),serviceExisted=await pathIsOrdinary(SERVICE,"file"),dataExisted=await pathIsOrdinary(data,"directory");
-    if(update&&!binExisted)throw new Error("OpenList 尚未安装");
-    if(!update&&binExisted)throw new Error("OpenList 已安装，请使用 update");
-    recovery=await context.files.dataDirectory(`recovery/${Date.now()}-${Math.random().toString(36).slice(2,10)}`);keepRecovery=true;
-    const binBackup=path.join(recovery,"openlist.previous"),serviceBackup=path.join(recovery,"openlist.service.previous"),dataBackup=path.join(recovery,"data.previous");
-    if(binExisted)await run(context,"cp",["-a",BIN,binBackup]);
-    if(serviceExisted)await run(context,"cp",["-a",SERVICE,serviceBackup]);
-    if(dataExisted)await run(context,"cp",["-a",data,dataBackup],{timeoutMs:120_000});
-    const wasActive=await serviceActive(context),wasEnabled=await serviceEnabled(context);
-    let installed=false;
-    try{
-      if(wasActive)await run(context,"systemctl",["stop","openlist"]);
-      await run(context,"mkdir",["-p",INSTALL]);
-      await run(context,"install",["-m","0755",binary,BIN]);
-      await run(context,"install",["-m","0644",service,SERVICE]);
-      installed=true;
-      await run(context,"systemctl",["daemon-reload"]);
-      await run(context,"systemctl",["enable","--now","openlist"],{timeoutMs:30_000});
-      if(!update){const result=await context.processes.run(BIN,["admin","random"],{cwd:INSTALL,timeoutMs:30_000,maxOutputBytes:64*1024});const output=result.stdout.toString()+"\n"+result.stderr.toString();const username=output.match(/username:\s*(\S+)/i)?.[1],password=output.match(/password:\s*(\S+)/i)?.[1];if(!username||!password)throw new Error("OpenList 初始账号信息未能读取");let port=5244;try{const document=JSON.parse(await readFile(`${INSTALL}/data/config.json`,"utf8"));port=activePort({port:Number(document?.scheme?.http_port)});}catch{}await store(context).update(value=>({...value,username,password,port}));}
-    }catch(error){
-      keepRecovery=true;
-      const steps:Array<()=>Promise<unknown>>=[];
-      if(installed)steps.push(()=>run(context,"systemctl",["disable","--now","openlist"]));
-      steps.push(binExisted?()=>run(context,"install",["-m","0755",binBackup,BIN]):()=>run(context,"rm",["-f",BIN]));
-      steps.push(serviceExisted?()=>run(context,"install",["-m","0644",serviceBackup,SERVICE]):()=>run(context,"rm",["-f",SERVICE]));
-      if(dataExisted)steps.push(async()=>{await run(context,"rm",["-rf",data]);await run(context,"cp",["-a",dataBackup,data],{timeoutMs:120_000});});else steps.push(()=>run(context,"rm",["-rf",data]));
-      steps.push(()=>run(context,"systemctl",["daemon-reload"]));
-      if(serviceExisted){steps.push(()=>run(context,"systemctl",[wasEnabled?"enable":"disable","openlist"]));steps.push(()=>run(context,"systemctl",[wasActive?"start":"stop","openlist"]));}
-      try{await rethrowAfterRollback(error,steps);}catch(rolled){
-        if(!context.signal.aborted&&!failure(rolled).includes("回滚未完成")){try{await run(context,"rm",["-rf",recovery]);keepRecovery=false;}catch{}}
-        throw rolled;
-      }
+async function migrate(context: PluginContext) {
+  const current = await store(context).read();
+  if (current.legacyImported && Number.isInteger(current.port)) return;
+  let legacy: any = {};
+  try {
+    const parsed: unknown = JSON.parse(
+      await readLegacyCredentials(context.files.dataPath("credentials.json"), context.signal),
+    );
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid legacy credentials");
+    legacy = parsed;
+  } catch (error) {
+    context.signal.throwIfAborted();
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+      context.log.error("openlist_legacy_migration_failed");
+      throw new Error("OpenList 旧凭据迁移失败");
     }
-    try{await run(context,"rm",["-rf",recovery]);keepRecovery=false;}catch{context.log.error("openlist_recovery_snapshot_retained");}
-    return update?`OpenList ${VERSION} 更新完成。`:`OpenList ${VERSION} 安装完成。`;
-  });}catch(error){if(keepRecovery)context.log.error("openlist_recovery_snapshot_retained");throw error;}
+  }
+  context.signal.throwIfAborted();
+  await store(context).update(value => ({
+    ...value,
+    username: value.username || String(legacy.username ?? ""),
+    password: value.password || String(legacy.password ?? ""),
+    defaultPath: value.defaultPath || String(legacy.defaultPath ?? ""),
+    port: activePort(value),
+    legacyImported: true,
+  }));
 }
 
-async function backup(context:PluginContext){await run(context,"mkdir",["-p",BACKUPS]);const stamp=(await run(context,"date",["+%Y%m%d_%H%M%S_%3N"])).stdout.toString().trim();if(!/^\d{8}_\d{6}_\d{3}$/.test(stamp))throw new Error("无法生成安全备份名");const directory=`${BACKUPS}/backup_${stamp}`;await run(context,"mkdir",[directory]);try{await run(context,"cp",["-a",`${INSTALL}/data`,directory],{timeoutMs:120_000});}catch(error){return rethrowAfterRollback(error,[()=>run(context,"rm",["-rf",directory])]);}return`备份完成：<code>backup_${esc(stamp)}</code>`;}
-async function restore(context:PluginContext,name:string|undefined,pathIsOrdinary=ordinary){if(!/^backup_\d{8}_\d{6}(?:_\d{3})?$/.test(name??""))throw new Error("请提供有效的 OpenList 备份名");const root=path.resolve(BACKUPS),source=path.resolve(BACKUPS,name!,"data");if(!source.startsWith(`${root}${path.sep}`)||!await pathIsOrdinary(source,"directory"))throw new Error("备份不存在或路径无效");const suffix=`${Date.now()}-${Math.random().toString(36).slice(2,8)}`,stage=`${INSTALL}/data.mibot-stage-${suffix}`,rollback=`${INSTALL}/data.mibot-rollback-${suffix}`,current=`${INSTALL}/data`;if(!await pathIsOrdinary(current,"directory"))throw new Error("OpenList 当前数据目录不存在");const wasActive=await serviceActive(context);let oldMoved=false,newMoved=false,startAttempted=false;try{await run(context,"cp",["-a",source,stage],{timeoutMs:120_000});if(!await pathIsOrdinary(stage,"directory"))throw new Error("备份暂存失败");if(wasActive)await run(context,"systemctl",["stop","openlist"]);await run(context,"mv",[current,rollback]);oldMoved=true;await run(context,"mv",[stage,current]);newMoved=true;startAttempted=true;await run(context,"systemctl",["start","openlist"]);}catch(error){const steps:Array<()=>Promise<unknown>>=[];if(startAttempted)steps.push(()=>run(context,"systemctl",["stop","openlist"]));if(newMoved)steps.push(()=>run(context,"rm",["-rf",current]));if(oldMoved)steps.push(()=>run(context,"mv",[rollback,current]));if(!newMoved)steps.push(()=>run(context,"rm",["-rf",stage]));if(wasActive)steps.push(()=>run(context,"systemctl",["start","openlist"]));return rethrowAfterRollback(error,steps);}try{await run(context,"rm",["-rf",rollback]);return"OpenList 数据恢复完成。";}catch{context.log.error("openlist_restore_cleanup_failed");return"OpenList 数据恢复完成，但旧数据回滚目录清理失败，请手动检查。";}}
-
-const saved:NonNullable<CommandDefinition["authorize"]>=async(invocation,context)=>{if(invocation.message.saved)return true;if(!context.signal.aborted)await context.telegram.edit(invocation.message,"❌ 密码仅限在收藏夹中设置",{parseMode:"html"});return false;};
-const execute=(operation:(invocation:CommandInvocation,context:PluginContext)=>Promise<string>):CommandDefinition["handle"]=>async(invocation,context)=>{
-  let result:string;
-  try{result=await operation(invocation,context);}catch(error){if(!context.signal.aborted){context.log.error("openlist_operation_failed");await context.telegram.edit(invocation.message,`❌ ${esc(publicFailure(error))}`,{parseMode:"html"});}return;}
-  context.signal.throwIfAborted();
-  try{await context.telegram.edit(invocation.message,result,{parseMode:"html"});}catch{context.log.error("openlist_receipt_failed");throw new Error("OPENLIST_RECEIPT_FAILED");}
+async function api(context: PluginContext, url: string, init: RequestInit) {
+  return context.http.withResponse(
+    url,
+    init,
+    async (response, signal) => {
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("OpenList 返回空响应");
+      const chunks: Buffer[] = [];
+      let total = 0,
+        cancelPromise: Promise<void> | undefined;
+      const cancel = () =>
+        (cancelPromise ??= reader.cancel().then(
+          () => undefined,
+          () => undefined,
+        ));
+      try {
+        for (;;) {
+          const item = await readPart(reader, signal, cancel);
+          signal.throwIfAborted();
+          if (item.done) break;
+          if (!item.value) continue;
+          total += item.value.length;
+          if (total > 1024 * 1024) throw new Error("OpenList 响应过大");
+          chunks.push(Buffer.from(item.value));
+        }
+      } finally {
+        try {
+          await cancel();
+        } finally {
+          reader.releaseLock();
+        }
+      }
+      let data: any;
+      try {
+        data = JSON.parse(Buffer.concat(chunks, total).toString("utf8"));
+      } catch {
+        throw new Error("OpenList 返回无效 JSON");
+      }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (data?.code !== 200)
+        throw new Error(typeof data?.message === "string" ? "OpenList 操作失败" : "OpenList 响应结构异常");
+      return data.data;
+    },
+    { timeoutMs: 30_000, signal: context.signal, redirects: { allowedHosts: ["127.0.0.1"], maxRedirects: 0 } },
+  );
+}
+async function token(context: PluginContext, state?: State) {
+  const current = state ?? (await store(context).read());
+  if (!current.username || !current.password) throw new Error("请先配置 OpenList 账号");
+  const data = await api(context, endpoint(current, "/api/auth/login"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: current.username, password: current.password }),
+  });
+  if (typeof data?.token !== "string" || !data.token) throw new Error("OpenList 登录响应无令牌");
+  return data.token;
+}
+const safePath = (value: string) => {
+  const normalized = path.posix.normalize(value.startsWith("/") ? value : `/${value}`);
+  if (!normalized.startsWith("/") || normalized.includes("\0")) throw new Error("目标路径无效");
+  return normalized;
 };
-type Exclusive=<T>(context:PluginContext,operation:()=>Promise<T>)=>Promise<T>;
-function commandDefinition(exclusive:Exclusive,dependencies:Dependencies):CommandDefinition{let help!:(prefix:string)=>string;const guarded=(operation:(invocation:CommandInvocation,context:PluginContext)=>Promise<string>)=>execute((invocation,context)=>exclusive(context,()=>operation(invocation,context)));const definition:CommandDefinition={description:"管理 OpenList 服务并上传 Telegram 媒体",subcommandsCaseSensitive:false,subcommands:{status:{description:"查看服务状态",args:"",handle:execute((_i,context)=>status(context))},install:{description:`安装固定版本 OpenList ${VERSION} 并初始化账号`,args:"",handle:guarded((_i,context)=>installOrUpdate(context,false,dependencies))},update:{description:`更新到固定版本 OpenList ${VERSION}`,args:"",handle:guarded((_i,context)=>installOrUpdate(context,true,dependencies))},uninstall:{description:"卸载服务，保留数据目录",args:"",handle:guarded(async(_i,context)=>{await run(context,"systemctl",["disable","--now","openlist"]).catch(()=>undefined);await run(context,"rm",["-f",SERVICE]);await run(context,"systemctl",["daemon-reload"]);return"OpenList 服务已卸载，数据目录保留。";})},login:{description:"保存上传使用的账号信息",args:"用户 密码",authorize:saved,help:[{heading:"凭据：",body:"仅限收藏夹；密码支持空格，保存在本机插件数据目录。"}],handle:execute(async(invocation,context)=>{if(!invocation.args[0]||!invocation.args[1])throw new Error("用法：op login 用户 密码");await store(context).update(value=>({...value,username:invocation.args[0]!,password:invocation.args.slice(1).join(" ")}));return"OpenList 账号已保存。";})},setdefault:{description:"设置默认上传路径，省略时恢复默认",args:"[路径]",handle:execute(async(invocation,context)=>{const value=invocation.args.join(" ");if(value)safePath(value);await store(context).update(current=>({...current,defaultPath:value}));return"默认上传路径已更新。";})},save:{description:"上传回复的媒体到指定或默认目录",args:"[路径]",examples:[{args:"save /media",description:"回复媒体后上传到指定挂载目录"}],help:[{heading:"上传：",body:"单个媒体上限 2 GiB，上传接口连接本机 OpenList 当前端口（默认 5244），使用已保存的账号登录。"}],handle:execute((invocation,context)=>save(context,invocation.message,invocation.args.join(" ")||undefined))},admin:{description:"管理账号并同步本机凭据",subcommandsCaseSensitive:true,subcommands:{setuser:{description:"修改用户名",args:"用户名",handle:guarded((invocation,context)=>admin(context,"setuser",invocation.args.join(" ")))},setpass:{description:"修改密码，仅限收藏夹",args:"密码",authorize:saved,handle:guarded((invocation,context)=>admin(context,"setpass",invocation.args.join(" ")))},random:{description:"生成随机凭据，仅限收藏夹",args:"",authorize:saved,handle:guarded((_invocation,context)=>admin(context,"random"))}},help:[{heading:"说明：",body:"调用固定路径的 OpenList 管理命令，成功后同步凭据，密码不回显。"}],handle:execute(async()=>{throw new Error("用法：op admin setuser|setpass|random");})},setport:{description:"修改服务端口并重启",args:"端口",examples:[{args:"setport 5255"}],arguments:[{name:"端口",required:true,description:"1–65535 的整数；修改成功后登录与媒体上传同步使用新端口"}],handle:guarded((invocation,context)=>setPort(context,invocation.args[0],dependencies))},backup:{description:"备份 OpenList 数据目录",args:"",handle:guarded((_invocation,context)=>backup(context))},restore:{description:"原子恢复指定备份并重启服务",args:"备份名",handle:guarded((invocation,context)=>restore(context,invocation.args[0],dependencies.ordinary))}},examples:[{args:"install"},{args:"status"}],help:[{heading:"运行环境：",body:`安装和更新固定为 ${VERSION}，校验官方 SHA-256 且只接受单一 openlist 归档成员。支持 Linux systemd，使用固定目录 /opt/openlist，备份位于 /opt/openlist_backups。`},{heading:"命令别名：",body:"<code>{prefix}op</code> 与 <code>{prefix}openlist</code> 使用同一套命令。"}],handle:execute(async invocation=>help(invocation.prefix))};help=(prefix:string)=>renderCommandHelp("openlist",definition,{prefix,title:"⚙️ OpenList 管理"});return definition;}
+async function status(context: PluginContext) {
+  try {
+    const result = await run(context, "systemctl", ["is-active", "openlist"], { timeoutMs: 10_000 });
+    return result.stdout.toString().trim() === "active"
+      ? `OpenList ${VERSION} 服务运行中。`
+      : `OpenList ${VERSION} 服务未运行。`;
+  } catch {
+    return `OpenList ${VERSION} 服务未运行或未安装。`;
+  }
+}
+async function serviceActive(context: PluginContext) {
+  try {
+    return (
+      (await run(context, "systemctl", ["is-active", "openlist"], { timeoutMs: 10_000 })).stdout.toString().trim() ===
+      "active"
+    );
+  } catch {
+    return false;
+  }
+}
+async function serviceEnabled(context: PluginContext) {
+  try {
+    return (
+      (await run(context, "systemctl", ["is-enabled", "openlist"], { timeoutMs: 10_000 })).stdout.toString().trim() ===
+      "enabled"
+    );
+  } catch {
+    return false;
+  }
+}
+const failure = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const publicFailure = (error: unknown) => {
+  const message = failure(error),
+    fixed = new Set([
+      "此操作仅支持 Linux systemd",
+      "不支持当前架构",
+      "OpenList 尚未安装",
+      "OpenList 已安装，请使用 update",
+      "OpenList 配置不存在",
+      "OpenList 配置结构异常",
+      "OpenList 当前数据目录不存在",
+      "OpenList 初始账号信息未能读取",
+      "OpenList 登录响应无令牌",
+      "OpenList 返回空响应",
+      "OpenList 响应过大",
+      "OpenList 返回无效 JSON",
+      "OpenList 操作失败",
+      "OpenList 响应结构异常",
+      "请先配置 OpenList 账号",
+      "请回复媒体文件",
+      "请提供有效的 OpenList 备份名",
+      "备份不存在或路径无效",
+      "缺少新凭据",
+      "端口必须是 1 到 65535 的整数",
+      "目标路径无效",
+      "媒体超过 2 GiB",
+      "媒体下载为空",
+      "OpenList 安装包 SHA-256 校验失败",
+      "OpenList 安装包成员不符合预期",
+      "OpenList 安装包缺少二进制文件",
+      "安装包过大",
+      "下载为空",
+      "用法：op login 用户 密码",
+      "用法：op admin setuser|setpass|random",
+    ]);
+  return fixed.has(message) ? message : "OpenList 操作失败，请稍后重试";
+};
+async function rethrowAfterRollback(original: unknown, steps: ReadonlyArray<() => Promise<unknown>>): Promise<never> {
+  const failures: string[] = [];
+  for (const step of steps)
+    try {
+      await step();
+    } catch (error) {
+      failures.push(failure(error).slice(0, 160));
+    }
+  if (failures.length) throw new Error(`${failure(original)}；回滚未完成：${failures.join("；")}`, { cause: original });
+  throw original;
+}
 
-export default function createOpenlist(dependencies:Dependencies={}){let tail:Promise<void>=Promise.resolve();const exclusive:Exclusive=(context,operation)=>{const task=tail.catch(()=>undefined).then(()=>{context.signal.throwIfAborted();return operation();});tail=task.then(()=>undefined,()=>undefined);return task;};const definition=commandDefinition(exclusive,dependencies),help=(prefix:string)=>renderCommandHelp("openlist",definition,{prefix,title:"⚙️ OpenList 管理"});return definePlugin({renderHelp:help,apiVersion:STRUCTURED_PLUGIN_API_VERSION,id:"openlist",description:`OpenList ${VERSION} 安装、凭据、备份和媒体上传`,resources:{processes:{concurrency:1,queueCapacity:4,timeoutMs:120_000,maxOutputBytes:262144}},commands:{openlist:definition,op:definition},settings:context=>({id:"openlist",title:"OpenList",category:"插件配置",icon:"📁",getSchema:()=>[{key:"username",label:"用户名",type:"string"},{key:"password",label:"密码",type:"password",secret:true},{key:"defaultPath",label:"默认上传路径",type:"string"}],getValues:async()=>{const value=await store(context).read();return{username:value.username,password:value.password,defaultPath:value.defaultPath};},async setValues(patch){await store(context).update(value=>{const defaultPath=typeof patch.defaultPath==="string"?patch.defaultPath:value.defaultPath;if(defaultPath)safePath(defaultPath);return{...value,username:typeof patch.username==="string"?patch.username:value.username,password:typeof patch.password==="string"?patch.password:value.password,defaultPath};});}}),setup:migrate,cleanup(){tail=Promise.resolve();}});}
+async function admin(context: PluginContext, sub: "setuser" | "setpass" | "random", value?: string) {
+  const argv =
+    sub === "setuser"
+      ? ["admin", "setuser", value ?? ""]
+      : sub === "setpass"
+        ? ["admin", "set", value ?? ""]
+        : ["admin", "random"];
+  if (argv.at(-1) === "") throw new Error("缺少新凭据");
+  const output = (
+    await context.processes.run(BIN, argv, { cwd: INSTALL, timeoutMs: 30_000, maxOutputBytes: 64 * 1024 })
+  ).stdout.toString();
+  let username = sub === "setuser" ? (value ?? "") : "",
+    password = sub === "setpass" ? (value ?? "") : "";
+  if (sub === "random") {
+    username = output.match(/username:\s*(\S+)/i)?.[1] ?? "";
+    password = output.match(/password:\s*(\S+)/i)?.[1] ?? "";
+  }
+  if (username || password)
+    await store(context).update(current => ({
+      ...current,
+      username: username || current.username,
+      password: password || current.password,
+    }));
+  return "管理命令执行成功，凭据已同步且密码不回显。";
+}
+
+async function setPort(context: PluginContext, value: string | undefined, dependencies: Dependencies) {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("端口必须是 1 到 65535 的整数");
+  const config = dependencies.configPath ?? `${INSTALL}/data/config.json`,
+    pathIsOrdinary = dependencies.ordinary ?? ordinary;
+  if (!(await pathIsOrdinary(config, "file"))) throw new Error("OpenList 配置不存在");
+  const recovery = await context.files.dataDirectory(
+      `recovery/${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    ),
+    backup = path.join(recovery, "config.previous.json");
+  let keepRecovery = true;
+  try {
+    await run(context, "cp", ["-a", config, backup]);
+    return await withBusinessTemp(context, "setport", async directory => {
+      const temporary = path.join(directory, "config.next.json"),
+        document = JSON.parse(await readFile(config, { encoding: "utf8", signal: context.signal }));
+      if (!document?.scheme || typeof document.scheme !== "object") throw new Error("OpenList 配置结构异常");
+      document.scheme.http_port = port;
+      await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, {
+        mode: 0o600,
+        flag: "wx",
+        signal: context.signal,
+      });
+      const wasActive = await serviceActive(context);
+      let replaced = false,
+        startAttempted = false;
+      try {
+        if (wasActive) await run(context, "systemctl", ["stop", "openlist"]);
+        await run(context, "install", ["-m", "0600", temporary, config]);
+        replaced = true;
+        startAttempted = true;
+        await run(context, "systemctl", ["start", "openlist"]);
+        await store(context).update(current => ({ ...current, port }));
+      } catch (error) {
+        const steps: Array<() => Promise<unknown>> = [];
+        if (startAttempted) steps.push(() => run(context, "systemctl", ["stop", "openlist"]));
+        if (replaced) steps.push(() => run(context, "cp", ["-a", backup, config]));
+        if (wasActive) steps.push(() => run(context, "systemctl", ["start", "openlist"]));
+        try {
+          await rethrowAfterRollback(error, steps);
+        } catch (rolled) {
+          if (!context.signal.aborted && !failure(rolled).includes("回滚未完成")) {
+            try {
+              await run(context, "rm", ["-rf", recovery]);
+              keepRecovery = false;
+            } catch {}
+          }
+          throw rolled;
+        }
+      }
+      try {
+        await run(context, "rm", ["-rf", recovery]);
+        keepRecovery = false;
+      } catch {
+        context.log.error("openlist_recovery_snapshot_retained");
+      }
+      return `OpenList 端口已修改为 ${port}，后续登录与上传将使用该端口。`;
+    });
+  } catch (error) {
+    if (keepRecovery) context.log.error("openlist_recovery_snapshot_retained");
+    throw error;
+  }
+}
+
+async function save(context: PluginContext, message: MessageEnvelope, target?: string) {
+  const reply = await context.telegram.getReply(message),
+    raw: any = reply?.raw;
+  if (!raw?.media) throw new Error("请回复媒体文件");
+  const name = String(
+    raw?.file?.name ??
+      raw?.document?.attributes?.find((item: any) => item?.className === "DocumentAttributeFilename")?.fileName ??
+      `media_${reply!.id}`,
+  )
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, "_")
+    .slice(0, 120);
+  const state = await store(context).read(),
+    destination = safePath(path.posix.join(target ?? state.defaultPath ?? "/", name)),
+    auth = await token(context, state);
+  await withBusinessTemp(context, "save", async (directory, signal) => {
+    const file = path.join(directory, name),
+      handle = await open(file, "wx", 0o600);
+    let total = 0;
+    try {
+      await context.telegram.withClient(async client => {
+        for await (const chunk of client.iterDownload(raw.media, {})) {
+          signal.throwIfAborted();
+          total += chunk.length;
+          if (total > 2 * 1024 * 1024 * 1024) throw new Error("媒体超过 2 GiB");
+          await writeAll(handle, chunk, signal);
+        }
+      });
+    } finally {
+      await handle.close();
+    }
+    if (!total) throw new Error("媒体下载为空");
+    signal.throwIfAborted();
+    const stream = Readable.toWeb(createReadStream(file));
+    await api(context, endpoint(state, "/api/fs/put"), {
+      method: "PUT",
+      headers: {
+        authorization: auth,
+        "file-path": encodeURIComponent(destination),
+        "content-type": "application/octet-stream",
+        "as-task": "false",
+      },
+      body: stream as never,
+      ...({ duplex: "half" } as any),
+    });
+  });
+  return `文件已上传到 <code>${esc(destination)}</code>`;
+}
+
+async function releaseBinary(context: PluginContext, directory: string): Promise<string> {
+  const release = RELEASES[process.arch];
+  if (!release) throw new Error("不支持当前架构");
+  const archive = path.join(directory, release.asset),
+    hash = createHash("sha256"),
+    url = new URL(`https://github.com/OpenListTeam/OpenList/releases/download/${VERSION}/${release.asset}`);
+  const bytes = await context.http.withResponse(
+    url,
+    {},
+    async (response, signal) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("下载为空");
+      let file: Awaited<ReturnType<typeof open>> | undefined,
+        total = 0,
+        cancelPromise: Promise<void> | undefined;
+      const cancel = () =>
+        (cancelPromise ??= reader.cancel().then(
+          () => undefined,
+          () => undefined,
+        ));
+      try {
+        file = await open(archive, "wx", 0o600);
+        for (;;) {
+          const item = await readPart(reader, signal, cancel);
+          signal.throwIfAborted();
+          if (item.done) break;
+          if (!item.value) continue;
+          total += item.value.length;
+          if (total > 256 * 1024 * 1024) throw new Error("安装包过大");
+          hash.update(item.value);
+          await writeAll(file, item.value, signal);
+        }
+      } finally {
+        try {
+          if (file) await file.close();
+        } finally {
+          try {
+            await cancel();
+          } finally {
+            reader.releaseLock();
+          }
+        }
+      }
+      return total;
+    },
+    {
+      timeoutMs: 120_000,
+      signal: context.signal,
+      redirects: {
+        allowedHosts: ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"],
+        maxRedirects: 5,
+      },
+    },
+  );
+  if (!bytes) throw new Error("下载为空");
+  context.signal.throwIfAborted();
+  if (hash.digest("hex") !== release.sha256) throw new Error("OpenList 安装包 SHA-256 校验失败");
+  const listing = await run(context, "tar", ["-tzf", archive], { timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
+  const members = listing.stdout.toString("utf8").split(/\r?\n/).filter(Boolean);
+  if (members.length !== 1 || members[0] !== "openlist") throw new Error("OpenList 安装包成员不符合预期");
+  const stage = path.join(directory, "release");
+  await mkdir(stage, { mode: 0o700 });
+  await run(
+    context,
+    "tar",
+    ["-xzf", archive, "-C", stage, "--no-same-owner", "--no-same-permissions", "--", "openlist"],
+    { timeoutMs: 120_000, maxOutputBytes: 64 * 1024 },
+  );
+  const binary = path.join(stage, "openlist");
+  if (!(await ordinary(binary, "file"))) throw new Error("OpenList 安装包缺少二进制文件");
+  return binary;
+}
+
+async function installOrUpdate(context: PluginContext, update: boolean, dependencies: Dependencies) {
+  if (process.platform !== "linux") throw new Error("此操作仅支持 Linux systemd");
+  const getReleaseBinary = dependencies.releaseBinary ?? releaseBinary,
+    pathIsOrdinary = dependencies.ordinary ?? ordinary;
+  let recovery: string | undefined,
+    keepRecovery = false;
+  try {
+    return await withBusinessTemp(context, update ? "update" : "install", async directory => {
+      const binary = await getReleaseBinary(context, directory),
+        service = path.join(directory, "openlist.service");
+      await writeFile(
+        service,
+        `[Unit]\nDescription=OpenList service\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory=${INSTALL}\nExecStart=${BIN} server\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n`,
+        { mode: 0o600 },
+      );
+      const data = `${INSTALL}/data`,
+        binExisted = await pathIsOrdinary(BIN, "file"),
+        serviceExisted = await pathIsOrdinary(SERVICE, "file"),
+        dataExisted = await pathIsOrdinary(data, "directory");
+      if (update && !binExisted) throw new Error("OpenList 尚未安装");
+      if (!update && binExisted) throw new Error("OpenList 已安装，请使用 update");
+      recovery = await context.files.dataDirectory(`recovery/${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+      keepRecovery = true;
+      const binBackup = path.join(recovery, "openlist.previous"),
+        serviceBackup = path.join(recovery, "openlist.service.previous"),
+        dataBackup = path.join(recovery, "data.previous");
+      if (binExisted) await run(context, "cp", ["-a", BIN, binBackup]);
+      if (serviceExisted) await run(context, "cp", ["-a", SERVICE, serviceBackup]);
+      if (dataExisted) await run(context, "cp", ["-a", data, dataBackup], { timeoutMs: 120_000 });
+      const wasActive = await serviceActive(context),
+        wasEnabled = await serviceEnabled(context);
+      let installed = false;
+      try {
+        if (wasActive) await run(context, "systemctl", ["stop", "openlist"]);
+        await run(context, "mkdir", ["-p", INSTALL]);
+        await run(context, "install", ["-m", "0755", binary, BIN]);
+        await run(context, "install", ["-m", "0644", service, SERVICE]);
+        installed = true;
+        await run(context, "systemctl", ["daemon-reload"]);
+        await run(context, "systemctl", ["enable", "--now", "openlist"], { timeoutMs: 30_000 });
+        if (!update) {
+          const result = await context.processes.run(BIN, ["admin", "random"], {
+            cwd: INSTALL,
+            timeoutMs: 30_000,
+            maxOutputBytes: 64 * 1024,
+          });
+          const output = result.stdout.toString() + "\n" + result.stderr.toString();
+          const username = output.match(/username:\s*(\S+)/i)?.[1],
+            password = output.match(/password:\s*(\S+)/i)?.[1];
+          if (!username || !password) throw new Error("OpenList 初始账号信息未能读取");
+          let port = 5244;
+          try {
+            const document = JSON.parse(await readFile(`${INSTALL}/data/config.json`, "utf8"));
+            port = activePort({ port: Number(document?.scheme?.http_port) });
+          } catch {}
+          await store(context).update(value => ({ ...value, username, password, port }));
+        }
+      } catch (error) {
+        keepRecovery = true;
+        const steps: Array<() => Promise<unknown>> = [];
+        if (installed) steps.push(() => run(context, "systemctl", ["disable", "--now", "openlist"]));
+        steps.push(
+          binExisted
+            ? () => run(context, "install", ["-m", "0755", binBackup, BIN])
+            : () => run(context, "rm", ["-f", BIN]),
+        );
+        steps.push(
+          serviceExisted
+            ? () => run(context, "install", ["-m", "0644", serviceBackup, SERVICE])
+            : () => run(context, "rm", ["-f", SERVICE]),
+        );
+        if (dataExisted)
+          steps.push(async () => {
+            await run(context, "rm", ["-rf", data]);
+            await run(context, "cp", ["-a", dataBackup, data], { timeoutMs: 120_000 });
+          });
+        else steps.push(() => run(context, "rm", ["-rf", data]));
+        steps.push(() => run(context, "systemctl", ["daemon-reload"]));
+        if (serviceExisted) {
+          steps.push(() => run(context, "systemctl", [wasEnabled ? "enable" : "disable", "openlist"]));
+          steps.push(() => run(context, "systemctl", [wasActive ? "start" : "stop", "openlist"]));
+        }
+        try {
+          await rethrowAfterRollback(error, steps);
+        } catch (rolled) {
+          if (!context.signal.aborted && !failure(rolled).includes("回滚未完成")) {
+            try {
+              await run(context, "rm", ["-rf", recovery]);
+              keepRecovery = false;
+            } catch {}
+          }
+          throw rolled;
+        }
+      }
+      try {
+        await run(context, "rm", ["-rf", recovery]);
+        keepRecovery = false;
+      } catch {
+        context.log.error("openlist_recovery_snapshot_retained");
+      }
+      return update ? `OpenList ${VERSION} 更新完成。` : `OpenList ${VERSION} 安装完成。`;
+    });
+  } catch (error) {
+    if (keepRecovery) context.log.error("openlist_recovery_snapshot_retained");
+    throw error;
+  }
+}
+
+async function backup(context: PluginContext) {
+  await run(context, "mkdir", ["-p", BACKUPS]);
+  const stamp = (await run(context, "date", ["+%Y%m%d_%H%M%S_%3N"])).stdout.toString().trim();
+  if (!/^\d{8}_\d{6}_\d{3}$/.test(stamp)) throw new Error("无法生成安全备份名");
+  const directory = `${BACKUPS}/backup_${stamp}`;
+  await run(context, "mkdir", [directory]);
+  try {
+    await run(context, "cp", ["-a", `${INSTALL}/data`, directory], { timeoutMs: 120_000 });
+  } catch (error) {
+    return rethrowAfterRollback(error, [() => run(context, "rm", ["-rf", directory])]);
+  }
+  return `备份完成：<code>backup_${esc(stamp)}</code>`;
+}
+async function restore(context: PluginContext, name: string | undefined, pathIsOrdinary = ordinary) {
+  if (!/^backup_\d{8}_\d{6}(?:_\d{3})?$/.test(name ?? "")) throw new Error("请提供有效的 OpenList 备份名");
+  const root = path.resolve(BACKUPS),
+    source = path.resolve(BACKUPS, name!, "data");
+  if (!source.startsWith(`${root}${path.sep}`) || !(await pathIsOrdinary(source, "directory")))
+    throw new Error("备份不存在或路径无效");
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    stage = `${INSTALL}/data.mibot-stage-${suffix}`,
+    rollback = `${INSTALL}/data.mibot-rollback-${suffix}`,
+    current = `${INSTALL}/data`;
+  if (!(await pathIsOrdinary(current, "directory"))) throw new Error("OpenList 当前数据目录不存在");
+  const wasActive = await serviceActive(context);
+  let oldMoved = false,
+    newMoved = false,
+    startAttempted = false;
+  try {
+    await run(context, "cp", ["-a", source, stage], { timeoutMs: 120_000 });
+    if (!(await pathIsOrdinary(stage, "directory"))) throw new Error("备份暂存失败");
+    if (wasActive) await run(context, "systemctl", ["stop", "openlist"]);
+    await run(context, "mv", [current, rollback]);
+    oldMoved = true;
+    await run(context, "mv", [stage, current]);
+    newMoved = true;
+    startAttempted = true;
+    await run(context, "systemctl", ["start", "openlist"]);
+  } catch (error) {
+    const steps: Array<() => Promise<unknown>> = [];
+    if (startAttempted) steps.push(() => run(context, "systemctl", ["stop", "openlist"]));
+    if (newMoved) steps.push(() => run(context, "rm", ["-rf", current]));
+    if (oldMoved) steps.push(() => run(context, "mv", [rollback, current]));
+    if (!newMoved) steps.push(() => run(context, "rm", ["-rf", stage]));
+    if (wasActive) steps.push(() => run(context, "systemctl", ["start", "openlist"]));
+    return rethrowAfterRollback(error, steps);
+  }
+  try {
+    await run(context, "rm", ["-rf", rollback]);
+    return "OpenList 数据恢复完成。";
+  } catch {
+    context.log.error("openlist_restore_cleanup_failed");
+    return "OpenList 数据恢复完成，但旧数据回滚目录清理失败，请手动检查。";
+  }
+}
+
+const saved: NonNullable<CommandDefinition["authorize"]> = async (invocation, context) => {
+  if (invocation.message.saved) return true;
+  if (!context.signal.aborted)
+    await context.telegram.edit(invocation.message, "❌ 密码仅限在收藏夹中设置", { parseMode: "html" });
+  return false;
+};
+const execute =
+  (
+    operation: (invocation: CommandInvocation, context: PluginContext) => Promise<string>,
+  ): CommandDefinition["handle"] =>
+  async (invocation, context) => {
+    let result: string;
+    try {
+      result = await operation(invocation, context);
+    } catch (error) {
+      if (!context.signal.aborted) {
+        context.log.error("openlist_operation_failed");
+        await context.telegram.edit(invocation.message, `❌ ${esc(publicFailure(error))}`, { parseMode: "html" });
+      }
+      return;
+    }
+    context.signal.throwIfAborted();
+    try {
+      await context.telegram.edit(invocation.message, result, { parseMode: "html" });
+    } catch {
+      context.log.error("openlist_receipt_failed");
+      throw new Error("OPENLIST_RECEIPT_FAILED");
+    }
+  };
+type Exclusive = <T>(context: PluginContext, operation: () => Promise<T>) => Promise<T>;
+function commandDefinition(exclusive: Exclusive, dependencies: Dependencies): CommandDefinition {
+  let help!: (prefix: string) => string;
+  const guarded = (operation: (invocation: CommandInvocation, context: PluginContext) => Promise<string>) =>
+    execute((invocation, context) => exclusive(context, () => operation(invocation, context)));
+  const definition: CommandDefinition = {
+    description: "管理 OpenList 服务并上传 Telegram 媒体",
+    subcommandsCaseSensitive: false,
+    subcommands: {
+      status: { description: "查看服务状态", args: "", handle: execute((_i, context) => status(context)) },
+      install: {
+        description: `安装固定版本 OpenList ${VERSION} 并初始化账号`,
+        args: "",
+        handle: guarded((_i, context) => installOrUpdate(context, false, dependencies)),
+      },
+      update: {
+        description: `更新到固定版本 OpenList ${VERSION}`,
+        args: "",
+        handle: guarded((_i, context) => installOrUpdate(context, true, dependencies)),
+      },
+      uninstall: {
+        description: "卸载服务，保留数据目录",
+        args: "",
+        handle: guarded(async (_i, context) => {
+          await run(context, "systemctl", ["disable", "--now", "openlist"]).catch(() => undefined);
+          await run(context, "rm", ["-f", SERVICE]);
+          await run(context, "systemctl", ["daemon-reload"]);
+          return "OpenList 服务已卸载，数据目录保留。";
+        }),
+      },
+      login: {
+        description: "保存上传使用的账号信息",
+        args: "用户 密码",
+        authorize: saved,
+        help: [{ heading: "凭据：", body: "仅限收藏夹；密码支持空格，保存在本机插件数据目录。" }],
+        handle: execute(async (invocation, context) => {
+          if (!invocation.args[0] || !invocation.args[1]) throw new Error("用法：op login 用户 密码");
+          await store(context).update(value => ({
+            ...value,
+            username: invocation.args[0]!,
+            password: invocation.args.slice(1).join(" "),
+          }));
+          return "OpenList 账号已保存。";
+        }),
+      },
+      setdefault: {
+        description: "设置默认上传路径，省略时恢复默认",
+        args: "[路径]",
+        handle: execute(async (invocation, context) => {
+          const value = invocation.args.join(" ");
+          if (value) safePath(value);
+          await store(context).update(current => ({ ...current, defaultPath: value }));
+          return "默认上传路径已更新。";
+        }),
+      },
+      save: {
+        description: "上传回复的媒体到指定或默认目录",
+        args: "[路径]",
+        examples: [{ args: "save /media", description: "回复媒体后上传到指定挂载目录" }],
+        help: [
+          {
+            heading: "上传：",
+            body: "单个媒体上限 2 GiB，上传接口连接本机 OpenList 当前端口（默认 5244），使用已保存的账号登录。",
+          },
+        ],
+        handle: execute((invocation, context) =>
+          save(context, invocation.message, invocation.args.join(" ") || undefined),
+        ),
+      },
+      admin: {
+        description: "管理账号并同步本机凭据",
+        subcommandsCaseSensitive: true,
+        subcommands: {
+          setuser: {
+            description: "修改用户名",
+            args: "用户名",
+            handle: guarded((invocation, context) => admin(context, "setuser", invocation.args.join(" "))),
+          },
+          setpass: {
+            description: "修改密码，仅限收藏夹",
+            args: "密码",
+            authorize: saved,
+            handle: guarded((invocation, context) => admin(context, "setpass", invocation.args.join(" "))),
+          },
+          random: {
+            description: "生成随机凭据，仅限收藏夹",
+            args: "",
+            authorize: saved,
+            handle: guarded((_invocation, context) => admin(context, "random")),
+          },
+        },
+        help: [{ heading: "说明：", body: "调用固定路径的 OpenList 管理命令，成功后同步凭据，密码不回显。" }],
+        handle: execute(async () => {
+          throw new Error("用法：op admin setuser|setpass|random");
+        }),
+      },
+      setport: {
+        description: "修改服务端口并重启",
+        args: "端口",
+        examples: [{ args: "setport 5255" }],
+        arguments: [
+          { name: "端口", required: true, description: "1–65535 的整数；修改成功后登录与媒体上传同步使用新端口" },
+        ],
+        handle: guarded((invocation, context) => setPort(context, invocation.args[0], dependencies)),
+      },
+      backup: {
+        description: "备份 OpenList 数据目录",
+        args: "",
+        handle: guarded((_invocation, context) => backup(context)),
+      },
+      restore: {
+        description: "原子恢复指定备份并重启服务",
+        args: "备份名",
+        handle: guarded((invocation, context) => restore(context, invocation.args[0], dependencies.ordinary)),
+      },
+    },
+    examples: [{ args: "install" }, { args: "status" }],
+    help: [
+      {
+        heading: "运行环境：",
+        body: `安装和更新固定为 ${VERSION}，校验官方 SHA-256 且只接受单一 openlist 归档成员。支持 Linux systemd，使用固定目录 /opt/openlist，备份位于 /opt/openlist_backups。`,
+      },
+      { heading: "命令别名：", body: "<code>{prefix}op</code> 与 <code>{prefix}openlist</code> 使用同一套命令。" },
+    ],
+    handle: execute(async invocation => help(invocation.prefix)),
+  };
+  help = (prefix: string) => renderCommandHelp("openlist", definition, { prefix, title: "⚙️ OpenList 管理" });
+  return definition;
+}
+
+export default function createOpenlist(dependencies: Dependencies = {}) {
+  let tail: Promise<void> = Promise.resolve();
+  const exclusive: Exclusive = (context, operation) => {
+    const task = tail
+      .catch(() => undefined)
+      .then(() => {
+        context.signal.throwIfAborted();
+        return operation();
+      });
+    tail = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    return task;
+  };
+  const definition = commandDefinition(exclusive, dependencies),
+    help = (prefix: string) => renderCommandHelp("openlist", definition, { prefix, title: "⚙️ OpenList 管理" });
+  return definePlugin({
+    renderHelp: help,
+    apiVersion: STRUCTURED_PLUGIN_API_VERSION,
+    id: "openlist",
+    description: `OpenList ${VERSION} 安装、凭据、备份和媒体上传`,
+    resources: { processes: { concurrency: 1, queueCapacity: 4, timeoutMs: 120_000, maxOutputBytes: 262144 } },
+    commands: { openlist: definition, op: definition },
+    settings: context => ({
+      id: "openlist",
+      title: "OpenList",
+      category: "插件配置",
+      icon: "📁",
+      getSchema: () => [
+        { key: "username", label: "用户名", type: "string" },
+        { key: "password", label: "密码", type: "password", secret: true },
+        { key: "defaultPath", label: "默认上传路径", type: "string" },
+      ],
+      getValues: async () => {
+        const value = await store(context).read();
+        return { username: value.username, password: value.password, defaultPath: value.defaultPath };
+      },
+      async setValues(patch) {
+        await store(context).update(value => {
+          const defaultPath = typeof patch.defaultPath === "string" ? patch.defaultPath : value.defaultPath;
+          if (defaultPath) safePath(defaultPath);
+          return {
+            ...value,
+            username: typeof patch.username === "string" ? patch.username : value.username,
+            password: typeof patch.password === "string" ? patch.password : value.password,
+            defaultPath,
+          };
+        });
+      },
+    }),
+    setup: migrate,
+    cleanup() {
+      tail = Promise.resolve();
+    },
+  });
+}

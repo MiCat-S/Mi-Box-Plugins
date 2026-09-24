@@ -49,15 +49,16 @@ export function pick(list: readonly string[]): string {
 }
 
 /** Random output-length style, mirroring the original plugin's distribution. */
-export function styleFor(): {maxSentences: number; style: string} {
+export function styleFor(): { maxSentences: number; style: string } {
   const roll = Math.random();
   const maxSentences = roll < 0.65 ? 1 : roll < 0.92 ? 2 : 3;
-  const style = maxSentences === 1
-    ? "本次只输出一句话，短平快，一针见血，别超过25字，写完就收工。"
-    : maxSentences === 2
-      ? "本次输出两句连击，每句都得见血，别超过60字。"
-      : "本次输出三句连招，句句带杀，别超过90字。";
-  return {maxSentences, style};
+  const style =
+    maxSentences === 1
+      ? "本次只输出一句话，短平快，一针见血，别超过25字，写完就收工。"
+      : maxSentences === 2
+        ? "本次输出两句连击，每句都得见血，别超过60字。"
+        : "本次输出三句连招，句句带杀，别超过90字。";
+  return { maxSentences, style };
 }
 
 const REASONING = /(方案|思路|简化|结合|分析|草稿|步骤|首先|其次|总结|说明|注意|免责|提醒)/;

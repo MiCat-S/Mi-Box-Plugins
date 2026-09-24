@@ -7,9 +7,7 @@ const vm = require("node:vm");
 
 const repoRoot = path.resolve(__dirname, "..");
 const coreRoot = path.resolve(repoRoot, "../TeleBox-Core");
-const esbuild = require(
-  require.resolve("esbuild", { paths: [repoRoot, coreRoot] }),
-);
+const esbuild = require(require.resolve("esbuild", { paths: [repoRoot, coreRoot] }));
 
 function loadSnippet(file, startMarker, endMarker, prelude, exportsExpression) {
   const source = fs.readFileSync(path.join(repoRoot, file), "utf8");
@@ -110,25 +108,25 @@ const { cronDisposers, deletedCronKeys, unregisterScheduledTask } = loadSnippet(
 );
 
 test("non-stream requests remove external abort forwarding after completion", async () => {
-  const middleware = new TimeoutMiddleware(
-    Promise.resolve({ getConfig: () => ({ timeout: 1 }) }),
-  );
+  const middleware = new TimeoutMiddleware(Promise.resolve({ getConfig: () => ({ timeout: 1 }) }));
   const external = createAbortToken();
   let combined;
 
-  await middleware.process({}, async (_input, token) => {
-    combined = token;
-    return { data: { ok: true } };
-  }, external);
+  await middleware.process(
+    {},
+    async (_input, token) => {
+      combined = token;
+      return { data: { ok: true } };
+    },
+    external,
+  );
 
   external.abort("late cancel");
   assert.equal(combined.aborted, false);
 });
 
 test("stream timeout stays active until the response body closes", async () => {
-  const middleware = new TimeoutMiddleware(
-    Promise.resolve({ getConfig: () => ({ timeout: 0.02 }) }),
-  );
+  const middleware = new TimeoutMiddleware(Promise.resolve({ getConfig: () => ({ timeout: 0.02 }) }));
   const stream = new FakeStream();
   let combined;
 
@@ -137,7 +135,7 @@ test("stream timeout stays active until the response body closes", async () => {
     return { data: stream };
   });
 
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(combined.aborted, true);
   assert.match(combined.reason, /request timeout|请求超时/i);
   assert.equal(stream.listenerCount("end"), 0);
@@ -146,21 +144,23 @@ test("stream timeout stays active until the response body closes", async () => {
 });
 
 test("stream completion clears timeout and abort forwarding", async () => {
-  const middleware = new TimeoutMiddleware(
-    Promise.resolve({ getConfig: () => ({ timeout: 0.02 }) }),
-  );
+  const middleware = new TimeoutMiddleware(Promise.resolve({ getConfig: () => ({ timeout: 0.02 }) }));
   const external = createAbortToken();
   const stream = new FakeStream();
   let combined;
 
-  await middleware.process({}, async (_input, token) => {
-    combined = token;
-    return { data: stream };
-  }, external);
+  await middleware.process(
+    {},
+    async (_input, token) => {
+      combined = token;
+      return { data: stream };
+    },
+    external,
+  );
 
   stream.emit("end");
   external.abort("late cancel");
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(combined.aborted, false);
 });
 
@@ -168,9 +168,10 @@ test("summary task lock skips overlap and releases after completion", async () =
   let releaseFirst;
   const first = runSummaryTaskOnce(
     "task-1",
-    () => new Promise((resolve) => {
-      releaseFirst = resolve;
-    }),
+    () =>
+      new Promise(resolve => {
+        releaseFirst = resolve;
+      }),
   );
 
   assert.equal(await runSummaryTaskOnce("task-1", async () => "overlap"), null);

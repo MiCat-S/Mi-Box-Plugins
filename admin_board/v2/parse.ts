@@ -3,7 +3,14 @@
 export function getTextAfterTokens(text: string, count: number): string {
   if (count <= 0) return text.trim();
   return text
-    .replace(new RegExp(`^\\S+${Array(count - 1).fill("\\s+\\S+").join("")}`), "")
+    .replace(
+      new RegExp(
+        `^\\S+${Array(count - 1)
+          .fill("\\s+\\S+")
+          .join("")}`,
+      ),
+      "",
+    )
     .trim();
 }
 
@@ -39,41 +46,41 @@ export function parseUserIdentifiers(raw: string): string[] | null {
   return Array.from(deduped.values());
 }
 
-export function parseSeatActionArgs(remainder: string): {identifiers: string[]; targetArg?: string} {
+export function parseSeatActionArgs(remainder: string): { identifiers: string[]; targetArg?: string } {
   const tokens = remainder.trim().split(/\s+/).filter(Boolean);
   const identifiers = parseUserIdentifiers(remainder);
-  if (identifiers) return {identifiers};
+  if (identifiers) return { identifiers };
 
   if (tokens.length > 1) {
     const targetArg = tokens[tokens.length - 1];
     const targetlessIdentifiers = parseUserIdentifiers(tokens.slice(0, -1).join(" "));
-    if (targetlessIdentifiers) return {identifiers: targetlessIdentifiers, targetArg};
+    if (targetlessIdentifiers) return { identifiers: targetlessIdentifiers, targetArg };
   }
 
-  return {identifiers: []};
+  return { identifiers: [] };
 }
 
-export function parseTailArgs(remainder: string): {limit: number; targetArg?: string} {
+export function parseTailArgs(remainder: string): { limit: number; targetArg?: string } {
   const trimmed = remainder.trim();
-  if (!trimmed) return {limit: 10};
+  if (!trimmed) return { limit: 10 };
 
   const tokens = trimmed.split(/\s+/).filter(Boolean);
   const firstToken = tokens[0] || "";
   if (/^[1-9]\d*$/.test(firstToken)) {
     const targetArg = tokens.slice(1).join(" ").trim();
-    return {limit: Number(firstToken), targetArg: targetArg || undefined};
+    return { limit: Number(firstToken), targetArg: targetArg || undefined };
   }
-  return {limit: 10, targetArg: trimmed};
+  return { limit: 10, targetArg: trimmed };
 }
 
-export function parseTrimArgs(remainder: string): {limit?: number; targetArg?: string} {
+export function parseTrimArgs(remainder: string): { limit?: number; targetArg?: string } {
   const trimmed = remainder.trim();
   if (!trimmed) return {};
   const tokens = trimmed.split(/\s+/).filter(Boolean);
   const firstToken = tokens[0] || "";
   if (!/^[1-9]\d*$/.test(firstToken)) return {};
   const targetArg = tokens.slice(1).join(" ").trim();
-  return {limit: Number(firstToken), targetArg: targetArg || undefined};
+  return { limit: Number(firstToken), targetArg: targetArg || undefined };
 }
 
 /** Maps known Telegram failures to user text; unknown internals stay generic. */

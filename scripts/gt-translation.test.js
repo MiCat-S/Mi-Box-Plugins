@@ -6,41 +6,56 @@ const vm = require("node:vm");
 const { getEventListeners } = require("node:events");
 
 const root = path.resolve(__dirname, "..");
-const esbuild = require(require.resolve("esbuild", {
-  paths: [root, path.resolve(root, "../TeleBox-Core")],
-}));
+const esbuild = require(
+  require.resolve("esbuild", {
+    paths: [root, path.resolve(root, "../TeleBox-Core")],
+  }),
+);
 
 function compile(source, mocks = {}) {
   const module = { exports: {} };
-  vm.runInNewContext(esbuild.transformSync(source, {
-    loader: "ts", format: "cjs", target: "es2022",
-  }).code, {
-    module, exports: module.exports, AbortController, console,
-    require(name) {
-      assert.ok(name in mocks, `unexpected dependency: ${name}`);
-      return mocks[name];
+  vm.runInNewContext(
+    esbuild.transformSync(source, {
+      loader: "ts",
+      format: "cjs",
+      target: "es2022",
+    }).code,
+    {
+      module,
+      exports: module.exports,
+      AbortController,
+      console,
+      require(name) {
+        assert.ok(name in mocks, `unexpected dependency: ${name}`);
+        return mocks[name];
+      },
     },
-  });
+  );
   return module.exports;
 }
 
 function loadGt(ai, reply) {
   return compile(fs.readFileSync(path.join(root, "gt/gt.ts"), "utf8"), {
     "@utils/pluginBase": { Plugin: class {} },
-    "@utils/pluginManager": { getPluginEntry: () => ai ? { plugin: ai } : undefined },
+    "@utils/pluginManager": { getPluginEntry: () => (ai ? { plugin: ai } : undefined) },
     "@utils/safeGetMessages": { safeGetReplyMessage: async () => reply },
     "@utils/htmlEscape": {
-      htmlEscape: (text) => String(text).replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+      htmlEscape: text => String(text).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
     },
   }).default;
 }
 
 function message(text) {
   return {
-    message: text, edits: [], replies: [],
-    async edit(options) { this.edits.push(options); },
-    async reply(options) { this.replies.push(options); },
+    message: text,
+    edits: [],
+    replies: [],
+    async edit(options) {
+      this.edits.push(options);
+    },
+    async reply(options) {
+      this.replies.push(options);
+    },
   };
 }
 
@@ -54,7 +69,10 @@ test("help works without AI and describes the configured service", async () => {
 test("direct translation preserves paragraphs and escapes HTML", async () => {
   let request;
   const plugin = loadGt({
-    async translateText(...args) { request = args; return "<你好>&"; },
+    async translateText(...args) {
+      request = args;
+      return "<你好>&";
+    },
   });
   const msg = message(".gt Hello\n\nworld");
   await plugin.cmdHandlers.gt(msg);
@@ -66,9 +84,15 @@ test("direct translation preserves paragraphs and escapes HTML", async () => {
 
 test("English target supports whitespace and reply text", async () => {
   let request;
-  const plugin = loadGt({
-    async translateText(...args) { request = args; return "Hello"; },
-  }, { text: "你好\n世界" });
+  const plugin = loadGt(
+    {
+      async translateText(...args) {
+        request = args;
+        return "Hello";
+      },
+    },
+    { text: "你好\n世界" },
+  );
   await plugin.cmdHandlers.gt(message(".gt\tEN"));
   assert.equal(request[0], "你好\n世界");
   assert.equal(request[1], "en");
@@ -76,7 +100,9 @@ test("English target supports whitespace and reply text", async () => {
 
 test("missing text and oversized input do not invoke AI", async () => {
   const plugin = loadGt({
-    async translateText() { assert.fail("unexpected AI invocation"); },
+    async translateText() {
+      assert.fail("unexpected AI invocation");
+    },
   });
   const empty = message(".gt");
   await plugin.cmdHandlers.gt(empty);
@@ -99,15 +125,17 @@ test("long output is split without losing surrogate pairs", async () => {
   const msg = message(".gt Hello");
   await loadGt({ translateText: async () => output }).cmdHandlers.gt(msg);
   const first = msg.edits.at(-1).text.split("<b>译文:</b>\n")[1];
-  const chunks = [first, ...msg.replies.map((item) => item.message)];
+  const chunks = [first, ...msg.replies.map(item => item.message)];
   assert.equal(chunks.join(""), output);
-  assert.ok(chunks.every((chunk) => chunk.length <= 3000));
+  assert.ok(chunks.every(chunk => chunk.length <= 3000));
   assert.equal(chunks[1].startsWith("😀"), true);
 });
 
 test("provider failures and empty output do not leak sensitive errors", async () => {
   for (const translateText of [
-    async () => { throw new Error("secret-api-key"); },
+    async () => {
+      throw new Error("secret-api-key");
+    },
     async () => " ",
   ]) {
     const plugin = loadGt({ translateText });
@@ -121,11 +149,13 @@ test("provider failures and empty output do not leak sensitive errors", async ()
 
 test("unloading gt cancels pending translation and suppresses late output", async () => {
   let started;
-  const ready = new Promise((resolve) => { started = resolve; });
+  const ready = new Promise(resolve => {
+    started = resolve;
+  });
   const plugin = loadGt({
     translateText(_text, _target, signal) {
       started();
-      return new Promise((resolve) => {
+      return new Promise(resolve => {
         signal.addEventListener("abort", () => resolve("late"), { once: true });
       });
     },
@@ -167,7 +197,14 @@ test("translation prompt overrides only the per-request chat prompt", async () =
   const service = new ServiceHarness();
   service.getCurrentProviderConfig = async () => ({ providerConfig: {}, model: "test", config });
   service.resolveMode = () => ({ modeConfig: { strategy: "test" } });
-  service.strategyHandlers = { test: { chat: async (ctx) => { captured = ctx; return {}; } } };
+  service.strategyHandlers = {
+    test: {
+      chat: async ctx => {
+        captured = ctx;
+        return {};
+      },
+    },
+  };
   await service.callAI("source", [], undefined, "translate only");
   assert.equal(captured.config.prompt, "translate only");
   assert.equal(captured.config.currentChatReasoningEffort, "low");
@@ -181,7 +218,7 @@ function translationHarness(callAI) {
   let released = 0;
   const controller = new AbortController();
   const token = {
-    abort: (reason) => controller.abort(reason),
+    abort: reason => controller.abort(reason),
     throwIfAborted: () => controller.signal.throwIfAborted(),
   };
   harness.aiService = {
@@ -225,7 +262,12 @@ test("AI translation releases resources on failure and pre-cancellation", async 
 
 test("AI translation forwards cancellation and rejects a late result", async () => {
   let finish;
-  const fixture = translationHarness(() => new Promise((resolve) => { finish = resolve; }));
+  const fixture = translationHarness(
+    () =>
+      new Promise(resolve => {
+        finish = resolve;
+      }),
+  );
   const controller = new AbortController();
   const task = fixture.harness.translateText("text", "zh-CN", controller.signal);
   controller.abort();
@@ -238,15 +280,9 @@ test("AI translation forwards cancellation and rejects a late result", async () 
 
 test("AI translation rejects empty output and stopped service", async () => {
   const fixture = translationHarness(async () => ({ text: " " }));
-  await assert.rejects(
-    fixture.harness.translateText("text", "zh-CN", new AbortController().signal),
-    /结果为空/,
-  );
+  await assert.rejects(fixture.harness.translateText("text", "zh-CN", new AbortController().signal), /结果为空/);
   assert.equal(fixture.released(), 1);
   fixture.harness.cleanedUp = true;
-  await assert.rejects(
-    fixture.harness.translateText("text", "zh-CN", new AbortController().signal),
-    /服务已停止/,
-  );
+  await assert.rejects(fixture.harness.translateText("text", "zh-CN", new AbortController().signal), /服务已停止/);
   assert.equal(fixture.released(), 1);
 });

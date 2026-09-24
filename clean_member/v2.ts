@@ -1,42 +1,458 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
-import {randomUUID} from "node:crypto";
-import {basename} from "node:path";
-import {setTimeout as sleep} from "node:timers/promises";
+import { renderHelp as renderPluginHelp } from "./v2/help";
+import { definePlugin, type MessageEnvelope, type PluginContext } from "telebox/sdk";
+import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
-type UserInfo={id:string;username:string;first_name:string;last_name:string;is_deleted:boolean;last_online:string|null;error_message?:string};
-type CacheData={chat_id:string;chat_title:string;mode:string;day:number;search_time:string;total_found:number;users:UserInfo[];expiresAt:number};
-type State={schemaVersion:1;entries:Record<string,CacheData>};
-const esc=(v:unknown)=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]!);
-const store=(ctx:PluginContext)=>ctx.storage.json<State>("clean_member_cache.json",{schemaVersion:1,entries:{}});
-const modeName=(m:string,n:number)=>({"1":`未上线超过${n}天的用户`,"2":`未发言超过${n}天的用户`,"3":`发言少于${n}条的用户`,"4":"已注销的账户","5":"所有普通成员"}[m]||"未知");
-const help=(p:string)=>`<b>🧹 群成员清理工具 Pro</b>\n\n<code>${esc(p)}clean_member ＜模式＞ ＜参数＞ [chat:-100xxx] [limit:数量] [search]</code>\n\n1 未上线超过N天 · 2 未发言超过N天 · 3 发言少于N条\n4 已注销账户 · 5 所有普通成员\nsearch 仅搜索；limit:N 限制移出人数。`;
-const csv=(d:CacheData,failed=false)=>{const q=(v:unknown)=>{let value=String(v??"");if(/^[=+\-@\t\r]/.test(value))value=`'${value}`;return`"${value.replaceAll('"','""')}"`;};const rows=[[failed?"群组清理失败用户报告":"群组清理报告"],["群组名称",d.chat_title],["群组ID",d.chat_id],["清理条件",modeName(d.mode,d.day)],["搜索时间",d.search_time],["符合条件用户数量",String(d.total_found)],[],["用户ID","用户名","姓名","最后上线时间","是否注销",...(failed?["失败原因"]:[])],...d.users.map(u=>[u.id,u.username,`${u.first_name} ${u.last_name}`.trim(),u.last_online||"未知",u.is_deleted?"是":"否",...(failed?[u.error_message||""]:[])])];return "\ufeff"+rows.map(r=>r.map(q).join(",")).join("\n");};
-async function saveReport(ctx:PluginContext,d:CacheData,failed=false,signal=ctx.signal){const {writeFile}=await import("node:fs/promises");const name=`${failed?"failed":"report"}_${d.chat_id}_${d.mode}_${d.day}_${Date.now()}_${randomUUID()}.csv`;const path=await ctx.files.dataFile(name);signal.throwIfAborted();await writeFile(path,csv(d,failed),{encoding:"utf8",signal,flag:"wx",mode:0o600});signal.throwIfAborted();return path;}
-function lastDays(u:any){const s=u.status;if(!s)return null;if(["UserStatusOnline","UserStatusRecently"].includes(s.className))return 0;if(s.className==="UserStatusOffline"&&s.wasOnline)return Math.floor((Date.now()-Number(s.wasOnline)*1000)/86400000);if(s.className==="UserStatusLastWeek")return 7;if(s.className==="UserStatusLastMonth")return 30;return null;}
-async function isAdmin(client:any,chat:any,Api:any,signal:AbortSignal){try{await client.getMe();signal.throwIfAborted();if(chat.className==="Chat")return !!chat.creator||!!chat.adminRights;const p=(await client.invoke(new Api.channels.GetParticipant({channel:chat,participant: new Api.InputPeerSelf()}))).participant;signal.throwIfAborted();return p?.className==="ChannelParticipantCreator"||(p?.className==="ChannelParticipantAdmin"&&!!p.adminRights?.banUsers);}catch(error){if(signal.aborted)throw error;return false;}}
+type UserInfo = {
+  id: string;
+  username: string;
+  first_name: string;
+  last_name: string;
+  is_deleted: boolean;
+  last_online: string | null;
+  error_message?: string;
+};
+type CacheData = {
+  chat_id: string;
+  chat_title: string;
+  mode: string;
+  day: number;
+  search_time: string;
+  total_found: number;
+  users: UserInfo[];
+  expiresAt: number;
+};
+type State = { schemaVersion: 1; entries: Record<string, CacheData> };
+const esc = (v: unknown) =>
+  String(v ?? "").replace(
+    /[&<>"']/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+  );
+const store = (ctx: PluginContext) =>
+  ctx.storage.json<State>("clean_member_cache.json", { schemaVersion: 1, entries: {} });
+const modeName = (m: string, n: number) =>
+  ({
+    "1": `未上线超过${n}天的用户`,
+    "2": `未发言超过${n}天的用户`,
+    "3": `发言少于${n}条的用户`,
+    "4": "已注销的账户",
+    "5": "所有普通成员",
+  })[m] || "未知";
+const help = (p: string) =>
+  `<b>🧹 群成员清理工具 Pro</b>\n\n<code>${esc(p)}clean_member ＜模式＞ ＜参数＞ [chat:-100xxx] [limit:数量] [search]</code>\n\n1 未上线超过N天 · 2 未发言超过N天 · 3 发言少于N条\n4 已注销账户 · 5 所有普通成员\nsearch 仅搜索；limit:N 限制移出人数。`;
+const csv = (d: CacheData, failed = false) => {
+  const q = (v: unknown) => {
+    let value = String(v ?? "");
+    if (/^[=+\-@\t\r]/.test(value)) value = `'${value}`;
+    return `"${value.replaceAll('"', '""')}"`;
+  };
+  const rows = [
+    [failed ? "群组清理失败用户报告" : "群组清理报告"],
+    ["群组名称", d.chat_title],
+    ["群组ID", d.chat_id],
+    ["清理条件", modeName(d.mode, d.day)],
+    ["搜索时间", d.search_time],
+    ["符合条件用户数量", String(d.total_found)],
+    [],
+    ["用户ID", "用户名", "姓名", "最后上线时间", "是否注销", ...(failed ? ["失败原因"] : [])],
+    ...d.users.map(u => [
+      u.id,
+      u.username,
+      `${u.first_name} ${u.last_name}`.trim(),
+      u.last_online || "未知",
+      u.is_deleted ? "是" : "否",
+      ...(failed ? [u.error_message || ""] : []),
+    ]),
+  ];
+  return "\ufeff" + rows.map(r => r.map(q).join(",")).join("\n");
+};
+async function saveReport(ctx: PluginContext, d: CacheData, failed = false, signal = ctx.signal) {
+  const { writeFile } = await import("node:fs/promises");
+  const name = `${failed ? "failed" : "report"}_${d.chat_id}_${d.mode}_${d.day}_${Date.now()}_${randomUUID()}.csv`;
+  const path = await ctx.files.dataFile(name);
+  signal.throwIfAborted();
+  await writeFile(path, csv(d, failed), { encoding: "utf8", signal, flag: "wx", mode: 0o600 });
+  signal.throwIfAborted();
+  return path;
+}
+function lastDays(u: any) {
+  const s = u.status;
+  if (!s) return null;
+  if (["UserStatusOnline", "UserStatusRecently"].includes(s.className)) return 0;
+  if (s.className === "UserStatusOffline" && s.wasOnline)
+    return Math.floor((Date.now() - Number(s.wasOnline) * 1000) / 86400000);
+  if (s.className === "UserStatusLastWeek") return 7;
+  if (s.className === "UserStatusLastMonth") return 30;
+  return null;
+}
+async function isAdmin(client: any, chat: any, Api: any, signal: AbortSignal) {
+  try {
+    await client.getMe();
+    signal.throwIfAborted();
+    if (chat.className === "Chat") return !!chat.creator || !!chat.adminRights;
+    const p = (
+      await client.invoke(new Api.channels.GetParticipant({ channel: chat, participant: new Api.InputPeerSelf() }))
+    ).participant;
+    signal.throwIfAborted();
+    return (
+      p?.className === "ChannelParticipantCreator" ||
+      (p?.className === "ChannelParticipantAdmin" && !!p.adminRights?.banUsers)
+    );
+  } catch (error) {
+    if (signal.aborted) throw error;
+    return false;
+  }
+}
 
-const errorCode=(error:unknown)=>String((error as any)?.errorMessage??(error as any)?.message??"");
-const failureReason=(error:unknown)=>/CHAT_ADMIN_REQUIRED/.test(errorCode(error))?"权限不足":/FLOOD_WAIT/.test(errorCode(error))?"请求频率受限":"移出失败";
-async function floodWait(seconds:number,signal:AbortSignal):Promise<void>{if(!Number.isSafeInteger(seconds)||seconds<1||seconds>86400)throw new Error("invalid_flood_wait");let remaining=seconds*1000;while(remaining>0){signal.throwIfAborted();const interval=Math.min(remaining,60_000);await sleep(interval,undefined,{signal});remaining-=interval;}signal.throwIfAborted();}
-async function removeMember(client:any,channel:any,user:any,Api:any,signal:AbortSignal):Promise<void>{const input=await client.getInputEntity(user).catch(()=>new Api.InputPeerUser({userId:user.id,accessHash:user.accessHash??0 as any}));signal.throwIfAborted();for(let attempt=0;attempt<3;attempt++){try{await client.invoke(new Api.channels.EditBanned({channel,participant:input,bannedRights:new Api.ChatBannedRights({untilDate:Math.floor(Date.now()/1000)+60,viewMessages:true,sendMessages:true,sendMedia:true,sendStickers:true,sendGifs:true,sendGames:true,sendInline:true,sendPolls:true,changeInfo:true,inviteUsers:true,pinMessages:true})}));signal.throwIfAborted();await sleep(2000,undefined,{signal});await client.invoke(new Api.channels.EditBanned({channel,participant:input,bannedRights:new Api.ChatBannedRights({untilDate:0,viewMessages:false,sendMessages:false,sendMedia:false,sendStickers:false,sendGifs:false,sendGames:false,sendInline:false,sendPolls:false,changeInfo:false,inviteUsers:false,pinMessages:false})}));signal.throwIfAborted();return;}catch(error){signal.throwIfAborted();const code=errorCode(error);if(/USER_NOT_PARTICIPANT/.test(code))return;const wait=/FLOOD_WAIT[^0-9]*(\d+)/.exec(code);if(!wait||attempt===2)throw error;await floodWait(Number(wait[1]),signal);}}}
+const errorCode = (error: unknown) => String((error as any)?.errorMessage ?? (error as any)?.message ?? "");
+const failureReason = (error: unknown) =>
+  /CHAT_ADMIN_REQUIRED/.test(errorCode(error))
+    ? "权限不足"
+    : /FLOOD_WAIT/.test(errorCode(error))
+      ? "请求频率受限"
+      : "移出失败";
+async function floodWait(seconds: number, signal: AbortSignal): Promise<void> {
+  if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 86400) throw new Error("invalid_flood_wait");
+  let remaining = seconds * 1000;
+  while (remaining > 0) {
+    signal.throwIfAborted();
+    const interval = Math.min(remaining, 60_000);
+    await sleep(interval, undefined, { signal });
+    remaining -= interval;
+  }
+  signal.throwIfAborted();
+}
+async function removeMember(client: any, channel: any, user: any, Api: any, signal: AbortSignal): Promise<void> {
+  const input = await client
+    .getInputEntity(user)
+    .catch(() => new Api.InputPeerUser({ userId: user.id, accessHash: user.accessHash ?? (0 as any) }));
+  signal.throwIfAborted();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await client.invoke(
+        new Api.channels.EditBanned({
+          channel,
+          participant: input,
+          bannedRights: new Api.ChatBannedRights({
+            untilDate: Math.floor(Date.now() / 1000) + 60,
+            viewMessages: true,
+            sendMessages: true,
+            sendMedia: true,
+            sendStickers: true,
+            sendGifs: true,
+            sendGames: true,
+            sendInline: true,
+            sendPolls: true,
+            changeInfo: true,
+            inviteUsers: true,
+            pinMessages: true,
+          }),
+        }),
+      );
+      signal.throwIfAborted();
+      await sleep(2000, undefined, { signal });
+      await client.invoke(
+        new Api.channels.EditBanned({
+          channel,
+          participant: input,
+          bannedRights: new Api.ChatBannedRights({
+            untilDate: 0,
+            viewMessages: false,
+            sendMessages: false,
+            sendMedia: false,
+            sendStickers: false,
+            sendGifs: false,
+            sendGames: false,
+            sendInline: false,
+            sendPolls: false,
+            changeInfo: false,
+            inviteUsers: false,
+            pinMessages: false,
+          }),
+        }),
+      );
+      signal.throwIfAborted();
+      return;
+    } catch (error) {
+      signal.throwIfAborted();
+      const code = errorCode(error);
+      if (/USER_NOT_PARTICIPANT/.test(code)) return;
+      const wait = /FLOOD_WAIT[^0-9]*(\d+)/.exec(code);
+      if (!wait || attempt === 2) throw error;
+      await floodWait(Number(wait[1]), signal);
+    }
+  }
+}
 
-async function adminIds(client:any,channel:any,Api:any,signal:AbortSignal):Promise<Set<string>>{const ids=new Set<string>();for(let offset=0;;offset+=200){signal.throwIfAborted();const result:any=await client.invoke(new Api.channels.GetParticipants({channel,filter:new Api.ChannelParticipantsAdmins(),offset,limit:200,hash:0 as any}));signal.throwIfAborted();const page:any[]=result.users||[];for(const user of page)ids.add(String(user.id));if(page.length<200)return ids;if(offset>=50000)throw new Error("管理员列表超过支持范围");}}
+async function adminIds(client: any, channel: any, Api: any, signal: AbortSignal): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (let offset = 0; ; offset += 200) {
+    signal.throwIfAborted();
+    const result: any = await client.invoke(
+      new Api.channels.GetParticipants({
+        channel,
+        filter: new Api.ChannelParticipantsAdmins(),
+        offset,
+        limit: 200,
+        hash: 0 as any,
+      }),
+    );
+    signal.throwIfAborted();
+    const page: any[] = result.users || [];
+    for (const user of page) ids.add(String(user.id));
+    if (page.length < 200) return ids;
+    if (offset >= 50000) throw new Error("管理员列表超过支持范围");
+  }
+}
 
-async function entityTarget(value:unknown){if(typeof value==="string"&&/^-?\d+$/.test(value))return(await import("teleproto/Helpers.js")).returnBigInt(value);return value;}
+async function entityTarget(value: unknown) {
+  if (typeof value === "string" && /^-?\d+$/.test(value))
+    return (await import("teleproto/Helpers.js")).returnBigInt(value);
+  return value;
+}
 
-async function command(message:MessageEnvelope,args:readonly string[],prefix:string,ctx:PluginContext){const mode=(args[0]||"").toLowerCase();if(!mode||["help","h"].includes(mode)){await ctx.telegram.edit(message,help(prefix),{parseMode:"html"});return;}if(!/^[1-5]$/.test(mode)){await ctx.telegram.edit(message,`❌ <b>未知模式</b>\n\n支持模式: 1-5\n\n${help(prefix)}`,{parseMode:"html"});return;}
-  let day=0;if(["1","2","3"].includes(mode)){day=Number(args[1]);if(!Number.isInteger(day)||day<1){await ctx.telegram.edit(message,`❌ <b>参数错误</b>\n\n${mode==="3"?"发言数":"天数"}必须为正整数`,{parseMode:"html"});return;}if(mode!=="3")day=Math.max(day,7);}
-  const search=args.some(x=>x.toLowerCase()==="search"),limitRaw=args.find(x=>/^limit:/i.test(x))?.split(":")[1],limit=limitRaw?Number(limitRaw):undefined;if(limitRaw&&(!Number.isInteger(limit)||(limit??0)<=0)){await ctx.telegram.edit(message,"❌ limit 必须为正整数");return;}const target=args.find(x=>/^chat:/i.test(x))?.slice(5);
-  await ctx.telegram.withClient(async(client:any,signal)=>{const {Api}=await import("teleproto");const raw:any=message.raw;let chat:any;try{chat=await client.getEntity(await entityTarget(target||raw?.peerId||message.chatId));signal.throwIfAborted();}catch(error){if(signal.aborted)throw error;await ctx.telegram.edit(message,"❌ <b>错误：</b>无法访问指定群组",{parseMode:"html"});return;}if(!["Channel","Chat"].includes(chat.className)){await ctx.telegram.edit(message,"❌ 无法获取群组ID，请在群组中使用或指定chat参数");return;}if(!search&&!await isAdmin(client,chat,Api,signal)){signal.throwIfAborted();await ctx.telegram.edit(message,"❌ 权限不足，需要封禁成员权限",{parseMode:"html"});return;}signal.throwIfAborted();const channel=await client.getInputEntity(chat);signal.throwIfAborted();const chatId=String(chat.id),title=chat.title||"当前群组",key=`${chatId}_${mode}_${day}`;
-    if(search){const state=await store(ctx).read(signal),cached=state.entries[key];if(cached&&cached.expiresAt>Date.now()){const path=await saveReport(ctx,cached);await ctx.telegram.edit(message,`✅ 搜索完成（缓存）\n\n📊 找到 ${cached.total_found} 名符合条件用户\n📁 报告: <code>${esc(basename(path))}</code>`,{parseMode:"html"});return;}}
-    await ctx.telegram.edit(message,`📋 <b>群组清理任务启动</b>\n\n🏷️ 群组: <b>${esc(title)}</b>\n🎯 开始${search?"搜索":"清理"}: ${esc(modeName(mode,day))}`,{parseMode:"html"});
-    let admins:Set<string>;try{admins=chat.className==="Channel"?await adminIds(client,channel,Api,signal):new Set();}catch(error){if(signal.aborted)throw error;if(!search){await ctx.telegram.edit(message,"❌ 无法完整获取管理员列表，已停止清理");return;}admins=new Set();ctx.log.error("clean_member:admin-list");}let offset=0,scanned=0,removed=0;const users:UserInfo[]=[],failed:UserInfo[]=[];let stop=false;
-    while(!stop){signal.throwIfAborted();const r:any=await client.invoke(new Api.channels.GetParticipants({channel,filter:new Api.ChannelParticipantsRecent(),offset,limit:200,hash:0 as any}));signal.throwIfAborted();const page:any[]=r.users||[];if(!page.length)break;scanned+=page.length;for(const u of page){signal.throwIfAborted();const id=String(u.id);if(admins.has(id))continue;let matched=false;if(mode==="1"){const d=lastDays(u);matched=d!==null&&d>day;}else if(mode==="4")matched=!!(u.deleted||u.isDeleted);else if(mode==="5")matched=true;else{try{const from=await client.getInputEntity(u);signal.throwIfAborted();const res:any=await client.invoke(new Api.messages.Search({peer:channel,q:"",filter:new Api.InputMessagesFilterEmpty(),minDate:mode==="2"?Math.floor(Date.now()/1000)-day*86400:0,maxDate:0,offsetId:0,addOffset:0,limit:1,maxId:0,minId:0,hash:0 as any,fromId:from}));signal.throwIfAborted();const count=Number(res.count??res.messages?.length??0);matched=mode==="2"?count===0:count<day;}catch(error){if(signal.aborted)throw error;continue;}}if(!matched)continue;
-        const info:UserInfo={id,username:u.username||"",first_name:u.firstName||"",last_name:u.lastName||"",is_deleted:!!u.deleted,last_online:u.status?.className==="UserStatusOffline"&&u.status.wasOnline?new Date(Number(u.status.wasOnline)*1000).toISOString():u.status?.className?.replace("UserStatus","").toLowerCase()||null};users.push(info);if(!search){if(limit&&removed>=limit){stop=true;break;}try{await removeMember(client,channel,u,Api,signal);removed++;await sleep(1000+Math.random()*500,undefined,{signal});}catch(error){if(signal.aborted)throw error;failed.push({...info,error_message:failureReason(error)});}}}
-      if(page.length<200)break;offset+=200;await ctx.telegram.edit(message,`📋 <b>群组清理进度</b>\n\n扫描: ${scanned} | 找到: ${users.length}${search?"":` | 已移出: ${removed}`}`,{parseMode:"html"});if(offset>50000)break;}
-    signal.throwIfAborted();const data:CacheData={chat_id:chatId,chat_title:title,mode,day,search_time:new Date().toISOString(),total_found:users.length,users,expiresAt:Date.now()+86400000};await store(ctx).update(s=>{const entries=Object.fromEntries(Object.entries(s.entries).filter(([,v])=>v.expiresAt>Date.now()));entries[key]=data;for(const k of Object.keys(entries).slice(0,Math.max(0,Object.keys(entries).length-50)))delete entries[k];return{schemaVersion:1,entries};},signal);const report=await saveReport(ctx,data,false,signal);if(failed.length){const failedData={...data,total_found:failed.length,users:failed};const failedPath=await saveReport(ctx,failedData,true,signal);try{await client.sendFile("me",{file:failedPath,caption:`清理失败用户报告：${failed.length} 人`});signal.throwIfAborted();}catch(error){if(signal.aborted)throw error;ctx.log.error("clean_member:failed-report");}}
-    const rate=users.length?((removed/users.length)*100).toFixed(1):"0";await ctx.telegram.edit(message,search?`✅ <b>搜索完成</b> - ${esc(modeName(mode,day))}\n\n📊 扫描人数: <code>${scanned}</code> 人\n🎯 符合条件: <code>${users.length}</code> 人\n📁 报告: <code>${esc(basename(report))}</code>`:`🎉 <b>清理完成</b> - ${esc(modeName(mode,day))}\n\n📊 扫描人数: <code>${scanned}</code> 人\n🎯 符合条件: <code>${users.length}</code> 人\n✅ 成功移出: <code>${removed}</code> 人\n❌ 失败/跳过: <code>${users.length-removed}</code> 人\n📈 成功率: <code>${rate}%</code>\n📁 报告: <code>${esc(basename(report))}</code>`,{parseMode:"html"});
+async function command(message: MessageEnvelope, args: readonly string[], prefix: string, ctx: PluginContext) {
+  const mode = (args[0] || "").toLowerCase();
+  if (!mode || ["help", "h"].includes(mode)) {
+    await ctx.telegram.edit(message, help(prefix), { parseMode: "html" });
+    return;
+  }
+  if (!/^[1-5]$/.test(mode)) {
+    await ctx.telegram.edit(message, `❌ <b>未知模式</b>\n\n支持模式: 1-5\n\n${help(prefix)}`, { parseMode: "html" });
+    return;
+  }
+  let day = 0;
+  if (["1", "2", "3"].includes(mode)) {
+    day = Number(args[1]);
+    if (!Number.isInteger(day) || day < 1) {
+      await ctx.telegram.edit(message, `❌ <b>参数错误</b>\n\n${mode === "3" ? "发言数" : "天数"}必须为正整数`, {
+        parseMode: "html",
+      });
+      return;
+    }
+    if (mode !== "3") day = Math.max(day, 7);
+  }
+  const search = args.some(x => x.toLowerCase() === "search"),
+    limitRaw = args.find(x => /^limit:/i.test(x))?.split(":")[1],
+    limit = limitRaw ? Number(limitRaw) : undefined;
+  if (limitRaw && (!Number.isInteger(limit) || (limit ?? 0) <= 0)) {
+    await ctx.telegram.edit(message, "❌ limit 必须为正整数");
+    return;
+  }
+  const target = args.find(x => /^chat:/i.test(x))?.slice(5);
+  await ctx.telegram.withClient(async (client: any, signal) => {
+    const { Api } = await import("teleproto");
+    const raw: any = message.raw;
+    let chat: any;
+    try {
+      chat = await client.getEntity(await entityTarget(target || raw?.peerId || message.chatId));
+      signal.throwIfAborted();
+    } catch (error) {
+      if (signal.aborted) throw error;
+      await ctx.telegram.edit(message, "❌ <b>错误：</b>无法访问指定群组", { parseMode: "html" });
+      return;
+    }
+    if (!["Channel", "Chat"].includes(chat.className)) {
+      await ctx.telegram.edit(message, "❌ 无法获取群组ID，请在群组中使用或指定chat参数");
+      return;
+    }
+    if (!search && !(await isAdmin(client, chat, Api, signal))) {
+      signal.throwIfAborted();
+      await ctx.telegram.edit(message, "❌ 权限不足，需要封禁成员权限", { parseMode: "html" });
+      return;
+    }
+    signal.throwIfAborted();
+    const channel = await client.getInputEntity(chat);
+    signal.throwIfAborted();
+    const chatId = String(chat.id),
+      title = chat.title || "当前群组",
+      key = `${chatId}_${mode}_${day}`;
+    if (search) {
+      const state = await store(ctx).read(signal),
+        cached = state.entries[key];
+      if (cached && cached.expiresAt > Date.now()) {
+        const path = await saveReport(ctx, cached);
+        await ctx.telegram.edit(
+          message,
+          `✅ 搜索完成（缓存）\n\n📊 找到 ${cached.total_found} 名符合条件用户\n📁 报告: <code>${esc(basename(path))}</code>`,
+          { parseMode: "html" },
+        );
+        return;
+      }
+    }
+    await ctx.telegram.edit(
+      message,
+      `📋 <b>群组清理任务启动</b>\n\n🏷️ 群组: <b>${esc(title)}</b>\n🎯 开始${search ? "搜索" : "清理"}: ${esc(modeName(mode, day))}`,
+      { parseMode: "html" },
+    );
+    let admins: Set<string>;
+    try {
+      admins = chat.className === "Channel" ? await adminIds(client, channel, Api, signal) : new Set();
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (!search) {
+        await ctx.telegram.edit(message, "❌ 无法完整获取管理员列表，已停止清理");
+        return;
+      }
+      admins = new Set();
+      ctx.log.error("clean_member:admin-list");
+    }
+    let offset = 0,
+      scanned = 0,
+      removed = 0;
+    const users: UserInfo[] = [],
+      failed: UserInfo[] = [];
+    let stop = false;
+    while (!stop) {
+      signal.throwIfAborted();
+      const r: any = await client.invoke(
+        new Api.channels.GetParticipants({
+          channel,
+          filter: new Api.ChannelParticipantsRecent(),
+          offset,
+          limit: 200,
+          hash: 0 as any,
+        }),
+      );
+      signal.throwIfAborted();
+      const page: any[] = r.users || [];
+      if (!page.length) break;
+      scanned += page.length;
+      for (const u of page) {
+        signal.throwIfAborted();
+        const id = String(u.id);
+        if (admins.has(id)) continue;
+        let matched = false;
+        if (mode === "1") {
+          const d = lastDays(u);
+          matched = d !== null && d > day;
+        } else if (mode === "4") matched = !!(u.deleted || u.isDeleted);
+        else if (mode === "5") matched = true;
+        else {
+          try {
+            const from = await client.getInputEntity(u);
+            signal.throwIfAborted();
+            const res: any = await client.invoke(
+              new Api.messages.Search({
+                peer: channel,
+                q: "",
+                filter: new Api.InputMessagesFilterEmpty(),
+                minDate: mode === "2" ? Math.floor(Date.now() / 1000) - day * 86400 : 0,
+                maxDate: 0,
+                offsetId: 0,
+                addOffset: 0,
+                limit: 1,
+                maxId: 0,
+                minId: 0,
+                hash: 0 as any,
+                fromId: from,
+              }),
+            );
+            signal.throwIfAborted();
+            const count = Number(res.count ?? res.messages?.length ?? 0);
+            matched = mode === "2" ? count === 0 : count < day;
+          } catch (error) {
+            if (signal.aborted) throw error;
+            continue;
+          }
+        }
+        if (!matched) continue;
+        const info: UserInfo = {
+          id,
+          username: u.username || "",
+          first_name: u.firstName || "",
+          last_name: u.lastName || "",
+          is_deleted: !!u.deleted,
+          last_online:
+            u.status?.className === "UserStatusOffline" && u.status.wasOnline
+              ? new Date(Number(u.status.wasOnline) * 1000).toISOString()
+              : u.status?.className?.replace("UserStatus", "").toLowerCase() || null,
+        };
+        users.push(info);
+        if (!search) {
+          if (limit && removed >= limit) {
+            stop = true;
+            break;
+          }
+          try {
+            await removeMember(client, channel, u, Api, signal);
+            removed++;
+            await sleep(1000 + Math.random() * 500, undefined, { signal });
+          } catch (error) {
+            if (signal.aborted) throw error;
+            failed.push({ ...info, error_message: failureReason(error) });
+          }
+        }
+      }
+      if (page.length < 200) break;
+      offset += 200;
+      await ctx.telegram.edit(
+        message,
+        `📋 <b>群组清理进度</b>\n\n扫描: ${scanned} | 找到: ${users.length}${search ? "" : ` | 已移出: ${removed}`}`,
+        { parseMode: "html" },
+      );
+      if (offset > 50000) break;
+    }
+    signal.throwIfAborted();
+    const data: CacheData = {
+      chat_id: chatId,
+      chat_title: title,
+      mode,
+      day,
+      search_time: new Date().toISOString(),
+      total_found: users.length,
+      users,
+      expiresAt: Date.now() + 86400000,
+    };
+    await store(ctx).update(s => {
+      const entries = Object.fromEntries(Object.entries(s.entries).filter(([, v]) => v.expiresAt > Date.now()));
+      entries[key] = data;
+      for (const k of Object.keys(entries).slice(0, Math.max(0, Object.keys(entries).length - 50))) delete entries[k];
+      return { schemaVersion: 1, entries };
+    }, signal);
+    const report = await saveReport(ctx, data, false, signal);
+    if (failed.length) {
+      const failedData = { ...data, total_found: failed.length, users: failed };
+      const failedPath = await saveReport(ctx, failedData, true, signal);
+      try {
+        await client.sendFile("me", { file: failedPath, caption: `清理失败用户报告：${failed.length} 人` });
+        signal.throwIfAborted();
+      } catch (error) {
+        if (signal.aborted) throw error;
+        ctx.log.error("clean_member:failed-report");
+      }
+    }
+    const rate = users.length ? ((removed / users.length) * 100).toFixed(1) : "0";
+    await ctx.telegram.edit(
+      message,
+      search
+        ? `✅ <b>搜索完成</b> - ${esc(modeName(mode, day))}\n\n📊 扫描人数: <code>${scanned}</code> 人\n🎯 符合条件: <code>${users.length}</code> 人\n📁 报告: <code>${esc(basename(report))}</code>`
+        : `🎉 <b>清理完成</b> - ${esc(modeName(mode, day))}\n\n📊 扫描人数: <code>${scanned}</code> 人\n🎯 符合条件: <code>${users.length}</code> 人\n✅ 成功移出: <code>${removed}</code> 人\n❌ 失败/跳过: <code>${users.length - removed}</code> 人\n📈 成功率: <code>${rate}%</code>\n📁 报告: <code>${esc(basename(report))}</code>`,
+      { parseMode: "html" },
+    );
   });
 }
-export default function createCleanMember(){return definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"clean_member",description:"按活跃度、发言数或账户状态搜索并清理群成员",commands:{clean_member:{helpArgs: ["help","h"], helpOnEmpty: true, description:"群成员清理",ignoreEdited:true,async handle({message,args,prefix},ctx){try{await command(message,args,prefix,ctx);}catch{if(!ctx.signal.aborted)await ctx.telegram.edit(message,"❌ 处理失败，请稍后重试");}}}}});}
+export default function createCleanMember() {
+  return definePlugin({
+    renderHelp: renderPluginHelp,
+    apiVersion: 1,
+    id: "clean_member",
+    description: "按活跃度、发言数或账户状态搜索并清理群成员",
+    commands: {
+      clean_member: {
+        helpArgs: ["help", "h"],
+        helpOnEmpty: true,
+        description: "群成员清理",
+        ignoreEdited: true,
+        async handle({ message, args, prefix }, ctx) {
+          try {
+            await command(message, args, prefix, ctx);
+          } catch {
+            if (!ctx.signal.aborted) await ctx.telegram.edit(message, "❌ 处理失败，请稍后重试");
+          }
+        },
+      },
+    },
+  });
+}

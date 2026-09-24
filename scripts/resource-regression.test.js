@@ -27,9 +27,7 @@ const pluginFiles = [
   "subinfo/subinfo.ts",
   "yvlu/yvlu.ts",
 ];
-const sources = Object.fromEntries(
-  pluginFiles.map((file) => [file, fs.readFileSync(path.join(repoRoot, file), "utf8")]),
-);
+const sources = Object.fromEntries(pluginFiles.map(file => [file, fs.readFileSync(path.join(repoRoot, file), "utf8")]));
 
 for (const [file, source] of Object.entries(sources)) {
   esbuild.transformSync(source, { loader: "ts", format: "cjs", target: "node20", sourcefile: file });
@@ -106,7 +104,7 @@ function loadTsModule(relativePath) {
       safeGetMessages: async () => [],
       safeGetReplyMessage: async () => undefined,
     },
-    "@utils/tlRevive": { reviveEntities: (value) => value },
+    "@utils/tlRevive": { reviveEntities: value => value },
   };
   const originalLoad = Module._load;
   Module._load = function (request, parent, isMain) {
@@ -147,12 +145,15 @@ async function main() {
   const yvlu = loadTsModule("yvlu/yvlu.ts");
   try {
     const firstPath = path.join(yvlu.testRoot, "first-media.bin");
-    const first = await yvlu.exports.downloadMediaBuffer({
-      downloadMedia: async () => {
-        fs.writeFileSync(firstPath, "media-data");
-        return firstPath;
+    const first = await yvlu.exports.downloadMediaBuffer(
+      {
+        downloadMedia: async () => {
+          fs.writeFileSync(firstPath, "media-data");
+          return firstPath;
+        },
       },
-    }, {});
+      {},
+    );
     assert.equal(first.toString(), "media-data");
     assert.equal(fs.existsSync(firstPath), false);
 
@@ -163,12 +164,15 @@ async function main() {
       return originalReadFileSync.call(this, filePath, ...args);
     };
     try {
-      const failed = await yvlu.exports.downloadMediaBuffer({
-        downloadMedia: async () => {
-          fs.writeFileSync(failedPath, "unreadable-media");
-          return failedPath;
+      const failed = await yvlu.exports.downloadMediaBuffer(
+        {
+          downloadMedia: async () => {
+            fs.writeFileSync(failedPath, "unreadable-media");
+            return failedPath;
+          },
         },
-      }, {});
+        {},
+      );
       assert.equal(failed, undefined);
       assert.equal(fs.existsSync(failedPath), false);
     } finally {
@@ -181,7 +185,7 @@ async function main() {
   console.log("resource regression tests: PASS");
 }
 
-main().catch((error) => {
+main().catch(error => {
   console.error(error);
   process.exitCode = 1;
 });

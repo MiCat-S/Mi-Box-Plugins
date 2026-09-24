@@ -1,11 +1,5 @@
 import { access, readFile } from "node:fs/promises";
-import {
-  definePlugin,
-  requireSdkFeatures,
-  ui,
-  type MessageEnvelope,
-  type PluginContext,
-} from "telebox/sdk";
+import { definePlugin, requireSdkFeatures, ui, type MessageEnvelope, type PluginContext } from "telebox/sdk";
 import { renderHelp as renderPluginHelp } from "./v2/help";
 
 type Rule = { id: number; msg: string; redirect?: string };
@@ -33,27 +27,36 @@ const store = (context: PluginContext) => context.storage.json<Config>("config.j
 const validUser = (value: string) => /^[1-9][0-9]*$/.test(value);
 const validChat = (value: string) => /^-?[1-9][0-9]*$/.test(value);
 const htmlEntities: Record<string, string> = {
-  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
 };
-const escape = (value: unknown) => String(value ?? "").replace(
-  /[&<>"']/g,
-  char => htmlEntities[char]!,
-);
+const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, char => htmlEntities[char]!);
 
 function normalize(value: any): Config {
-  const source = value?.messages && typeof value.messages === "object" && !Array.isArray(value.messages)
-    ? Object.entries(value.messages).map(([msg, redirect], index) => ({
-        id: index + 1,
-        msg,
-        ...(String(redirect) !== msg ? { redirect: String(redirect) } : {}),
-      }))
-    : Array.isArray(value?.messages) ? value.messages : [];
+  const source =
+    value?.messages && typeof value.messages === "object" && !Array.isArray(value.messages)
+      ? Object.entries(value.messages).map(([msg, redirect], index) => ({
+          id: index + 1,
+          msg,
+          ...(String(redirect) !== msg ? { redirect: String(redirect) } : {}),
+        }))
+      : Array.isArray(value?.messages)
+        ? value.messages
+        : [];
   const messages: Rule[] = source.flatMap((item: any, index: number) =>
-    typeof item?.msg === "string" && item.msg ? [{
-      id: Number.isSafeInteger(Number(item.id)) && Number(item.id) > 0 ? Number(item.id) : index + 1,
-      msg: item.msg,
-      ...(typeof item.redirect === "string" && item.redirect ? { redirect: item.redirect } : {}),
-    }] : []);
+    typeof item?.msg === "string" && item.msg
+      ? [
+          {
+            id: Number.isSafeInteger(Number(item.id)) && Number(item.id) > 0 ? Number(item.id) : index + 1,
+            msg: item.msg,
+            ...(typeof item.redirect === "string" && item.redirect ? { redirect: item.redirect } : {}),
+          },
+        ]
+      : [],
+  );
   return {
     ...value,
     schemaVersion: 1,
@@ -79,20 +82,34 @@ async function explicitConfigFields(context: PluginContext): Promise<Set<string>
 async function migrate(context: PluginContext) {
   const fields = await explicitConfigFields(context);
   if (normalize(await store(context).read()).legacyMigrated) return;
-  let users: any[] = [], chats: any[] = [], messages: any[] = [];
+  let users: any[] = [],
+    chats: any[] = [],
+    messages: any[] = [];
   try {
     await access(context.files.dataPath("sure.db"));
     const database = context.storage.sqlite("sure.db", { readonly: true });
-    const check = await database.preflight({
-      users: ["uid", "username"],
-      chats: ["id", "name"],
-      msgs: ["id", "msg", "redirect"],
-    }, context.signal);
+    const check = await database.preflight(
+      {
+        users: ["uid", "username"],
+        chats: ["id", "name"],
+        msgs: ["id", "msg", "redirect"],
+      },
+      context.signal,
+    );
     if (!check.compatible) throw new Error("INVALID_SURE_DB");
     [users, chats, messages] = await Promise.all([
-      database.read(db => db.prepare("SELECT uid, username FROM users ORDER BY uid").safeIntegers(true).all() as any, context.signal),
-      database.read(db => db.prepare("SELECT id, name FROM chats ORDER BY id").safeIntegers(true).all() as any, context.signal),
-      database.read(db => db.prepare("SELECT id, msg, redirect FROM msgs ORDER BY id").safeIntegers(true).all() as any, context.signal),
+      database.read(
+        db => db.prepare("SELECT uid, username FROM users ORDER BY uid").safeIntegers(true).all() as any,
+        context.signal,
+      ),
+      database.read(
+        db => db.prepare("SELECT id, name FROM chats ORDER BY id").safeIntegers(true).all() as any,
+        context.signal,
+      ),
+      database.read(
+        db => db.prepare("SELECT id, msg, redirect FROM msgs ORDER BY id").safeIntegers(true).all() as any,
+        context.signal,
+      ),
     ]);
   } catch (error) {
     context.signal.throwIfAborted();
@@ -120,12 +137,14 @@ async function migrate(context: PluginContext) {
 }
 
 async function output(context: PluginContext, message: MessageEnvelope, text: string) {
-  const pages = (await ui.renderRichText(text, ui.PAGE_LABEL_RESERVE))
-    .map((page, index, all) => page + ui.pageLabel(index, all.length));
+  const pages = (await ui.renderRichText(text, ui.PAGE_LABEL_RESERVE)).map(
+    (page, index, all) => page + ui.pageLabel(index, all.length),
+  );
   const result = await ui.deliverPages(pages, context.signal, (page, index) =>
     index
       ? context.telegram.reply(message, page, { parseMode: "html" })
-      : context.telegram.edit(message, page, { parseMode: "html" }));
+      : context.telegram.edit(message, page, { parseMode: "html" }),
+  );
   if (!result.interrupted) return;
   context.log.info("sure.pagination.interrupted", {
     published: result.published,
@@ -141,10 +160,16 @@ async function output(context: PluginContext, message: MessageEnvelope, text: st
 function isOwnerMessage(message: MessageEnvelope, ownerId: string) {
   if (message.senderId === ownerId) return true;
   const raw = message.raw as any;
-  return message.outgoing && !message.forwarded && !message.edited && raw?.className === "Message" && !raw.post
-    && /^-100[1-9][0-9]*$/.test(message.chatId)
-    && /^-100[1-9][0-9]*$/.test(message.senderId ?? "")
-    && validUser(ownerId);
+  return (
+    message.outgoing &&
+    !message.forwarded &&
+    !message.edited &&
+    raw?.className === "Message" &&
+    !raw.post &&
+    /^-100[1-9][0-9]*$/.test(message.chatId) &&
+    /^-100[1-9][0-9]*$/.test(message.senderId ?? "") &&
+    validUser(ownerId)
+  );
 }
 
 async function requireOwner(message: MessageEnvelope, context: PluginContext) {
@@ -185,7 +210,7 @@ async function resolveEntity(
     }
     return { id: message.chatId, name: message.chatId };
   }
-  if (kind === "user" && validUser(target) || kind === "chat" && validChat(target)) {
+  if ((kind === "user" && validUser(target)) || (kind === "chat" && validChat(target))) {
     return { id: target, name: target };
   }
   return context.telegram.withClient(async (client, signal) => {
@@ -194,10 +219,13 @@ async function resolveEntity(
     signal.throwIfAborted();
     const raw = String(entity?.id ?? "");
     if (!raw) throw new Error("NO_ENTITY");
-    const id = kind === "chat" && entity?.className === "Channel" ? `-100${raw}`
-      : kind === "chat" && entity?.className === "Chat" ? `-${raw}` : raw;
-    const name = entity?.username ? `@${entity.username}`
-      : String(entity?.title ?? entity?.firstName ?? id);
+    const id =
+      kind === "chat" && entity?.className === "Channel"
+        ? `-100${raw}`
+        : kind === "chat" && entity?.className === "Chat"
+          ? `-${raw}`
+          : raw;
+    const name = entity?.username ? `@${entity.username}` : String(entity?.title ?? entity?.firstName ?? id);
     return { id, name };
   });
 }
@@ -240,10 +268,16 @@ async function updateEntity(
 async function relay(message: MessageEnvelope, context: PluginContext) {
   if (message.outgoing || message.forwarded || !message.senderId || !message.text.trim()) return;
   const state = normalize(await store(context).read());
-  const legacyChat = message.chatId.startsWith("-100") ? message.chatId.slice(4)
-    : message.chatId.startsWith("-") ? message.chatId.slice(1) : message.chatId;
-  if (!state.users.includes(message.senderId)
-    || state.chats.length && !state.chats.includes(message.chatId) && !state.chats.includes(legacyChat)) return;
+  const legacyChat = message.chatId.startsWith("-100")
+    ? message.chatId.slice(4)
+    : message.chatId.startsWith("-")
+      ? message.chatId.slice(1)
+      : message.chatId;
+  if (
+    !state.users.includes(message.senderId) ||
+    (state.chats.length && !state.chats.includes(message.chatId) && !state.chats.includes(legacyChat))
+  )
+    return;
   let suffix = "";
   let rule = state.messages.find(item => item.msg === message.text);
   if (!rule) {
@@ -257,7 +291,9 @@ async function relay(message: MessageEnvelope, context: PluginContext) {
   }
   if (!rule) return;
   const replacement = rule.redirect
-    ? rule.msg.startsWith("_command:") ? rule.redirect + suffix : rule.redirect
+    ? rule.msg.startsWith("_command:")
+      ? rule.redirect + suffix
+      : rule.redirect
     : message.text;
   await context.telegram.withClient(async (client, signal) => {
     signal.throwIfAborted();
@@ -268,7 +304,8 @@ async function relay(message: MessageEnvelope, context: PluginContext) {
       replyTo: message.replyToId,
       topMsgId: message.topicId,
       ...(!rule!.redirect && replacement === message.text && Array.isArray(raw.entities)
-        ? { formattingEntities: raw.entities } : {}),
+        ? { formattingEntities: raw.entities }
+        : {}),
     });
     signal.throwIfAborted();
     if (sent) await context.commands.dispatch(sent);
@@ -298,10 +335,12 @@ async function handleCommand(invocation: any, context: PluginContext) {
       if (msg) {
         await store(context).update(value => {
           const current = normalize(value);
-          return current.messages.some(item => item.msg === msg) ? current : {
-            ...current,
-            messages: [...current.messages, { id: Math.max(0, ...current.messages.map(item => item.id)) + 1, msg }],
-          };
+          return current.messages.some(item => item.msg === msg)
+            ? current
+            : {
+                ...current,
+                messages: [...current.messages, { id: Math.max(0, ...current.messages.map(item => item.id)) + 1, msg }],
+              };
         });
         await context.telegram.edit(invocation.message, "sure 消息规则已添加");
       }
@@ -332,29 +371,39 @@ async function handleCommand(invocation: any, context: PluginContext) {
           }),
         };
       });
-      await context.telegram.edit(invocation.message, found
-        ? redirect ? "sure 消息重定向已设置" : "sure 消息重定向已清除"
-        : "消息规则不存在");
+      await context.telegram.edit(
+        invocation.message,
+        found ? (redirect ? "sure 消息重定向已设置" : "sure 消息重定向已清除") : "消息规则不存在",
+      );
       return;
     }
     if (action === "ls" || action === "list") {
-      const lines = state.messages.map(item =>
-        `<code>${item.id}</code>: <code>${escape(item.msg)}</code>${item.redirect ? ` -&gt; <code>${escape(item.redirect)}</code>` : ""}`);
-      return output(context, invocation.message, lines.length
-        ? `消息白名单列表：\n${lines.join("\n")}`
-        : "⚠️ 未设置消息白名单 需设置消息白名单方可使用");
+      const lines = state.messages.map(
+        item =>
+          `<code>${item.id}</code>: <code>${escape(item.msg)}</code>${item.redirect ? ` -&gt; <code>${escape(item.redirect)}</code>` : ""}`,
+      );
+      return output(
+        context,
+        invocation.message,
+        lines.length ? `消息白名单列表：\n${lines.join("\n")}` : "⚠️ 未设置消息白名单 需设置消息白名单方可使用",
+      );
     }
   }
   if (scope === "chat" && (action === "ls" || action === "list")) {
     const lines = state.chats.map(id => `- ${escape(state.chatNames[id] ?? id)}`);
-    return output(context, invocation.message, lines.length
-      ? `对话白名单列表：\n${lines.join("\n")}`
-      : "⚠️ 未设置对话白名单, 所有对话中均可使用");
+    return output(
+      context,
+      invocation.message,
+      lines.length ? `对话白名单列表：\n${lines.join("\n")}` : "⚠️ 未设置对话白名单, 所有对话中均可使用",
+    );
   }
   if (scope === "ls" || scope === "list") {
     const lines = state.users.map(id => `- ${escape(state.userNames[id] ?? id)}`);
-    return output(context, invocation.message, lines.length
-      ? `当前用户列表：\n${lines.join("\n")}` : "当前没有任何用户");
+    return output(
+      context,
+      invocation.message,
+      lines.length ? `当前用户列表：\n${lines.join("\n")}` : "当前没有任何用户",
+    );
   }
   await output(context, invocation.message, renderPluginHelp(invocation.prefix));
 }

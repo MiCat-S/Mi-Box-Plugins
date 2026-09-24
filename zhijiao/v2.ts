@@ -1,8 +1,14 @@
-import {STRUCTURED_PLUGIN_API_VERSION, renderCommandHelp, type CommandDefinition, definePlugin, type PluginContext} from "telebox/sdk";
-import {randomInt} from "node:crypto";
-import {setTimeout as delay} from "node:timers/promises";
+import {
+  STRUCTURED_PLUGIN_API_VERSION,
+  renderCommandHelp,
+  type CommandDefinition,
+  definePlugin,
+  type PluginContext,
+} from "telebox/sdk";
+import { randomInt } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 type Toss = "胜" | "阳" | "阴";
-const symbols: Record<Toss, string> = {胜:"☾☽", 阳:"☽☽", 阴:"☾☾"};
+const symbols: Record<Toss, string> = { 胜: "☾☽", 阳: "☽☽", 阴: "☾☾" };
 const phrases: Record<string, string> = {
   胜胜胜: "胜胜胜：前程皆如意，得意逢贵人，前程去有缘，利名终有望。元亨利贞。",
   胜胜阳: "胜胜阳：千里遇知音，求财自称心，占龙得甘雨，失物眼前寻。上上大吉。",
@@ -33,27 +39,60 @@ const phrases: Record<string, string> = {
   阴阳阴: "阴阳阴：秋叶无颜色，凋零一夜风。晨鸡醒午梦，心事总成空。梦难成真。",
 };
 
-const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;" })[c]!);
+const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 export default function createZhijiao() {
-  const command: CommandDefinition = {"args":"","examples":[{"args":""}],"help":[{"heading":"投掷与卦辞：","body":"使用系统加密随机数投掷三次，每次为胜、阳或阴，显示对应的筊杯符号。三次组合匹配笅杯卦辞廿七句；各投之间显示短暂动画。"}],helpArgs: ["help","h"], description: "随机掷筊", async handle(invocation, ctx: PluginContext) {
-      if (invocation.args[0] === "help" || invocation.args[0] === "h") { await ctx.telegram.edit(invocation.message, help(invocation.prefix), {parseMode:"html"}); return; }
+  const command: CommandDefinition = {
+    args: "",
+    examples: [{ args: "" }],
+    help: [
+      {
+        heading: "投掷与卦辞：",
+        body: "使用系统加密随机数投掷三次，每次为胜、阳或阴，显示对应的筊杯符号。三次组合匹配笅杯卦辞廿七句；各投之间显示短暂动画。",
+      },
+    ],
+    helpArgs: ["help", "h"],
+    description: "随机掷筊",
+    async handle(invocation, ctx: PluginContext) {
+      if (invocation.args[0] === "help" || invocation.args[0] === "h") {
+        await ctx.telegram.edit(invocation.message, help(invocation.prefix), { parseMode: "html" });
+        return;
+      }
       const options: Toss[] = ["胜", "阳", "阴"];
-      const tosses: Toss[] = Array.from({length:3},()=>options[randomInt(options.length)]!);
-      const line=(index:number,toss?:Toss)=>`第${index+1}投：${toss?`${toss} ${symbols[toss]}`:"…"}`;
-      const progress=(count:number)=>["<b>笅杯</b>","","<b>掷筊</b>",...tosses.map((t,index)=>line(index,index<count?t:undefined))].join("\n");
-      await ctx.telegram.edit(invocation.message, progress(0),{parseMode:"html"});
+      const tosses: Toss[] = Array.from({ length: 3 }, () => options[randomInt(options.length)]!);
+      const line = (index: number, toss?: Toss) => `第${index + 1}投：${toss ? `${toss} ${symbols[toss]}` : "…"}`;
+      const progress = (count: number) =>
+        [
+          "<b>笅杯</b>",
+          "",
+          "<b>掷筊</b>",
+          ...tosses.map((t, index) => line(index, index < count ? t : undefined)),
+        ].join("\n");
+      await ctx.telegram.edit(invocation.message, progress(0), { parseMode: "html" });
       for (let i = 0; i < 3; i++) {
         ctx.signal.throwIfAborted();
-        await delay(800, undefined, {signal: ctx.signal});
+        await delay(800, undefined, { signal: ctx.signal });
         ctx.signal.throwIfAborted();
-        await ctx.telegram.edit(invocation.message,progress(i+1),{parseMode:"html"});
+        await ctx.telegram.edit(invocation.message, progress(i + 1), { parseMode: "html" });
       }
-      const combo = tosses.join(""); const phrase = phrases[combo] ?? "卦象未收录，宜静观其变。";
-      await delay(600,undefined,{signal:ctx.signal});ctx.signal.throwIfAborted();
-      await ctx.telegram.edit(invocation.message, `<b>笅杯</b>\n\n<b>掷筊</b>\n${tosses.map((t, i) => line(i,t)).join("\n")}\n\n<b>卦辞</b>\n<blockquote>${esc(phrase)}</blockquote>`, {parseMode:"html"});
-    }};
-  const help = (prefix: string) => renderCommandHelp("zhijiao", command, {prefix, title: "🎲 掷筊"});
-  return definePlugin({renderHelp: help, apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "zhijiao", description: "随机掷筊", commands: {
-    zhijiao: command,
-  }});
+      const combo = tosses.join("");
+      const phrase = phrases[combo] ?? "卦象未收录，宜静观其变。";
+      await delay(600, undefined, { signal: ctx.signal });
+      ctx.signal.throwIfAborted();
+      await ctx.telegram.edit(
+        invocation.message,
+        `<b>笅杯</b>\n\n<b>掷筊</b>\n${tosses.map((t, i) => line(i, t)).join("\n")}\n\n<b>卦辞</b>\n<blockquote>${esc(phrase)}</blockquote>`,
+        { parseMode: "html" },
+      );
+    },
+  };
+  const help = (prefix: string) => renderCommandHelp("zhijiao", command, { prefix, title: "🎲 掷筊" });
+  return definePlugin({
+    renderHelp: help,
+    apiVersion: STRUCTURED_PLUGIN_API_VERSION,
+    id: "zhijiao",
+    description: "随机掷筊",
+    commands: {
+      zhijiao: command,
+    },
+  });
 }

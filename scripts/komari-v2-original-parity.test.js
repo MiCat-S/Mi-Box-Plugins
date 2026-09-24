@@ -1,52 +1,392 @@
-'use strict';
-const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path'),fs=require('node:fs/promises');
-const core=path.resolve(__dirname,'../../TeleBox-Core');
-const {buildPlugin}=require(path.join(core,'scripts/build-v2-plugin.cjs'));
-const {PluginHost}=require(path.join(core,'dist/v2/host.js'));
-const Database=require(path.join(core,'node_modules/better-sqlite3'));
+"use strict";
+const test = require("node:test"),
+  assert = require("node:assert/strict"),
+  path = require("node:path"),
+  fs = require("node:fs/promises");
+const core = path.resolve(__dirname, "../../TeleBox-Core");
+const { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs"));
+const { PluginHost } = require(path.join(core, "dist/v2/host.js"));
+const Database = require(path.join(core, "node_modules/better-sqlite3"));
 let factory;
-test.before(()=>{const packageRoot=process.env.KOMARI_PACKAGE_ROOT||path.resolve(__dirname,'../komari');const built=buildPlugin({id:'komari',packageRoot,entry:'v2.ts',rootDir:core});factory=require(path.join(built.artifactDir,built.manifest.entry)).default;});
+test.before(() => {
+  const packageRoot = process.env.KOMARI_PACKAGE_ROOT || path.resolve(__dirname, "../komari");
+  const built = buildPlugin({ id: "komari", packageRoot, entry: "v2.ts", rootDir: core });
+  factory = require(path.join(built.artifactDir, built.manifest.entry)).default;
+});
 
-const payloads={
-  '/api/public':{sitename:'Test <&'},
-  '/api/version':{version:'1.0',hash:'abc'},
-  '/api/nodes':[{uuid:'one',name:'Node One',cpu_cores:2,mem_total:1024,swap_total:0,disk_total:2048}],
-  '/api/recent/one':{cpu:{usage:1},ram:{used:1,total:2},swap:{used:0,total:0},disk:{used:1,total:2},network:{totalDown:1,totalUp:2,up:3,down:4},load:{load1:0,load5:0,load15:0}},
+const payloads = {
+  "/api/public": { sitename: "Test <&" },
+  "/api/version": { version: "1.0", hash: "abc" },
+  "/api/nodes": [{ uuid: "one", name: "Node One", cpu_cores: 2, mem_total: 1024, swap_total: 0, disk_total: 2048 }],
+  "/api/recent/one": {
+    cpu: { usage: 1 },
+    ram: { used: 1, total: 2 },
+    swap: { used: 0, total: 0 },
+    disk: { used: 1, total: 2 },
+    network: { totalDown: 1, totalUp: 2, up: 3, down: 4 },
+    load: { load1: 0, load5: 0, load15: 0 },
+  },
 };
-function fixture(options={}){const controller=new AbortController(),edits=[],replies=[],logs=[],calls=[];let state={schemaVersion:1,url:options.url??'https://komari.test/panel/',legacyImported:options.legacyImported??true};
-  const context={signal:controller.signal,log:{error(event,fields){logs.push({event,fields});}},storage:{json:()=>({async read(){return state;},async update(fn){state=await fn(state);return state;}}),legacySqlite(){return{async read(fn){calls.push({legacy:true});if(options.legacyError)throw options.legacyError;return fn({prepare:()=>({get:()=>({value:options.legacyUrl})})});}};}},
-    http:{async withResponse(url,init,consume,requestOptions){calls.push({url:String(url),init,requestOptions});if(options.http)return options.http(url,init,consume,requestOptions,controller);const data=payloads[new URL(url).pathname.replace('/panel','')];return consume(Response.json({status:'success',data}),controller.signal);}},
-    telegram:{async edit(_m,text,settings){if(options.editError?.(text))throw new Error('PRIVATE_EDIT');edits.push({text,settings});},async reply(_m,text,settings){if(options.replyError?.(text))throw new Error('PRIVATE_REPLY');replies.push({text,settings});},async getReply(){calls.push({reply:true});return options.reply;}}};
-  const plugin=factory(),message={id:1,chatId:'1',outgoing:true,text:'.komari'};const run=(args=[])=>plugin.commands.komari.handle({message,args,prefix:'.',command:'komari'},context);
-  return{plugin,context,controller,message,edits,replies,logs,calls,run,state:()=>state};}
+function fixture(options = {}) {
+  const controller = new AbortController(),
+    edits = [],
+    replies = [],
+    logs = [],
+    calls = [];
+  let state = {
+    schemaVersion: 1,
+    url: options.url ?? "https://komari.test/panel/",
+    legacyImported: options.legacyImported ?? true,
+  };
+  const context = {
+    signal: controller.signal,
+    log: {
+      error(event, fields) {
+        logs.push({ event, fields });
+      },
+    },
+    storage: {
+      json: () => ({
+        async read() {
+          return state;
+        },
+        async update(fn) {
+          state = await fn(state);
+          return state;
+        },
+      }),
+      legacySqlite() {
+        return {
+          async read(fn) {
+            calls.push({ legacy: true });
+            if (options.legacyError) throw options.legacyError;
+            return fn({ prepare: () => ({ get: () => ({ value: options.legacyUrl }) }) });
+          },
+        };
+      },
+    },
+    http: {
+      async withResponse(url, init, consume, requestOptions) {
+        calls.push({ url: String(url), init, requestOptions });
+        if (options.http) return options.http(url, init, consume, requestOptions, controller);
+        const data = payloads[new URL(url).pathname.replace("/panel", "")];
+        return consume(Response.json({ status: "success", data }), controller.signal);
+      },
+    },
+    telegram: {
+      async edit(_m, text, settings) {
+        if (options.editError?.(text)) throw new Error("PRIVATE_EDIT");
+        edits.push({ text, settings });
+      },
+      async reply(_m, text, settings) {
+        if (options.replyError?.(text)) throw new Error("PRIVATE_REPLY");
+        replies.push({ text, settings });
+      },
+      async getReply() {
+        calls.push({ reply: true });
+        return options.reply;
+      },
+    },
+  };
+  const plugin = factory(),
+    message = { id: 1, chatId: "1", outgoing: true, text: ".komari" };
+  const run = (args = []) => plugin.commands.komari.handle({ message, args, prefix: ".", command: "komari" }, context);
+  return { plugin, context, controller, message, edits, replies, logs, calls, run, state: () => state };
+}
 
-test('declares and imports the account-level legacy Komari database',async()=>{const f=fixture({url:'',legacyUrl:'https://legacy.test/root/'});assert.deepEqual(f.plugin.legacyStorage,{sqlite:['komari_config.db']});f.context.storage.json=()=>({async read(){return{schemaVersion:1,url:'',legacyImported:false};},async update(fn){const next=await fn({schemaVersion:1,url:'',legacyImported:false});assert.equal(next.url,'https://legacy.test/root/');assert.equal(next.legacyImported,true);return next;}});await f.plugin.setup(f.context);assert.equal(f.calls.filter(x=>x.legacy).length,1);});
+test("declares and imports the account-level legacy Komari database", async () => {
+  const f = fixture({ url: "", legacyUrl: "https://legacy.test/root/" });
+  assert.deepEqual(f.plugin.legacyStorage, { sqlite: ["komari_config.db"] });
+  f.context.storage.json = () => ({
+    async read() {
+      return { schemaVersion: 1, url: "", legacyImported: false };
+    },
+    async update(fn) {
+      const next = await fn({ schemaVersion: 1, url: "", legacyImported: false });
+      assert.equal(next.url, "https://legacy.test/root/");
+      assert.equal(next.legacyImported, true);
+      return next;
+    },
+  });
+  await f.plugin.setup(f.context);
+  assert.equal(f.calls.filter(x => x.legacy).length, 1);
+});
 
-test('migration treats only ENOENT as fresh and retries damaged databases',async()=>{const fresh=fixture({url:'',legacyImported:false,legacyError:Object.assign(new Error('missing'),{code:'ENOENT'})});await fresh.plugin.setup(fresh.context);assert.equal(fresh.state().legacyImported,true);assert.deepEqual(fresh.logs,[]);
-  const damaged=fixture({url:'',legacyImported:false,legacyError:Object.assign(new Error('PRIVATE_CORRUPT'),{code:'SQLITE_CORRUPT',name:'PRIVATE_NAME'})});await assert.rejects(damaged.plugin.setup(damaged.context),/^Error: Komari legacy migration failed$/);assert.equal(damaged.state().legacyImported,false);assert.deepEqual(damaged.logs,[{event:'komari_legacy_migration_failed',fields:undefined}]);assert.doesNotMatch(JSON.stringify(damaged.logs),/PRIVATE/);
-  const configured=fixture({url:'https://kept.test',legacyImported:false,legacyError:new Error('must not read')});await configured.plugin.setup(configured.context);assert.equal(configured.state().legacyImported,true);assert.equal(configured.calls.some(x=>x.legacy),false);});
+test("migration treats only ENOENT as fresh and retries damaged databases", async () => {
+  const fresh = fixture({
+    url: "",
+    legacyImported: false,
+    legacyError: Object.assign(new Error("missing"), { code: "ENOENT" }),
+  });
+  await fresh.plugin.setup(fresh.context);
+  assert.equal(fresh.state().legacyImported, true);
+  assert.deepEqual(fresh.logs, []);
+  const damaged = fixture({
+    url: "",
+    legacyImported: false,
+    legacyError: Object.assign(new Error("PRIVATE_CORRUPT"), { code: "SQLITE_CORRUPT", name: "PRIVATE_NAME" }),
+  });
+  await assert.rejects(damaged.plugin.setup(damaged.context), /^Error: Komari legacy migration failed$/);
+  assert.equal(damaged.state().legacyImported, false);
+  assert.deepEqual(damaged.logs, [{ event: "komari_legacy_migration_failed", fields: undefined }]);
+  assert.doesNotMatch(JSON.stringify(damaged.logs), /PRIVATE/);
+  const configured = fixture({
+    url: "https://kept.test",
+    legacyImported: false,
+    legacyError: new Error("must not read"),
+  });
+  await configured.plugin.setup(configured.context);
+  assert.equal(configured.state().legacyImported, true);
+  assert.equal(
+    configured.calls.some(x => x.legacy),
+    false,
+  );
+});
 
-async function realHost(t,storageRoot){const logs=[];const host=new PluginHost({storageRoot,tempRoot:path.join(storageRoot,'.temp'),prefixes:['.'],logger:{info(){},error(event,fields){logs.push({event,fields});}},telegram:{async edit(){},async reply(){},async invoke(){},async getReply(){},async withClient(operation,signal){return operation({},signal);}}});t.after(async()=>{await host.shutdown(1000);});return{host,logs};}
-const stateFile=root=>path.join(root,'komari','config-v2.json');
+async function realHost(t, storageRoot) {
+  const logs = [];
+  const host = new PluginHost({
+    storageRoot,
+    tempRoot: path.join(storageRoot, ".temp"),
+    prefixes: ["."],
+    logger: {
+      info() {},
+      error(event, fields) {
+        logs.push({ event, fields });
+      },
+    },
+    telegram: {
+      async edit() {},
+      async reply() {},
+      async invoke() {},
+      async getReply() {},
+      async withClient(operation, signal) {
+        return operation({}, signal);
+      },
+    },
+  });
+  t.after(async () => {
+    await host.shutdown(1000);
+  });
+  return { host, logs };
+}
+const stateFile = root => path.join(root, "komari", "config-v2.json");
 
-test('real Host resolves the SDK capability and imports the account-level SQLite file',async t=>{const root=await fs.mkdtemp(path.join(core,'temp/komari-host-import-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const db=new Database(path.join(root,'komari_config.db'));db.exec('CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL)');db.prepare('INSERT INTO config VALUES (?, ?)').run('komari_url','https://legacy.real/panel/');db.close();const f=await realHost(t,root);await f.host.load(factory());const state=JSON.parse(await fs.readFile(stateFile(root),'utf8'));assert.equal(state.url,'https://legacy.real/panel/');assert.equal(state.legacyImported,true);assert.deepEqual(f.logs,[]);});
+test("real Host resolves the SDK capability and imports the account-level SQLite file", async t => {
+  const root = await fs.mkdtemp(path.join(core, "temp/komari-host-import-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const db = new Database(path.join(root, "komari_config.db"));
+  db.exec("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  db.prepare("INSERT INTO config VALUES (?, ?)").run("komari_url", "https://legacy.real/panel/");
+  db.close();
+  const f = await realHost(t, root);
+  await f.host.load(factory());
+  const state = JSON.parse(await fs.readFile(stateFile(root), "utf8"));
+  assert.equal(state.url, "https://legacy.real/panel/");
+  assert.equal(state.legacyImported, true);
+  assert.deepEqual(f.logs, []);
+});
 
-test('real Host treats an actually missing legacy database as a fresh install',async t=>{const root=await fs.mkdtemp(path.join(core,'temp/komari-host-missing-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const f=await realHost(t,root);await f.host.load(factory());const state=JSON.parse(await fs.readFile(stateFile(root),'utf8'));assert.equal(state.url,'');assert.equal(state.legacyImported,true);assert.equal(await fs.stat(path.join(root,'komari_config.db')).then(()=>true,()=>false),false);assert.deepEqual(f.logs,[]);});
+test("real Host treats an actually missing legacy database as a fresh install", async t => {
+  const root = await fs.mkdtemp(path.join(core, "temp/komari-host-missing-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const f = await realHost(t, root);
+  await f.host.load(factory());
+  const state = JSON.parse(await fs.readFile(stateFile(root), "utf8"));
+  assert.equal(state.url, "");
+  assert.equal(state.legacyImported, true);
+  assert.equal(
+    await fs.stat(path.join(root, "komari_config.db")).then(
+      () => true,
+      () => false,
+    ),
+    false,
+  );
+  assert.deepEqual(f.logs, []);
+});
 
-test('real Host rejects a damaged legacy database without marking migration complete',async t=>{const root=await fs.mkdtemp(path.join(core,'temp/komari-host-damaged-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));await fs.writeFile(path.join(root,'komari_config.db'),'not sqlite');const f=await realHost(t,root);await assert.rejects(f.host.load(factory()),/Komari legacy migration failed/);const state=await fs.readFile(stateFile(root),'utf8').then(JSON.parse,()=>({legacyImported:false}));assert.equal(state.legacyImported,false);assert.deepEqual(f.logs,[{event:'komari_legacy_migration_failed',fields:undefined}]);});
+test("real Host rejects a damaged legacy database without marking migration complete", async t => {
+  const root = await fs.mkdtemp(path.join(core, "temp/komari-host-damaged-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, "komari_config.db"), "not sqlite");
+  const f = await realHost(t, root);
+  await assert.rejects(f.host.load(factory()), /Komari legacy migration failed/);
+  const state = await fs.readFile(stateFile(root), "utf8").then(JSON.parse, () => ({ legacyImported: false }));
+  assert.equal(state.legacyImported, false);
+  assert.deepEqual(f.logs, [{ event: "komari_legacy_migration_failed", fields: undefined }]);
+});
 
-test('real Host reload keeps an existing V2 URL without opening a damaged legacy file',async t=>{const root=await fs.mkdtemp(path.join(core,'temp/komari-host-existing-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));await fs.mkdir(path.dirname(stateFile(root)),{recursive:true});await fs.writeFile(stateFile(root),JSON.stringify({schemaVersion:1,url:'https://kept.real/root',legacyImported:false}));await fs.writeFile(path.join(root,'komari_config.db'),'not sqlite');const f=await realHost(t,root);await f.host.load(factory());const state=JSON.parse(await fs.readFile(stateFile(root),'utf8'));assert.equal(state.url,'https://kept.real/root');assert.equal(state.legacyImported,true);assert.deepEqual(f.logs,[]);});
+test("real Host reload keeps an existing V2 URL without opening a damaged legacy file", async t => {
+  const root = await fs.mkdtemp(path.join(core, "temp/komari-host-existing-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.dirname(stateFile(root)), { recursive: true });
+  await fs.writeFile(
+    stateFile(root),
+    JSON.stringify({ schemaVersion: 1, url: "https://kept.real/root", legacyImported: false }),
+  );
+  await fs.writeFile(path.join(root, "komari_config.db"), "not sqlite");
+  const f = await realHost(t, root);
+  await f.host.load(factory());
+  const state = JSON.parse(await fs.readFile(stateFile(root), "utf8"));
+  assert.equal(state.url, "https://kept.real/root");
+  assert.equal(state.legacyImported, true);
+  assert.deepEqual(f.logs, []);
+});
 
-test('uses managed HTTP with preserved base path, bounds and escaped reports',async()=>{const f=fixture();f.message.replyToId=9;await f.run(['status']);const http=f.calls.filter(x=>x.url);assert.deepEqual(http.map(x=>new URL(x.url).pathname),['/panel/api/public','/panel/api/version','/panel/api/nodes']);for(const call of http){assert.equal(call.requestOptions.timeoutMs,10000);assert.deepEqual(call.requestOptions.redirects,{allowedHosts:['komari.test'],maxRedirects:2});}assert.match(f.edits.at(-1).text,/Test &lt;&amp;/);assert.equal(f.calls.some(x=>x.reply),false,'the legacy text-only command must not consume replied media');});
+test("uses managed HTTP with preserved base path, bounds and escaped reports", async () => {
+  const f = fixture();
+  f.message.replyToId = 9;
+  await f.run(["status"]);
+  const http = f.calls.filter(x => x.url);
+  assert.deepEqual(
+    http.map(x => new URL(x.url).pathname),
+    ["/panel/api/public", "/panel/api/version", "/panel/api/nodes"],
+  );
+  for (const call of http) {
+    assert.equal(call.requestOptions.timeoutMs, 10000);
+    assert.deepEqual(call.requestOptions.redirects, { allowedHosts: ["komari.test"], maxRedirects: 2 });
+  }
+  assert.match(f.edits.at(-1).text, /Test &lt;&amp;/);
+  assert.equal(
+    f.calls.some(x => x.reply),
+    false,
+    "the legacy text-only command must not consume replied media",
+  );
+});
 
-test('consumer cancellation interrupts a never-ending read and waits for stream cleanup',async()=>{let ready,release,cancelled=0,settled=false;const started=new Promise(r=>ready=r),cleanup=new Promise(r=>release=r);const f=fixture({http:async(_url,_init,consume,_options,controller)=>consume(new Response(new ReadableStream({start(){ready();},cancel(){cancelled++;return cleanup;}})),controller.signal)});const running=f.run(['status']).finally(()=>{settled=true;});await started;f.controller.abort();await new Promise(r=>setTimeout(r,0));assert.equal(cancelled,1);assert.equal(settled,false);release();await running;assert.deepEqual(f.edits.map(x=>x.text),['正在获取 Komari 数据…']);assert.deepEqual(f.logs,[]);});
+test("consumer cancellation interrupts a never-ending read and waits for stream cleanup", async () => {
+  let ready,
+    release,
+    cancelled = 0,
+    settled = false;
+  const started = new Promise(r => (ready = r)),
+    cleanup = new Promise(r => (release = r));
+  const f = fixture({
+    http: async (_url, _init, consume, _options, controller) =>
+      consume(
+        new Response(
+          new ReadableStream({
+            start() {
+              ready();
+            },
+            cancel() {
+              cancelled++;
+              return cleanup;
+            },
+          }),
+        ),
+        controller.signal,
+      ),
+  });
+  const running = f.run(["status"]).finally(() => {
+    settled = true;
+  });
+  await started;
+  f.controller.abort();
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(cancelled, 1);
+  assert.equal(settled, false);
+  release();
+  await running;
+  assert.deepEqual(
+    f.edits.map(x => x.text),
+    ["正在获取 Komari 数据…"],
+  );
+  assert.deepEqual(f.logs, []);
+});
 
-test('oversized HTTP bodies are cancelled and expose only fixed feedback and events',async()=>{let cancelled=0;const secret='PRIVATE_HTTP_SECRET';const f=fixture({http:async(_url,_init,consume,_options,controller)=>consume(new Response(new ReadableStream({start(c){c.enqueue(new Uint8Array(2*1024*1024+1));},cancel(){cancelled++;}})),controller.signal)});await f.run(['status']);assert.equal(cancelled,1);assert.deepEqual(f.logs,[{event:'komari_request_failed',fields:undefined}]);assert.match(f.edits.at(-1).text,/Komari 请求失败，请稍后重试/);assert.doesNotMatch(JSON.stringify({edits:f.edits,logs:f.logs}),new RegExp(secret));});
+test("oversized HTTP bodies are cancelled and expose only fixed feedback and events", async () => {
+  let cancelled = 0;
+  const secret = "PRIVATE_HTTP_SECRET";
+  const f = fixture({
+    http: async (_url, _init, consume, _options, controller) =>
+      consume(
+        new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(new Uint8Array(2 * 1024 * 1024 + 1));
+            },
+            cancel() {
+              cancelled++;
+            },
+          }),
+        ),
+        controller.signal,
+      ),
+  });
+  await f.run(["status"]);
+  assert.equal(cancelled, 1);
+  assert.deepEqual(f.logs, [{ event: "komari_request_failed", fields: undefined }]);
+  assert.match(f.edits.at(-1).text, /Komari 请求失败，请稍后重试/);
+  assert.doesNotMatch(JSON.stringify({ edits: f.edits, logs: f.logs }), new RegExp(secret));
+});
 
-test('later-page interruption preserves output and logs fixed events only',async()=>{let failed=false;const f=fixture({http:async(url,_init,consume,_opts,controller)=>{const pathname=new URL(url).pathname;const data=pathname.endsWith('/api/public')?{sitename:`Site ${'字<&'.repeat(1800)}`}:pathname.endsWith('/api/version')?{version:'1',hash:'x'}:[];return consume(Response.json({status:'success',data}),controller.signal);},replyError:text=>!text.includes('已发送')&&!failed++});await f.run(['status']);assert.ok(f.replies.some(x=>x.text.includes('已发送 1/')),JSON.stringify({edits:f.edits,replies:f.replies,logs:f.logs}));assert.deepEqual(f.logs,[{event:'komari_result_delivery_failed',fields:undefined}]);assert.doesNotMatch(JSON.stringify(f.logs),/PRIVATE_REPLY/);});
+test("later-page interruption preserves output and logs fixed events only", async () => {
+  let failed = false;
+  const f = fixture({
+    http: async (url, _init, consume, _opts, controller) => {
+      const pathname = new URL(url).pathname;
+      const data = pathname.endsWith("/api/public")
+        ? { sitename: `Site ${"字<&".repeat(1800)}` }
+        : pathname.endsWith("/api/version")
+          ? { version: "1", hash: "x" }
+          : [];
+      return consume(Response.json({ status: "success", data }), controller.signal);
+    },
+    replyError: text => !text.includes("已发送") && !failed++,
+  });
+  await f.run(["status"]);
+  assert.ok(
+    f.replies.some(x => x.text.includes("已发送 1/")),
+    JSON.stringify({ edits: f.edits, replies: f.replies, logs: f.logs }),
+  );
+  assert.deepEqual(f.logs, [{ event: "komari_result_delivery_failed", fields: undefined }]);
+  assert.doesNotMatch(JSON.stringify(f.logs), /PRIVATE_REPLY/);
+});
 
-test('configuration and unknown commands remain local and deterministic',async()=>{const f=fixture({url:''});await f.run(['_set_url','example.com/']);assert.equal(f.state().url,'example.com');assert.equal(f.calls.filter(x=>x.url).length,0);await f.run(['wat']);assert.match(f.edits.at(-1).text,/未知子命令/);assert.deepEqual(f.logs,[]);});
+test("configuration and unknown commands remain local and deterministic", async () => {
+  const f = fixture({ url: "" });
+  await f.run(["_set_url", "example.com/"]);
+  assert.equal(f.state().url, "example.com");
+  assert.equal(f.calls.filter(x => x.url).length, 0);
+  await f.run(["wat"]);
+  assert.match(f.edits.at(-1).text, /未知子命令/);
+  assert.deepEqual(f.logs, []);
+});
 
-test('successful pagination preserves escaped Unicode report content',async()=>{const marker='<&🙂'.repeat(1400);const f=fixture({http:async(url,_init,consume,_opts,controller)=>{const pathname=new URL(url).pathname;const data=pathname.endsWith('/api/public')?{sitename:marker}:pathname.endsWith('/api/version')?{version:'1',hash:'x'}:[];return consume(Response.json({status:'success',data}),controller.signal);}});await f.run(['status']);const pages=[f.edits.at(-1).text,...f.replies.map(x=>x.text)];assert.ok(pages.length>1);assert.ok(pages.every(page=>page.length<=3500));const joined=pages.join('');assert.equal((joined.match(/&lt;/g)||[]).length,1400);assert.equal((joined.match(/&amp;/g)||[]).length,1400);assert.equal((joined.match(/🙂/g)||[]).length,1400);});
+test("successful pagination preserves escaped Unicode report content", async () => {
+  const marker = "<&🙂".repeat(1400);
+  const f = fixture({
+    http: async (url, _init, consume, _opts, controller) => {
+      const pathname = new URL(url).pathname;
+      const data = pathname.endsWith("/api/public")
+        ? { sitename: marker }
+        : pathname.endsWith("/api/version")
+          ? { version: "1", hash: "x" }
+          : [];
+      return consume(Response.json({ status: "success", data }), controller.signal);
+    },
+  });
+  await f.run(["status"]);
+  const pages = [f.edits.at(-1).text, ...f.replies.map(x => x.text)];
+  assert.ok(pages.length > 1);
+  assert.ok(pages.every(page => page.length <= 3500));
+  const joined = pages.join("");
+  assert.equal((joined.match(/&lt;/g) || []).length, 1400);
+  assert.equal((joined.match(/&amp;/g) || []).length, 1400);
+  assert.equal((joined.match(/🙂/g) || []).length, 1400);
+});
 
-test('arbitrary HTTP exception names and messages never reach feedback or logs',async()=>{const secret='PRIVATE_HTTP_SECRET';const error=Object.assign(new Error(`${secret} message`),{name:`${secret}_NAME`});const f=fixture({http:async()=>{throw error;}});await f.run(['status']);assert.deepEqual(f.logs,[{event:'komari_request_failed',fields:undefined}]);assert.match(f.edits.at(-1).text,/Komari 请求失败，请稍后重试/);assert.doesNotMatch(JSON.stringify({edits:f.edits,logs:f.logs}),new RegExp(secret));});
+test("arbitrary HTTP exception names and messages never reach feedback or logs", async () => {
+  const secret = "PRIVATE_HTTP_SECRET";
+  const error = Object.assign(new Error(`${secret} message`), { name: `${secret}_NAME` });
+  const f = fixture({
+    http: async () => {
+      throw error;
+    },
+  });
+  await f.run(["status"]);
+  assert.deepEqual(f.logs, [{ event: "komari_request_failed", fields: undefined }]);
+  assert.match(f.edits.at(-1).text, /Komari 请求失败，请稍后重试/);
+  assert.doesNotMatch(JSON.stringify({ edits: f.edits, logs: f.logs }), new RegExp(secret));
+});

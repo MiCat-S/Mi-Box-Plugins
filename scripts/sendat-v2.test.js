@@ -1,25 +1,428 @@
-'use strict';
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
-const core=path.resolve(__dirname,'../../TeleBox-Core'),{buildPlugin}=require(path.join(core,'scripts/build-v2-plugin.cjs')),{PluginHost}=require(path.join(core,'dist/v2/host.js')),{definePlugin}=require(path.join(core,'dist/v2/sdk.js'));
-const packageRoot=process.env.SENDAT_PACKAGE_ROOT||path.resolve(__dirname,'../sendat');
-const {artifactDir}=buildPlugin({id:'sendat',packageRoot,entry:'v2.ts'}),create=require(path.join(artifactDir,'index.cjs')).default;
-async function fixture(t,{initial,prefixes=['.'],aliases={},sudoUsers=[],failAddReceipt=false}={}){const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'sendat-v2-')));if(initial){await fs.mkdir(path.join(root,'sendat'),{recursive:true});await fs.writeFile(path.join(root,'sendat','tasks.json'),JSON.stringify(initial));}const edits=[],replies=[],sends=[],logs=[];const client={async sendMessage(peer,value){sends.push({peer,value});}};const host=new PluginHost({storageRoot:root,prefixes,aliases,logger:{info(event,fields){logs.push({event,fields});},error(){}},telegram:{async edit(_m,text,options){if(failAddReceipt&&/已添加任务/.test(text))throw new Error('receipt');edits.push({text,options});},async reply(_m,text,options){replies.push({text,options});},async invoke(){},async getReply(){},async withClient(op,signal){return op(client,signal);}}});if(sudoUsers!==null)await host.load(definePlugin({apiVersion:1,id:'sudo',description:'mock',commands:{},services:{is_authorized:{description:'mock',handle(input){return sudoUsers.includes(input.senderId);}}}}));await host.load(create());t.after(async()=>{assert.equal((await host.shutdown(2000)).completed,true);await fs.rm(root,{recursive:true,force:true});});return{root,host,edits,replies,sends,logs,run:(text,extra={})=>host.dispatchPrimary({id:1,chatId:'9007199254740993',senderId:'1',outgoing:true,text,raw:{message:text},...extra}),read:async()=>JSON.parse(await fs.readFile(path.join(root,'sendat','tasks.json'),'utf8'))};}
+"use strict";
+const test = require("node:test"),
+  assert = require("node:assert/strict"),
+  fs = require("node:fs/promises"),
+  os = require("node:os"),
+  path = require("node:path");
+const core = path.resolve(__dirname, "../../TeleBox-Core"),
+  { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs")),
+  { PluginHost } = require(path.join(core, "dist/v2/host.js")),
+  { definePlugin } = require(path.join(core, "dist/v2/sdk.js"));
+const packageRoot = process.env.SENDAT_PACKAGE_ROOT || path.resolve(__dirname, "../sendat");
+const { artifactDir } = buildPlugin({ id: "sendat", packageRoot, entry: "v2.ts" }),
+  create = require(path.join(artifactDir, "index.cjs")).default;
+async function fixture(t, { initial, prefixes = ["."], aliases = {}, sudoUsers = [], failAddReceipt = false } = {}) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sendat-v2-")));
+  if (initial) {
+    await fs.mkdir(path.join(root, "sendat"), { recursive: true });
+    await fs.writeFile(path.join(root, "sendat", "tasks.json"), JSON.stringify(initial));
+  }
+  const edits = [],
+    replies = [],
+    sends = [],
+    logs = [];
+  const client = {
+    async sendMessage(peer, value) {
+      sends.push({ peer, value });
+    },
+  };
+  const host = new PluginHost({
+    storageRoot: root,
+    prefixes,
+    aliases,
+    logger: {
+      info(event, fields) {
+        logs.push({ event, fields });
+      },
+      error() {},
+    },
+    telegram: {
+      async edit(_m, text, options) {
+        if (failAddReceipt && /已添加任务/.test(text)) throw new Error("receipt");
+        edits.push({ text, options });
+      },
+      async reply(_m, text, options) {
+        replies.push({ text, options });
+      },
+      async invoke() {},
+      async getReply() {},
+      async withClient(op, signal) {
+        return op(client, signal);
+      },
+    },
+  });
+  if (sudoUsers !== null)
+    await host.load(
+      definePlugin({
+        apiVersion: 1,
+        id: "sudo",
+        description: "mock",
+        commands: {},
+        services: {
+          is_authorized: {
+            description: "mock",
+            handle(input) {
+              return sudoUsers.includes(input.senderId);
+            },
+          },
+        },
+      }),
+    );
+  await host.load(create());
+  t.after(async () => {
+    assert.equal((await host.shutdown(2000)).completed, true);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  return {
+    root,
+    host,
+    edits,
+    replies,
+    sends,
+    logs,
+    run: (text, extra = {}) =>
+      host.dispatchPrimary({
+        id: 1,
+        chatId: "9007199254740993",
+        senderId: "1",
+        outgoing: true,
+        text,
+        raw: { message: text },
+        ...extra,
+      }),
+    read: async () => JSON.parse(await fs.readFile(path.join(root, "sendat", "tasks.json"), "utf8")),
+  };
+}
 
-test('concurrent additions allocate unique stable task IDs atomically',async t=>{const f=await fixture(t);await Promise.all(Array.from({length:12},(_,index)=>f.host.dispatchPrimary({id:index+1,chatId:String(index+1),senderId:'1',outgoing:true,text:`.sendat every ${index+1} seconds | task ${index}`,raw:{message:`.sendat every ${index+1} seconds | task ${index}`}})));const state=await f.read(),ids=state.tasks.map(task=>task.task_id);assert.equal(new Set(ids).size,12);assert.deepEqual([...ids].sort((a,b)=>a-b),Array.from({length:12},(_,i)=>i+1));assert.equal(f.host.snapshot().jobs.jobs,12);});
+test("concurrent additions allocate unique stable task IDs atomically", async t => {
+  const f = await fixture(t);
+  await Promise.all(
+    Array.from({ length: 12 }, (_, index) =>
+      f.host.dispatchPrimary({
+        id: index + 1,
+        chatId: String(index + 1),
+        senderId: "1",
+        outgoing: true,
+        text: `.sendat every ${index + 1} seconds | task ${index}`,
+        raw: { message: `.sendat every ${index + 1} seconds | task ${index}` },
+      }),
+    ),
+  );
+  const state = await f.read(),
+    ids = state.tasks.map(task => task.task_id);
+  assert.equal(new Set(ids).size, 12);
+  assert.deepEqual(
+    [...ids].sort((a, b) => a - b),
+    Array.from({ length: 12 }, (_, i) => i + 1),
+  );
+  assert.equal(f.host.snapshot().jobs.jobs, 12);
+});
 
-test('one-shot dueAt and cron use the configured IANA timezone independent of host timezone',async t=>{const f=await fixture(t);await f.host.patchSettings('sendat',{timezone:'America/New_York'});await f.run('.sendat 16:17:18 date | local');const task=(await f.read()).tasks[0],visible=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date(task.dueAt));assert.equal(visible,'16:17:18');assert.ok(new Date(task.dueAt)>new Date());});
+test("one-shot dueAt and cron use the configured IANA timezone independent of host timezone", async t => {
+  const f = await fixture(t);
+  await f.host.patchSettings("sendat", { timezone: "America/New_York" });
+  await f.run(".sendat 16:17:18 date | local");
+  const task = (await f.read()).tasks[0],
+    visible = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/New_York",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).format(new Date(task.dueAt));
+  assert.equal(visible, "16:17:18");
+  assert.ok(new Date(task.dueAt) > new Date());
+});
 
-test('raw alias input preserves multiline text and stores normalized safe HTML entities',async t=>{const f=await fixture(t,{aliases:{sa:'sendat'}}),raw='.sa every 5 minutes | 第一行 <b>粗体</b> & 文本\n第二行\t😀';await f.run(raw,{raw:{message:raw}});const task=(await f.read()).tasks[0];assert.equal(task.msg,'第一行 <b>粗体</b> &amp; 文本\n第二行\t😀');assert.match(f.edits.at(-1).text,/已添加任务 #1/);});
+test("raw alias input preserves multiline text and stores normalized safe HTML entities", async t => {
+  const f = await fixture(t, { aliases: { sa: "sendat" } }),
+    raw = ".sa every 5 minutes | 第一行 <b>粗体</b> & 文本\n第二行\t😀";
+  await f.run(raw, { raw: { message: raw } });
+  const task = (await f.read()).tasks[0];
+  assert.equal(task.msg, "第一行 <b>粗体</b> &amp; 文本\n第二行\t😀");
+  assert.match(f.edits.at(-1).text, /已添加任务 #1/);
+});
 
-test('setup migrates legacy IDs, entities, dueAt and invalid records without scheduler collisions',async t=>{const common={cid:7,msg:'legacy <b>bold</b> & raw',interval:false,cron:true,pause:false,time_limit:-1,hour:'23',minute:'58',second:'57'};const initial={schemaVersion:0,timezone:'Invalid/Zone',unknown:'keep',tasks:[{...common,task_id:4,current_count:undefined},{...common,task_id:4,msg:'second'},{...common,task_id:'bad',msg:'third'},{...common,task_id:9,msg:'x'.repeat(5000),hour:'bad'}]};const f=await fixture(t,{initial}),state=await f.read();assert.equal(state.timezone,'Asia/Shanghai');assert.equal(state.unknown,'keep');assert.equal(new Set(state.tasks.map(task=>task.task_id)).size,4);assert.ok(state.tasks.slice(0,3).every(task=>task.dueAt&&task.cid==='7'));assert.equal(state.tasks[0].msg,'legacy <b>bold</b> &amp; raw');assert.equal(state.tasks[0].current_count,0);assert.equal(state.tasks[3].pause,true);assert.equal(f.host.snapshot().jobs.jobs,3);});
+test("setup migrates legacy IDs, entities, dueAt and invalid records without scheduler collisions", async t => {
+  const common = {
+    cid: 7,
+    msg: "legacy <b>bold</b> & raw",
+    interval: false,
+    cron: true,
+    pause: false,
+    time_limit: -1,
+    hour: "23",
+    minute: "58",
+    second: "57",
+  };
+  const initial = {
+    schemaVersion: 0,
+    timezone: "Invalid/Zone",
+    unknown: "keep",
+    tasks: [
+      { ...common, task_id: 4, current_count: undefined },
+      { ...common, task_id: 4, msg: "second" },
+      { ...common, task_id: "bad", msg: "third" },
+      { ...common, task_id: 9, msg: "x".repeat(5000), hour: "bad" },
+    ],
+  };
+  const f = await fixture(t, { initial }),
+    state = await f.read();
+  assert.equal(state.timezone, "Asia/Shanghai");
+  assert.equal(state.unknown, "keep");
+  assert.equal(new Set(state.tasks.map(task => task.task_id)).size, 4);
+  assert.ok(state.tasks.slice(0, 3).every(task => task.dueAt && task.cid === "7"));
+  assert.equal(state.tasks[0].msg, "legacy <b>bold</b> &amp; raw");
+  assert.equal(state.tasks[0].current_count, 0);
+  assert.equal(state.tasks[3].pause, true);
+  assert.equal(f.host.snapshot().jobs.jobs, 3);
+});
 
-test('list restores timing and count descriptions with bounded complete pages',async t=>{const tasks=Array.from({length:100},(_,i)=>({task_id:i+1,cid:'9007199254740993',msg:`消息 <${i}> 😀`.repeat(8),interval:true,cron:false,pause:i===0,time_limit:3,hour:'0',minute:'5',second:'0',current_count:0,delivery:'pending'}));const f=await fixture(t,{initial:{schemaVersion:1,timezone:'Asia/Shanghai',tasks}});await f.run('.sendat list');const pages=[f.edits.at(-1),...f.replies];assert.ok(pages.length>1);assert.ok(pages.every(page=>page.text.length<=4096));const text=pages.map(page=>page.text).join('\n');assert.match(text,/任务 #1 - 每5分钟，执行 3 次 \[已暂停\]/);assert.match(text,/消息: 消息 &lt;0&gt; 😀/);assert.match(pages.at(-1).text,/\d+\/\d+ 页/);});
+test("list restores timing and count descriptions with bounded complete pages", async t => {
+  const tasks = Array.from({ length: 100 }, (_, i) => ({
+    task_id: i + 1,
+    cid: "9007199254740993",
+    msg: `消息 <${i}> 😀`.repeat(8),
+    interval: true,
+    cron: false,
+    pause: i === 0,
+    time_limit: 3,
+    hour: "0",
+    minute: "5",
+    second: "0",
+    current_count: 0,
+    delivery: "pending",
+  }));
+  const f = await fixture(t, { initial: { schemaVersion: 1, timezone: "Asia/Shanghai", tasks } });
+  await f.run(".sendat list");
+  const pages = [f.edits.at(-1), ...f.replies];
+  assert.ok(pages.length > 1);
+  assert.ok(pages.every(page => page.text.length <= 4096));
+  const text = pages.map(page => page.text).join("\n");
+  assert.match(text, /任务 #1 - 每5分钟，执行 3 次 \[已暂停\]/);
+  assert.match(text, /消息: 消息 &lt;0&gt; 😀/);
+  assert.match(pages.at(-1).text, /\d+\/\d+ 页/);
+});
 
-test('scheduled callback preserves exact peer and HTML entity payload but cancellation prevents state advance',async()=>{let state={schemaVersion:1,timezone:'Asia/Shanghai',tasks:[{task_id:1,cid:'9007199254740993',msg:'hello &amp; <b>world</b>',sourceMsg:'hello & <b>world</b>',interval:true,cron:false,pause:false,time_limit:2,hour:'0',minute:'1',second:'0',current_count:0,delivery:'pending'}]},handler,release,sent;const controller=new AbortController(),gate=new Promise(resolve=>{release=resolve;});const context={signal:controller.signal,log:{info(){},error(){}},storage:{json:()=>({read:async()=>structuredClone(state),update:async fn=>(state=await fn(structuredClone(state)))})},jobs:{async register(_id,_spec,run){handler=run;return async()=>{};}},telegram:{async withClient(use){return use({async sendMessage(peer,value){sent={peer,value};await gate;}},controller.signal);}}};const definition=create();await definition.setup(context);const running=handler(controller.signal);await new Promise(resolve=>setImmediate(resolve));assert.equal(String(sent.peer),'9007199254740993');assert.deepEqual(sent.value,{message:'hello &amp; <b>world</b>',parseMode:'html'});controller.abort();release();await assert.rejects(running,{name:'AbortError'});assert.equal(state.tasks[0].current_count,0);assert.equal(state.tasks[0].delivery,'prepared');await definition.cleanup();});
+test("scheduled callback preserves exact peer and HTML entity payload but cancellation prevents state advance", async () => {
+  let state = {
+      schemaVersion: 1,
+      timezone: "Asia/Shanghai",
+      tasks: [
+        {
+          task_id: 1,
+          cid: "9007199254740993",
+          msg: "hello &amp; <b>world</b>",
+          sourceMsg: "hello & <b>world</b>",
+          interval: true,
+          cron: false,
+          pause: false,
+          time_limit: 2,
+          hour: "0",
+          minute: "1",
+          second: "0",
+          current_count: 0,
+          delivery: "pending",
+        },
+      ],
+    },
+    handler,
+    release,
+    sent;
+  const controller = new AbortController(),
+    gate = new Promise(resolve => {
+      release = resolve;
+    });
+  const context = {
+    signal: controller.signal,
+    log: { info() {}, error() {} },
+    storage: {
+      json: () => ({
+        read: async () => structuredClone(state),
+        update: async fn => (state = await fn(structuredClone(state))),
+      }),
+    },
+    jobs: {
+      async register(_id, _spec, run) {
+        handler = run;
+        return async () => {};
+      },
+    },
+    telegram: {
+      async withClient(use) {
+        return use(
+          {
+            async sendMessage(peer, value) {
+              sent = { peer, value };
+              await gate;
+            },
+          },
+          controller.signal,
+        );
+      },
+    },
+  };
+  const definition = create();
+  await definition.setup(context);
+  const running = handler(controller.signal);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(String(sent.peer), "9007199254740993");
+  assert.deepEqual(sent.value, { message: "hello &amp; <b>world</b>", parseMode: "html" });
+  controller.abort();
+  release();
+  await assert.rejects(running, { name: "AbortError" });
+  assert.equal(state.tasks[0].current_count, 0);
+  assert.equal(state.tasks[0].delivery, "prepared");
+  await definition.cleanup();
+});
 
-test('scheduler and storage diagnostics are not reflected by the add command',async()=>{let state={schemaVersion:1,timezone:'Asia/Shanghai',tasks:[]},edited='';const context={signal:new AbortController().signal,commands:{parse:()=>({prefix:'.',command:'sendat',args:['every','1','minutes','|','hello'],text:'.sendat every 1 minutes | hello'})},log:{error(){}},storage:{json:()=>({read:async()=>structuredClone(state),update:async fn=>(state=await fn(structuredClone(state)))})},jobs:{async register(){throw Object.assign(new Error('private path /Users/cat'),{code:'TOKEN'});}},telegram:{async edit(_m,text){edited=text;}}};await create().commands.sendat.handle({command:'sendat',prefix:'.',args:['every','1','minutes','|','hello'],message:{id:1,chatId:'1',senderId:'1',outgoing:true,text:'.sendat every 1 minutes | hello'}},context);assert.match(edited,/添加任务失败，请稍后重试/);assert.doesNotMatch(edited,/private|Users|TOKEN/);assert.deepEqual(state.tasks,[]);});
+test("scheduler and storage diagnostics are not reflected by the add command", async () => {
+  let state = { schemaVersion: 1, timezone: "Asia/Shanghai", tasks: [] },
+    edited = "";
+  const context = {
+    signal: new AbortController().signal,
+    commands: {
+      parse: () => ({
+        prefix: ".",
+        command: "sendat",
+        args: ["every", "1", "minutes", "|", "hello"],
+        text: ".sendat every 1 minutes | hello",
+      }),
+    },
+    log: { error() {} },
+    storage: {
+      json: () => ({
+        read: async () => structuredClone(state),
+        update: async fn => (state = await fn(structuredClone(state))),
+      }),
+    },
+    jobs: {
+      async register() {
+        throw Object.assign(new Error("private path /Users/cat"), { code: "TOKEN" });
+      },
+    },
+    telegram: {
+      async edit(_m, text) {
+        edited = text;
+      },
+    },
+  };
+  await create().commands.sendat.handle(
+    {
+      command: "sendat",
+      prefix: ".",
+      args: ["every", "1", "minutes", "|", "hello"],
+      message: { id: 1, chatId: "1", senderId: "1", outgoing: true, text: ".sendat every 1 minutes | hello" },
+    },
+    context,
+  );
+  assert.match(edited, /添加任务失败，请稍后重试/);
+  assert.doesNotMatch(edited, /private|Users|TOKEN/);
+  assert.deepEqual(state.tasks, []);
+});
 
-test('sudo service restores list all and cross-chat deletion while missing or denied service fails closed',async t=>{const initial={schemaVersion:1,timezone:'Asia/Shanghai',tasks:[{task_id:1,cid:'other',msg:'remote',sourceMsg:'remote',interval:true,cron:false,pause:false,time_limit:-1,hour:'0',minute:'5',second:'0',current_count:0,delivery:'pending'}]};const allowed=await fixture(t,{initial,sudoUsers:['42']});await allowed.run('.sendat list all',{senderId:'42'});assert.match(allowed.edits.at(-1).text,/所有任务[\s\S]*remote/);await allowed.run('.sendat rm 1',{senderId:'42'});assert.equal((await allowed.read()).tasks.length,0);const denied=await fixture(t,{initial,sudoUsers:[]});await denied.run('.sendat list all',{senderId:'42'});assert.match(denied.edits.at(-1).text,/只有管理员/);assert.equal((await denied.read()).tasks.length,1);const missing=await fixture(t,{initial,sudoUsers:null});await missing.run('.sendat rm 1',{senderId:'42'});assert.match(missing.edits.at(-1).text,/需要支持 sudo\.is_authorized 的 Core/);assert.equal((await missing.read()).tasks.length,1);});
+test("sudo service restores list all and cross-chat deletion while missing or denied service fails closed", async t => {
+  const initial = {
+    schemaVersion: 1,
+    timezone: "Asia/Shanghai",
+    tasks: [
+      {
+        task_id: 1,
+        cid: "other",
+        msg: "remote",
+        sourceMsg: "remote",
+        interval: true,
+        cron: false,
+        pause: false,
+        time_limit: -1,
+        hour: "0",
+        minute: "5",
+        second: "0",
+        current_count: 0,
+        delivery: "pending",
+      },
+    ],
+  };
+  const allowed = await fixture(t, { initial, sudoUsers: ["42"] });
+  await allowed.run(".sendat list all", { senderId: "42" });
+  assert.match(allowed.edits.at(-1).text, /所有任务[\s\S]*remote/);
+  await allowed.run(".sendat rm 1", { senderId: "42" });
+  assert.equal((await allowed.read()).tasks.length, 0);
+  const denied = await fixture(t, { initial, sudoUsers: [] });
+  await denied.run(".sendat list all", { senderId: "42" });
+  assert.match(denied.edits.at(-1).text, /只有管理员/);
+  assert.equal((await denied.read()).tasks.length, 1);
+  const missing = await fixture(t, { initial, sudoUsers: null });
+  await missing.run(".sendat rm 1", { senderId: "42" });
+  assert.match(missing.edits.at(-1).text, /需要支持 sudo\.is_authorized 的 Core/);
+  assert.equal((await missing.read()).tasks.length, 1);
+});
 
-test('successful registration survives receipt failure and failed resume registration stays paused',async t=>{const f=await fixture(t,{failAddReceipt:true});await f.run('.sendat every 5 minutes | durable');assert.equal((await f.read()).tasks.length,1);assert.equal(f.host.snapshot().jobs.jobs,1);assert.ok(f.logs.some(log=>log.event==='sendat.add.receipt_failed'));
-  let state={schemaVersion:1,timezone:'Asia/Shanghai',tasks:[{task_id:2,cid:'1',msg:'x',interval:true,cron:false,pause:true,time_limit:-1,hour:'0',minute:'5',second:'0',current_count:0,delivery:'pending'}]},edited='';const context={signal:new AbortController().signal,services:{available(){return false;},call(){throw new Error('unexpected');}},storage:{json:()=>({read:async()=>structuredClone(state),update:async fn=>(state=await fn(structuredClone(state)))})},jobs:{async register(){throw new Error('registration failed');}},telegram:{async edit(_m,text){edited=text;}}};await assert.rejects(create().commands.sendat.handle({command:'sendat',prefix:'.',args:['resume','2'],message:{id:1,chatId:'1',senderId:'1',outgoing:true,text:'.sendat resume 2'}},context));assert.equal(state.tasks[0].pause,true);assert.equal(edited,'');});
+test("successful registration survives receipt failure and failed resume registration stays paused", async t => {
+  const f = await fixture(t, { failAddReceipt: true });
+  await f.run(".sendat every 5 minutes | durable");
+  assert.equal((await f.read()).tasks.length, 1);
+  assert.equal(f.host.snapshot().jobs.jobs, 1);
+  assert.ok(f.logs.some(log => log.event === "sendat.add.receipt_failed"));
+  let state = {
+      schemaVersion: 1,
+      timezone: "Asia/Shanghai",
+      tasks: [
+        {
+          task_id: 2,
+          cid: "1",
+          msg: "x",
+          interval: true,
+          cron: false,
+          pause: true,
+          time_limit: -1,
+          hour: "0",
+          minute: "5",
+          second: "0",
+          current_count: 0,
+          delivery: "pending",
+        },
+      ],
+    },
+    edited = "";
+  const context = {
+    signal: new AbortController().signal,
+    services: {
+      available() {
+        return false;
+      },
+      call() {
+        throw new Error("unexpected");
+      },
+    },
+    storage: {
+      json: () => ({
+        read: async () => structuredClone(state),
+        update: async fn => (state = await fn(structuredClone(state))),
+      }),
+    },
+    jobs: {
+      async register() {
+        throw new Error("registration failed");
+      },
+    },
+    telegram: {
+      async edit(_m, text) {
+        edited = text;
+      },
+    },
+  };
+  await assert.rejects(
+    create().commands.sendat.handle(
+      {
+        command: "sendat",
+        prefix: ".",
+        args: ["resume", "2"],
+        message: { id: 1, chatId: "1", senderId: "1", outgoing: true, text: ".sendat resume 2" },
+      },
+      context,
+    ),
+  );
+  assert.equal(state.tasks[0].pause, true);
+  assert.equal(edited, "");
+});

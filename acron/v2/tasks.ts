@@ -7,8 +7,8 @@ export type TaskType = "send" | "copy" | "forward" | "del" | "del_re" | "pin" | 
  * TypeScript does not try to resolve the specifier at build time.
  */
 interface CronModule {
-  validateCronExpression(expression: string): {valid: boolean; error?: string};
-  CronTime: new (source: string, timeZone?: string) => {sendAt(): {toJSDate?: () => Date} | Date | null};
+  validateCronExpression(expression: string): { valid: boolean; error?: string };
+  CronTime: new (source: string, timeZone?: string) => { sendAt(): { toJSDate?: () => Date } | Date | null };
 }
 const CRON_MODULE = "cron";
 /** The host registers jobs in this zone; next-run display must use the same one. */
@@ -65,18 +65,24 @@ export const TASK_TYPES: TaskType[] = ["send", "copy", "forward", "del", "del_re
 export const DEL_RE_MAX_LIMIT = 1000;
 
 export function createDefaults(): State {
-  return {schemaVersion: 1, seq: "0", tasks: []};
+  return { schemaVersion: 1, seq: "0", tasks: [] };
 }
 
 export const escapeHtml = (value: string): string =>
-  value.replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[char]!);
+  value.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 
 const TYPE_LABELS: Record<TaskType, string> = {
-  send: "发送", cmd: "命令", copy: "复制", forward: "转发",
-  del: "删除", del_re: "正则删除", pin: "置顶", unpin: "取消置顶",
+  send: "发送",
+  cmd: "命令",
+  copy: "复制",
+  forward: "转发",
+  del: "删除",
+  del_re: "正则删除",
+  pin: "置顶",
+  unpin: "取消置顶",
 };
 
-export const typeLabel = (type?: TaskType): string => type ? TYPE_LABELS[type] : "";
+export const typeLabel = (type?: TaskType): string => (type ? TYPE_LABELS[type] : "");
 
 /** Six whitespace-separated fields, matching the legacy fast check before registration validates the expression. */
 export const hasSixCronFields = (value: string): boolean => value.trim().split(/\s+/).length === 6;
@@ -86,15 +92,19 @@ export function validateCronExpr(expression: string): boolean {
   if (!hasSixCronFields(expression)) return false;
   // Before the module loads, the host's jobs.register is the final validator.
   if (!cronModule) return true;
-  try { return cronModule.validateCronExpression(expression).valid; } catch { return false; }
+  try {
+    return cronModule.validateCronExpression(expression).valid;
+  } catch {
+    return false;
+  }
 }
 
 export function nextRunTime(expression: string): Date | undefined {
   if (!cronModule) return undefined;
   try {
     const next = new cronModule.CronTime(expression, CRON_TIME_ZONE).sendAt();
-    if (next && typeof (next as {toJSDate?: unknown}).toJSDate === "function") {
-      return (next as {toJSDate: () => Date}).toJSDate();
+    if (next && typeof (next as { toJSDate?: unknown }).toJSDate === "function") {
+      return (next as { toJSDate: () => Date }).toJSDate();
     }
     if (next instanceof Date) return next;
     return undefined;
@@ -105,7 +115,7 @@ export function nextRunTime(expression: string): Date | undefined {
 
 export function formatDate(date: Date): string {
   try {
-    return date.toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"});
+    return date.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
   } catch {
     return date.toISOString();
   }
@@ -120,9 +130,12 @@ export function getRemarkFromMsg(line: string, n: number): string {
 }
 
 /** Original target split, including the full-width vertical bar. */
-export function splitTarget(value: string): {chat: string; replyTo?: string} {
-  const parts = value.split(/\s*[|｜]\s*/g).map(part => part.trim()).filter(part => part.length > 0);
-  return {chat: parts[0] ?? "", ...(parts[1] ? {replyTo: parts[1]} : {})};
+export function splitTarget(value: string): { chat: string; replyTo?: string } {
+  const parts = value
+    .split(/\s*[|｜]\s*/g)
+    .map(part => part.trim())
+    .filter(part => part.length > 0);
+  return { chat: parts[0] ?? "", ...(parts[1] ? { replyTo: parts[1] } : {}) };
 }
 
 export function parseBoolFlag(value: string | undefined): boolean {
@@ -130,17 +143,17 @@ export function parseBoolFlag(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "y";
 }
 
-export function parseRegexInput(value: string): {pattern: string; flags: string} {
+export function parseRegexInput(value: string): { pattern: string; flags: string } {
   const trimmed = value.trim();
   if (trimmed.startsWith("/") && trimmed.lastIndexOf("/") > 0) {
     const last = trimmed.lastIndexOf("/");
-    return {pattern: trimmed.slice(1, last), flags: trimmed.slice(last + 1)};
+    return { pattern: trimmed.slice(1, last), flags: trimmed.slice(last + 1) };
   }
-  return {pattern: trimmed, flags: ""};
+  return { pattern: trimmed, flags: "" };
 }
 
 export function parseRegex(value: string): RegExp {
-  const {pattern, flags} = parseRegexInput(value);
+  const { pattern, flags } = parseRegexInput(value);
   return new RegExp(pattern, flags);
 }
 
@@ -191,14 +204,18 @@ export interface ListRenderOptions {
 }
 
 export function renderTaskList(options: ListRenderOptions): string {
-  const {tasks, all, typeFilter, prefix, displayOf} = options;
+  const { tasks, all, typeFilter, prefix, displayOf } = options;
   if (tasks.length === 0) {
     if (all) return typeFilter ? `暂无类型为 ${typeLabel(typeFilter)} 的定时任务` : "暂无定时任务";
     return typeFilter ? `当前会话暂无类型为 ${typeLabel(typeFilter)} 的定时任务` : "当前会话暂无定时任务";
   }
   const header = all
-    ? typeFilter ? `📋 所有 ${typeLabel(typeFilter)} 定时任务` : "📋 所有定时任务"
-    : typeFilter ? `📋 当前会话 ${typeLabel(typeFilter)} 定时任务` : "📋 当前会话定时任务";
+    ? typeFilter
+      ? `📋 所有 ${typeLabel(typeFilter)} 定时任务`
+      : "📋 所有定时任务"
+    : typeFilter
+      ? `📋 当前会话 ${typeLabel(typeFilter)} 定时任务`
+      : "📋 当前会话定时任务";
   const lines: string[] = [`<b>${header} · ${tasks.length} 个</b>`, ""];
 
   const title = (task: Task) =>

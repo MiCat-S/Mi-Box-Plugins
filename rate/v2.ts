@@ -1,28 +1,33 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, ui, type MessageEnvelope, type PluginContext} from "telebox/sdk";
-import {FIAT_CURRENCIES, CRYPTO_CURRENCIES} from "./v2/currencies";
-import {RateFailure, reason, request} from "./v2/http";
+import { renderHelp as renderPluginHelp } from "./v2/help";
+import { definePlugin, ui, type MessageEnvelope, type PluginContext } from "telebox/sdk";
+import { FIAT_CURRENCIES, CRYPTO_CURRENCIES } from "./v2/currencies";
+import { RateFailure, reason, request } from "./v2/http";
 
 function help(prefix: string): ui.Html {
   const line = (args: string | readonly string[], detail: string): ui.Html =>
     ui.concat(ui.text("• "), ui.command(prefix, "rate", args), ui.text(` - ${detail}\n`));
   return ui.concat(
-    ui.bold("🚀 智能汇率查询助手"), ui.text("\n\n"), ui.bold("📊 使用示例"), ui.text("\n"),
-    line("BTC", "比特币美元价"), line(["ETH", "CNY"], "以太坊人民币价"),
-    line(["CNY", "TRY"], "人民币兑土耳其里拉"), line(["BTC", "CNY", "0.5"], "0.5个BTC换算"),
+    ui.bold("🚀 智能汇率查询助手"),
+    ui.text("\n\n"),
+    ui.bold("📊 使用示例"),
+    ui.text("\n"),
+    line("BTC", "比特币美元价"),
+    line(["ETH", "CNY"], "以太坊人民币价"),
+    line(["CNY", "TRY"], "人民币兑土耳其里拉"),
+    line(["BTC", "CNY", "0.5"], "0.5个BTC换算"),
     line(["CNY", "USDT", "7000"], "7000元换USDT"),
   );
 }
 
-const htmlOptions = {parseMode: "html", linkPreview: false} as const;
+const htmlOptions = { parseMode: "html", linkPreview: false } as const;
 
-type Currency = {symbol: string; type: "fiat" | "crypto"};
+type Currency = { symbol: string; type: "fiat" | "crypto" };
 type Rates = Record<string, number>;
 const bridges = ["USDT", "BUSD", "USDC"] as const;
 const code = (text: string) => ui.code(text);
 const validCode = (text: string) => /^[a-z][a-z0-9-]{0,63}$/i.test(text);
 const record = (value: unknown): Record<string, unknown> | undefined =>
-  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 const positive = (value: number): number => {
   if (!Number.isFinite(value) || value <= 0) throw new RateFailure("汇率服务返回了无效价格");
   return value;
@@ -37,7 +42,7 @@ function normalize(token: string): string {
   return key;
 }
 
-function parse(args: readonly string[]): {base: string; quote: string; amount: number} {
+function parse(args: readonly string[]): { base: string; quote: string; amount: number } {
   if (args.length > 32) throw new RateFailure("参数过多，请使用货币代码和有限数量");
   const currencies: string[] = [];
   let amount = 1;
@@ -50,7 +55,7 @@ function parse(args: readonly string[]): {base: string; quote: string; amount: n
     else if (validCode(token) && !/^(?:nan|infinity)$/i.test(token)) currencies.push(token);
     else throw new RateFailure("请提供有效的货币代码和有限数量");
   }
-  return {base: currencies[0] || "btc", quote: currencies[1] || "usd", amount};
+  return { base: currencies[0] || "btc", quote: currencies[1] || "usd", amount };
 }
 
 function boundedSet<K, V>(cache: Map<K, V>, key: K, value: V, limit: number): void {
@@ -60,7 +65,9 @@ function boundedSet<K, V>(cache: Map<K, V>, key: K, value: V, limit: number): vo
 }
 
 function formatAmount(value: number): string {
-  return value >= 1 ? value.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2}) : value.toFixed(6);
+  return value >= 1
+    ? value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : value.toFixed(6);
 }
 
 function formatPrice(value: number): string {
@@ -71,13 +78,16 @@ function formatPrice(value: number): string {
 }
 
 function feedback(state: "working" | "success" | "error", title: string, detail?: string): ui.Html {
-  return ui.renderFeedback({state, title, ...(detail ? {detail} : {})});
+  return ui.renderFeedback({ state, title, ...(detail ? { detail } : {}) });
 }
 
 async function rich(value: string): Promise<ui.Html> {
   const lines = await ui.richText(value);
   const parts: ui.Html[] = [];
-  lines.forEach((line, index) => { if (index) parts.push(ui.text("\n")); parts.push(line); });
+  lines.forEach((line, index) => {
+    if (index) parts.push(ui.text("\n"));
+    parts.push(line);
+  });
   return ui.concat(...parts);
 }
 
@@ -89,8 +99,8 @@ async function edit(context: PluginContext, message: MessageEnvelope, value: str
 }
 
 export default function createRate() {
-  const fiatCache = new Map<string, {rates: Rates; ts: number}>();
-  let dynamicFiats: {codes: Set<string>; ts: number} | undefined;
+  const fiatCache = new Map<string, { rates: Rates; ts: number }>();
+  let dynamicFiats: { codes: Set<string>; ts: number } | undefined;
   let active = 0;
 
   async function isFiat(query: string, context: PluginContext, get: typeof request): Promise<boolean> {
@@ -107,24 +117,32 @@ export default function createRate() {
         const object = record(data);
         const source = index === 0 ? data : index === 1 ? record(object?.symbols) : object;
         const keys = index === 0 ? source : source ? Object.keys(source) : undefined;
-        if (!Array.isArray(keys) || keys.length === 0 || keys.length > 1024 ||
-            keys.some(key => typeof key !== "string" || !validCode(key))) throw new RateFailure("货币列表格式无效");
-        dynamicFiats = {codes: new Set(keys.map(key => key.toLowerCase())), ts: Date.now()};
+        if (
+          !Array.isArray(keys) ||
+          keys.length === 0 ||
+          keys.length > 1024 ||
+          keys.some(key => typeof key !== "string" || !validCode(key))
+        )
+          throw new RateFailure("货币列表格式无效");
+        dynamicFiats = { codes: new Set(keys.map(key => key.toLowerCase())), ts: Date.now() };
         return dynamicFiats.codes.has(query);
       } catch {
         context.signal.throwIfAborted();
       }
     }
     // Built-in currencies were already resolved before this dynamic fallback.
-    dynamicFiats = {codes: new Set(Object.keys(FIAT_CURRENCIES)), ts: Date.now()};
+    dynamicFiats = { codes: new Set(Object.keys(FIAT_CURRENCIES)), ts: Date.now() };
     return dynamicFiats.codes.has(query);
   }
 
   async function currency(query: string, context: PluginContext, get: typeof request): Promise<Currency> {
-    for (const [type, table] of [["fiat", FIAT_CURRENCIES], ["crypto", CRYPTO_CURRENCIES]] as const) {
-      if (Object.hasOwn(table, query)) return {symbol: table[query].symbol, type};
+    for (const [type, table] of [
+      ["fiat", FIAT_CURRENCIES],
+      ["crypto", CRYPTO_CURRENCIES],
+    ] as const) {
+      if (Object.hasOwn(table, query)) return { symbol: table[query].symbol, type };
     }
-    return {symbol: query.toUpperCase(), type: await isFiat(query, context, get) ? "fiat" : "crypto"};
+    return { symbol: query.toUpperCase(), type: (await isFiat(query, context, get)) ? "fiat" : "crypto" };
   }
 
   async function fiatRates(base: string, context: PluginContext, get: typeof request): Promise<Rates> {
@@ -155,7 +173,7 @@ export default function createRate() {
           if (Number.isFinite(number) && number > 0) rates[name.toLowerCase()] = number;
         }
         if (Object.keys(rates).length === 0) throw new RateFailure("法币汇率数据无有效价格");
-        boundedSet(fiatCache, key, {rates, ts: Date.now()}, 16);
+        boundedSet(fiatCache, key, { rates, ts: Date.now() }, 16);
         return rates;
       } catch (error) {
         context.signal.throwIfAborted();
@@ -166,122 +184,186 @@ export default function createRate() {
   }
 
   return definePlugin({
-    apiVersion: 1, id: "rate", description: "加密货币汇率查询与数量换算", renderHelp: renderPluginHelp,
-    cleanup() { fiatCache.clear(); dynamicFiats = undefined; },
+    apiVersion: 1,
+    id: "rate",
+    description: "加密货币汇率查询与数量换算",
+    renderHelp: renderPluginHelp,
+    cleanup() {
+      fiatCache.clear();
+      dynamicFiats = undefined;
+    },
     commands: {
-      rate: {helpArgs: ["help","h"], description: "智能汇率查询与数量换算", async handle({message, args, prefix}, context) {
-        context.signal.throwIfAborted();
-        if (active >= 4) {
-          try { await edit(context, message, feedback("error", "汇率查询繁忙", "请稍后重试")); }
-          catch { if (!context.signal.aborted) context.log.error("rate.message.failed"); }
-          return;
-        }
-        active++;
-        let fallback: ui.Html = ui.text("");
-        try {
-          if (!args[0] || args[0] === "help" || args[0] === "h") { await edit(context, message, help(prefix)); return; }
-          const {base, quote, amount} = parse(args);
-          const query = encodeURIComponent(`${amount} ${base.toUpperCase()} to ${quote.toUpperCase()}`);
-          fallback = ui.concat(ui.text("\n\n🔎 "), ui.bold("谷歌兜底:"), ui.text(" "),
-            ui.link(`https://www.google.com/search?q=${query}`, "点击查看"));
-          let requests = 0;
-          const get: typeof request = async (ctx, url, timeout) => {
-            ctx.signal.throwIfAborted();
-            if (++requests > 64) throw new RateFailure("本次查询已达到请求上限，请稍后重试");
-            return request(ctx, url, timeout);
-          };
-          await edit(context, message, feedback("working", "正在查询汇率"));
-          const source = await currency(base, context, get);
+      rate: {
+        helpArgs: ["help", "h"],
+        description: "智能汇率查询与数量换算",
+        async handle({ message, args, prefix }, context) {
           context.signal.throwIfAborted();
-          const target = await currency(quote, context, get);
-
-          const tickers = new Map<string, number>();
-          async function binance(pair: string): Promise<number> {
-            context.signal.throwIfAborted();
-            const cached = tickers.get(pair);
-            if (cached !== undefined) return cached;
-            const data = record(await get(context, `https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(pair)}`, 5000));
-            const value = data?.price;
-            if (typeof value !== "number" && typeof value !== "string") throw new RateFailure("币安交易对价格无效");
-            const price = positive(Number(value));
-            tickers.set(pair, price);
-            return price;
-          }
-          async function cryptoFiat(crypto: string, fiat: string): Promise<number> {
-            let last = "交易对不可用";
-            for (const bridge of bridges) {
-              try {
-                const price = await binance(`${crypto}${bridge}`);
-                const rates = await fiatRates("usd", context, get);
-                return positive(price * positive(rates[fiat.toLowerCase()]));
-              } catch (error) {
-                context.signal.throwIfAborted();
-                last = reason(error);
-              }
+          if (active >= 4) {
+            try {
+              await edit(context, message, feedback("error", "汇率查询繁忙", "请稍后重试"));
+            } catch {
+              if (!context.signal.aborted) context.log.error("rate.message.failed");
             }
-            throw new RateFailure(`无法获取 ${crypto} 对 ${fiat} 的价格。最后错误: ${last}`);
-          }
-          async function cryptoCrypto(first: string, second: string): Promise<number> {
-            try { return await binance(`${first}${second}`); } catch { context.signal.throwIfAborted(); }
-            try { return positive(1 / await binance(`${second}${first}`)); } catch { context.signal.throwIfAborted(); }
-            for (const bridge of bridges) {
-              try { return positive(await binance(`${first}${bridge}`) / await binance(`${second}${bridge}`)); }
-              catch { context.signal.throwIfAborted(); }
-            }
-            throw new RateFailure(`无法找到 ${first} 和 ${second} 之间的交易对`);
-          }
-          let price: number;
-          try {
-            if (source.type === "crypto" && target.type === "crypto") price = await cryptoCrypto(source.symbol, target.symbol);
-            else if (source.type === "crypto") price = await cryptoFiat(source.symbol, target.symbol);
-            else if (target.type === "crypto") {
-              try { price = positive(1 / await cryptoFiat(target.symbol, source.symbol)); }
-              catch { context.signal.throwIfAborted(); throw new RateFailure(`无法获取 ${target.symbol} 对 ${source.symbol} 的价格来计算反向汇率`); }
-            } else {
-              const rates = await fiatRates(source.symbol, context, get);
-              if (!rates[target.symbol.toLowerCase()]) throw new RateFailure(`无法获取 ${source.symbol} 到 ${target.symbol} 的汇率`);
-              price = positive(rates[target.symbol.toLowerCase()]);
-            }
-          } catch (error) {
-            context.signal.throwIfAborted();
-            await edit(context, message, ui.concat(
-              feedback("error", "获取价格失败", reason(error)), ui.text("\n\n"), ui.bold("🔍 调试信息:"),
-              ui.text("\n• "), ui.code(source.symbol), ui.text(` (${source.type})\n• `), ui.code(target.symbol), ui.text(` (${target.type})`), fallback,
-            ));
             return;
           }
-          context.signal.throwIfAborted();
-          const lastUpdated = new Date().toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"});
-          const converted = amount * price;
-          if (!Number.isFinite(converted)) throw new RateFailure("换算结果超出有限数值范围");
-          let output = "💱 <b>汇率</b>\n\n";
-          if (source.type === "crypto" && target.type === "fiat" && amount === 1) {
-            output += `${code(`1 ${source.symbol} = ${formatPrice(price)} ${target.symbol}`)}\n\n`;
-          } else {
-            output += `${code(`${formatAmount(amount)} ${source.symbol} ≈`)}\n${code(`${formatAmount(converted)} ${target.symbol}`)}\n\n`;
-            if (source.type === "fiat" && target.type === "fiat") {
-              output += `📊 <b>汇率:</b> ${code(`1 ${source.symbol} = ${formatAmount(price)} ${target.symbol}`)}\n`;
-            } else if (source.type === "crypto" && target.type === "crypto") {
-              let first = 0, second = 0;
-              try { first = await cryptoFiat(source.symbol, "USD"); second = await cryptoFiat(target.symbol, "USD"); }
-              catch { context.signal.throwIfAborted(); }
-              output += `💎 <b>兑换比率:</b> ${code(`1 ${source.symbol} = ${formatAmount(price)} ${target.symbol}`)}\n`;
-              output += `📊 <b>基准价格:</b> ${code(`${source.symbol} $${formatPrice(first)} • ${target.symbol} $${formatPrice(second)}`)}\n`;
-            } else {
-              const reverse = source.type === "fiat";
-              output += `💎 <b>当前汇率:</b> ${code(`1 ${reverse ? target.symbol : source.symbol} = ${formatPrice(reverse ? positive(1 / price) : price)} ${reverse ? source.symbol : target.symbol}`)}\n`;
+          active++;
+          let fallback: ui.Html = ui.text("");
+          try {
+            if (!args[0] || args[0] === "help" || args[0] === "h") {
+              await edit(context, message, help(prefix));
+              return;
             }
+            const { base, quote, amount } = parse(args);
+            const query = encodeURIComponent(`${amount} ${base.toUpperCase()} to ${quote.toUpperCase()}`);
+            fallback = ui.concat(
+              ui.text("\n\n🔎 "),
+              ui.bold("谷歌兜底:"),
+              ui.text(" "),
+              ui.link(`https://www.google.com/search?q=${query}`, "点击查看"),
+            );
+            let requests = 0;
+            const get: typeof request = async (ctx, url, timeout) => {
+              ctx.signal.throwIfAborted();
+              if (++requests > 64) throw new RateFailure("本次查询已达到请求上限，请稍后重试");
+              return request(ctx, url, timeout);
+            };
+            await edit(context, message, feedback("working", "正在查询汇率"));
+            const source = await currency(base, context, get);
+            context.signal.throwIfAborted();
+            const target = await currency(quote, context, get);
+
+            const tickers = new Map<string, number>();
+            async function binance(pair: string): Promise<number> {
+              context.signal.throwIfAborted();
+              const cached = tickers.get(pair);
+              if (cached !== undefined) return cached;
+              const data = record(
+                await get(
+                  context,
+                  `https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(pair)}`,
+                  5000,
+                ),
+              );
+              const value = data?.price;
+              if (typeof value !== "number" && typeof value !== "string") throw new RateFailure("币安交易对价格无效");
+              const price = positive(Number(value));
+              tickers.set(pair, price);
+              return price;
+            }
+            async function cryptoFiat(crypto: string, fiat: string): Promise<number> {
+              let last = "交易对不可用";
+              for (const bridge of bridges) {
+                try {
+                  const price = await binance(`${crypto}${bridge}`);
+                  const rates = await fiatRates("usd", context, get);
+                  return positive(price * positive(rates[fiat.toLowerCase()]));
+                } catch (error) {
+                  context.signal.throwIfAborted();
+                  last = reason(error);
+                }
+              }
+              throw new RateFailure(`无法获取 ${crypto} 对 ${fiat} 的价格。最后错误: ${last}`);
+            }
+            async function cryptoCrypto(first: string, second: string): Promise<number> {
+              try {
+                return await binance(`${first}${second}`);
+              } catch {
+                context.signal.throwIfAborted();
+              }
+              try {
+                return positive(1 / (await binance(`${second}${first}`)));
+              } catch {
+                context.signal.throwIfAborted();
+              }
+              for (const bridge of bridges) {
+                try {
+                  return positive((await binance(`${first}${bridge}`)) / (await binance(`${second}${bridge}`)));
+                } catch {
+                  context.signal.throwIfAborted();
+                }
+              }
+              throw new RateFailure(`无法找到 ${first} 和 ${second} 之间的交易对`);
+            }
+            let price: number;
+            try {
+              if (source.type === "crypto" && target.type === "crypto")
+                price = await cryptoCrypto(source.symbol, target.symbol);
+              else if (source.type === "crypto") price = await cryptoFiat(source.symbol, target.symbol);
+              else if (target.type === "crypto") {
+                try {
+                  price = positive(1 / (await cryptoFiat(target.symbol, source.symbol)));
+                } catch {
+                  context.signal.throwIfAborted();
+                  throw new RateFailure(`无法获取 ${target.symbol} 对 ${source.symbol} 的价格来计算反向汇率`);
+                }
+              } else {
+                const rates = await fiatRates(source.symbol, context, get);
+                if (!rates[target.symbol.toLowerCase()])
+                  throw new RateFailure(`无法获取 ${source.symbol} 到 ${target.symbol} 的汇率`);
+                price = positive(rates[target.symbol.toLowerCase()]);
+              }
+            } catch (error) {
+              context.signal.throwIfAborted();
+              await edit(
+                context,
+                message,
+                ui.concat(
+                  feedback("error", "获取价格失败", reason(error)),
+                  ui.text("\n\n"),
+                  ui.bold("🔍 调试信息:"),
+                  ui.text("\n• "),
+                  ui.code(source.symbol),
+                  ui.text(` (${source.type})\n• `),
+                  ui.code(target.symbol),
+                  ui.text(` (${target.type})`),
+                  fallback,
+                ),
+              );
+              return;
+            }
+            context.signal.throwIfAborted();
+            const lastUpdated = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+            const converted = amount * price;
+            if (!Number.isFinite(converted)) throw new RateFailure("换算结果超出有限数值范围");
+            let output = "💱 <b>汇率</b>\n\n";
+            if (source.type === "crypto" && target.type === "fiat" && amount === 1) {
+              output += `${code(`1 ${source.symbol} = ${formatPrice(price)} ${target.symbol}`)}\n\n`;
+            } else {
+              output += `${code(`${formatAmount(amount)} ${source.symbol} ≈`)}\n${code(`${formatAmount(converted)} ${target.symbol}`)}\n\n`;
+              if (source.type === "fiat" && target.type === "fiat") {
+                output += `📊 <b>汇率:</b> ${code(`1 ${source.symbol} = ${formatAmount(price)} ${target.symbol}`)}\n`;
+              } else if (source.type === "crypto" && target.type === "crypto") {
+                let first = 0,
+                  second = 0;
+                try {
+                  first = await cryptoFiat(source.symbol, "USD");
+                  second = await cryptoFiat(target.symbol, "USD");
+                } catch {
+                  context.signal.throwIfAborted();
+                }
+                output += `💎 <b>兑换比率:</b> ${code(`1 ${source.symbol} = ${formatAmount(price)} ${target.symbol}`)}\n`;
+                output += `📊 <b>基准价格:</b> ${code(`${source.symbol} $${formatPrice(first)} • ${target.symbol} $${formatPrice(second)}`)}\n`;
+              } else {
+                const reverse = source.type === "fiat";
+                output += `💎 <b>当前汇率:</b> ${code(`1 ${reverse ? target.symbol : source.symbol} = ${formatPrice(reverse ? positive(1 / price) : price)} ${reverse ? source.symbol : target.symbol}`)}\n`;
+              }
+            }
+            output += `⏰ <b>${source.type === "fiat" && target.type === "fiat" ? "更新时间" : "数据更新"}:</b> ${lastUpdated}`;
+            await edit(context, message, await rich(output));
+          } catch (error) {
+            if (context.signal.aborted) return;
+            context.log.error("rate.command.failed");
+            const messageText = error instanceof RateFailure ? error.message : "消息处理失败，请稍后重试";
+            try {
+              await edit(context, message, ui.concat(feedback("error", "操作失败", messageText), fallback));
+            } catch {
+              if (!context.signal.aborted) context.log.error("rate.message.failed");
+            }
+          } finally {
+            active--;
           }
-          output += `⏰ <b>${source.type === "fiat" && target.type === "fiat" ? "更新时间" : "数据更新"}:</b> ${lastUpdated}`;
-          await edit(context, message, await rich(output));
-        } catch (error) {
-          if (context.signal.aborted) return;
-          context.log.error("rate.command.failed");
-          const messageText = error instanceof RateFailure ? error.message : "消息处理失败，请稍后重试";
-          try { await edit(context, message, ui.concat(feedback("error", "操作失败", messageText), fallback)); }
-          catch { if (!context.signal.aborted) context.log.error("rate.message.failed"); }
-        } finally { active--; }
-      }},
+        },
+      },
     },
   });
 }

@@ -133,7 +133,7 @@ export class TelegramFormatter {
       if (isAtxHeading(line)) {
         flushParagraph(paraBuf);
         const m = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
-        const level = Math.min(6, (m?.[1]?.length ?? 1));
+        const level = Math.min(6, m?.[1]?.length ?? 1);
         const title = (m?.[2] ?? line).trim();
         blocks.push(this.renderHeading(title, level));
         i++;
@@ -247,10 +247,7 @@ export class TelegramFormatter {
   // List parsing (up to 3 levels)
   // ---------------------------
 
-  private static parseListBlock(
-    lines: string[],
-    startIndex: number
-  ): { blockHtml: string; nextIndex: number } {
+  private static parseListBlock(lines: string[], startIndex: number): { blockHtml: string; nextIndex: number } {
     type Item = {
       kind: "ul" | "ol";
       indent: number;
@@ -259,9 +256,7 @@ export class TelegramFormatter {
       children: Item[];
     };
 
-    const marker = (l: string) =>
-      l.match(/^(\s{0,12})([-*+])\s+(.+)$/) ||
-      l.match(/^(\s{0,12})(\d+)([.)])\s+(.+)$/);
+    const marker = (l: string) => l.match(/^(\s{0,12})([-*+])\s+(.+)$/) || l.match(/^(\s{0,12})(\d+)([.)])\s+(.+)$/);
 
     const parseMarker = (l: string): { kind: "ul" | "ol"; indent: number; num?: number; text: string } | null => {
       const mUl = l.match(/^(\s{0,12})([-*+])\s+(.+)$/);
@@ -539,7 +534,7 @@ export class TelegramFormatter {
     const INDENT_TOKEN_SUFFIX = "\u0000";
     return (text || "")
       .split("\n")
-      .map((line) => {
+      .map(line => {
         const m = line.match(/^( {2,})(.*)$/);
         if (!m) return line;
         const n = m[1].length;
@@ -551,10 +546,13 @@ export class TelegramFormatter {
   private static expandIndentTokensToNbsp(escaped: string): string {
     const INDENT_TOKEN_PREFIX = "\u0000IND";
     const INDENT_TOKEN_SUFFIX = "\u0000";
-    return (escaped || "").replace(new RegExp(`${INDENT_TOKEN_PREFIX}(\\d+)${INDENT_TOKEN_SUFFIX}`, "g"), (_m, nStr) => {
-      const n = Math.max(0, Number(nStr) || 0);
-      return " ".repeat(n);
-    });
+    return (escaped || "").replace(
+      new RegExp(`${INDENT_TOKEN_PREFIX}(\\d+)${INDENT_TOKEN_SUFFIX}`, "g"),
+      (_m, nStr) => {
+        const n = Math.max(0, Number(nStr) || 0);
+        return " ".repeat(n);
+      },
+    );
   }
 
   // ---------------------------
@@ -562,11 +560,7 @@ export class TelegramFormatter {
   // ---------------------------
 
   private static escapeHtml(s: string): string {
-    return (s || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+    return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
 
   private static safeUrl(url: string): string {
@@ -583,6 +577,6 @@ export class TelegramFormatter {
 }
 
 /** v2 wrapper kept inside the plugin so no Core-private import is needed. */
-export function markdownToHtml(markdown: string, options?: {collapseSafe?: boolean}): string {
+export function markdownToHtml(markdown: string, options?: { collapseSafe?: boolean }): string {
   return TelegramFormatter.markdownToHtml(markdown, options);
 }

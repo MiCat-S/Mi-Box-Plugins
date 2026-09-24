@@ -1,92 +1,155 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type MessageEnvelope, type PluginContext} from "telebox/sdk";
-import {setTimeout as delay} from "node:timers/promises";
+import { renderHelp as renderPluginHelp } from "./v2/help";
+import { definePlugin, type MessageEnvelope, type PluginContext } from "telebox/sdk";
+import { setTimeout as delay } from "node:timers/promises";
 
-interface State extends Record<string, unknown> { schemaVersion: number; autoMode: boolean; enabledUsers: string[]; maxEdits: number; }
-const defaults: State = {schemaVersion: 1, autoMode: false, enabledUsers: [], maxEdits: 80};
+interface State extends Record<string, unknown> {
+  schemaVersion: number;
+  autoMode: boolean;
+  enabledUsers: string[];
+  maxEdits: number;
+}
+const defaults: State = { schemaVersion: 1, autoMode: false, enabledUsers: [], maxEdits: 80 };
 export const EDIT_INTERVAL_MS = 50;
-const escape = (value: string) => value.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]!);
+const escape = (value: string) =>
+  value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const messageNotModified = (error: unknown): boolean => {
   if (!error || typeof error !== "object") return false;
-  const candidate = error as {message?: unknown; errorMessage?: unknown};
-  return [candidate.message, candidate.errorMessage].some(value => typeof value === "string" && value.includes("MESSAGE_NOT_MODIFIED"));
+  const candidate = error as { message?: unknown; errorMessage?: unknown };
+  return [candidate.message, candidate.errorMessage].some(
+    value => typeof value === "string" && value.includes("MESSAGE_NOT_MODIFIED"),
+  );
 };
 
-async function animate(message: MessageEnvelope, text: string, context: PluginContext, maxEdits: number): Promise<void> {
+async function animate(
+  message: MessageEnvelope,
+  text: string,
+  context: PluginContext,
+  maxEdits: number,
+): Promise<void> {
   const chars = Array.from(text);
   const editBudget = Math.min(100, Math.max(2, Math.trunc(Number(maxEdits) || defaults.maxEdits)));
   const pairBudget = Math.floor((editBudget - 2) / 2);
   const steps = Math.max(1, Math.ceil(chars.length / Math.max(1, pairBudget)));
   let rendered = "";
   context.signal.throwIfAborted();
-  await context.telegram.edit(message, "█", {parseMode: "html"});
+  await context.telegram.edit(message, "█", { parseMode: "html" });
   context.signal.throwIfAborted();
-  await delay(EDIT_INTERVAL_MS, undefined, {signal: context.signal});
+  await delay(EDIT_INTERVAL_MS, undefined, { signal: context.signal });
   if (!pairBudget) {
-    await context.telegram.edit(message, escape(chars.join("")), {parseMode: "html"});
+    await context.telegram.edit(message, escape(chars.join("")), { parseMode: "html" });
     return;
   }
   for (let index = 0; index < chars.length; index += steps) {
     context.signal.throwIfAborted();
     rendered += chars.slice(index, index + steps).join("");
     try {
-      await context.telegram.edit(message, `${escape(rendered)}█`, {parseMode: "html"});
+      await context.telegram.edit(message, `${escape(rendered)}█`, { parseMode: "html" });
       context.signal.throwIfAborted();
-      await delay(EDIT_INTERVAL_MS, undefined, {signal: context.signal});
-      await context.telegram.edit(message, escape(rendered), {parseMode: "html"});
+      await delay(EDIT_INTERVAL_MS, undefined, { signal: context.signal });
+      await context.telegram.edit(message, escape(rendered), { parseMode: "html" });
     } catch (error) {
       if (!messageNotModified(error)) throw error;
       continue;
     }
     if (index + steps < chars.length) {
       context.signal.throwIfAborted();
-      await delay(EDIT_INTERVAL_MS, undefined, {signal: context.signal});
+      await delay(EDIT_INTERVAL_MS, undefined, { signal: context.signal });
     }
   }
   context.signal.throwIfAborted();
   try {
-    await context.telegram.edit(message, escape(chars.join("")), {parseMode: "html"});
+    await context.telegram.edit(message, escape(chars.join("")), { parseMode: "html" });
   } catch (error) {
     if (!messageNotModified(error)) throw error;
   }
 }
 
 export default function createTeletype() {
-  return definePlugin({renderHelp: renderPluginHelp,
-    apiVersion: 1, id: "teletype", description: "手动或自动显示打字机编辑效果",
-    commands: {teletype: {description: "打字机效果", ignoreEdited: true, async handle(invocation, context) {
-      const store = context.storage.json<State>("config.json", defaults);
-      const first = invocation.args[0]?.toLowerCase();
-      if (!first) return context.telegram.edit(invocation.message, `❌ <b>参数错误</b>\n\n${renderPluginHelp(invocation.prefix)}`, {parseMode: "html"});
-      if (["on", "off", "status"].includes(first)) {
-        const user = invocation.message.senderId;
-        if (first === "status") {
+  return definePlugin({
+    renderHelp: renderPluginHelp,
+    apiVersion: 1,
+    id: "teletype",
+    description: "手动或自动显示打字机编辑效果",
+    commands: {
+      teletype: {
+        description: "打字机效果",
+        ignoreEdited: true,
+        async handle(invocation, context) {
+          const store = context.storage.json<State>("config.json", defaults);
+          const first = invocation.args[0]?.toLowerCase();
+          if (!first)
+            return context.telegram.edit(
+              invocation.message,
+              `❌ <b>参数错误</b>\n\n${renderPluginHelp(invocation.prefix)}`,
+              { parseMode: "html" },
+            );
+          if (["on", "off", "status"].includes(first)) {
+            const user = invocation.message.senderId;
+            if (first === "status") {
+              const state = await store.read();
+              return context.telegram.edit(
+                invocation.message,
+                `📊 <b>状态</b>\n\n自动模式: ${user && state.enabledUsers.includes(user) ? "🟢 开启" : "🔴 关闭"}`,
+                { parseMode: "html" },
+              );
+            }
+            const enabled = first === "on";
+            if (enabled && !user)
+              return context.telegram.edit(invocation.message, "❌ <b>无法获取用户ID</b>", { parseMode: "html" });
+            await store.update(state => ({
+              ...state,
+              schemaVersion: 1,
+              autoMode: enabled,
+              enabledUsers: enabled
+                ? [...new Set([...state.enabledUsers, user!])]
+                : state.enabledUsers.filter(id => id !== user),
+              maxEdits: Math.min(100, Math.max(2, Number(state.maxEdits) || 80)),
+            }));
+            return context.telegram.edit(
+              invocation.message,
+              `${enabled ? "✅" : "❌"} <b>自动打字机模式已${enabled ? "开启" : "关闭"}</b>`,
+              { parseMode: "html" },
+            );
+          }
           const state = await store.read();
-          return context.telegram.edit(invocation.message, `📊 <b>状态</b>\n\n自动模式: ${user && state.enabledUsers.includes(user) ? "🟢 开启" : "🔴 关闭"}`, {parseMode: "html"});
-        }
-        const enabled = first === "on";
-        if (enabled && !user) return context.telegram.edit(invocation.message, "❌ <b>无法获取用户ID</b>", {parseMode: "html"});
-        await store.update(state => ({...state, schemaVersion: 1, autoMode: enabled,
-          enabledUsers: enabled ? [...new Set([...state.enabledUsers, user!])] : state.enabledUsers.filter(id => id !== user),
-          maxEdits: Math.min(100, Math.max(2, Number(state.maxEdits) || 80))}));
-        return context.telegram.edit(invocation.message, `${enabled ? "✅" : "❌"} <b>自动打字机模式已${enabled ? "开启" : "关闭"}</b>`, {parseMode: "html"});
-      }
-      const state = await store.read();
-      await animate(invocation.message, invocation.args.join(" "), context, state.maxEdits);
-    }}},
-    listeners: [{edited: false, ignoreCommands: true, async handle(message, context) {
-      if (!message.outgoing || message.text.trim().length < 2) return;
-      const state = await context.storage.json<State>("config.json", defaults).read();
-      if (!state.autoMode || !message.senderId || !state.enabledUsers.includes(message.senderId)) return;
-      await animate(message, message.text, context, state.maxEdits);
-    }}],
-    async setup(context) { await context.storage.json<State>("config.json", defaults).update(state => ({...state, schemaVersion: 1,
-      autoMode: !!state.autoMode, enabledUsers: Array.isArray(state.enabledUsers) ? state.enabledUsers.map(String) : [],
-      maxEdits: Math.min(100, Math.max(2, Number(state.maxEdits) || 80))})); },
-    settings: context => ({title: "电传打字", description: "打字机效果配置", category: "插件配置", icon: "⌨️",
-      getSchema: () => [{key: "maxEdits", label: "最大编辑次数", type: "number", min: 2, max: 100}],
+          await animate(invocation.message, invocation.args.join(" "), context, state.maxEdits);
+        },
+      },
+    },
+    listeners: [
+      {
+        edited: false,
+        ignoreCommands: true,
+        async handle(message, context) {
+          if (!message.outgoing || message.text.trim().length < 2) return;
+          const state = await context.storage.json<State>("config.json", defaults).read();
+          if (!state.autoMode || !message.senderId || !state.enabledUsers.includes(message.senderId)) return;
+          await animate(message, message.text, context, state.maxEdits);
+        },
+      },
+    ],
+    async setup(context) {
+      await context.storage.json<State>("config.json", defaults).update(state => ({
+        ...state,
+        schemaVersion: 1,
+        autoMode: !!state.autoMode,
+        enabledUsers: Array.isArray(state.enabledUsers) ? state.enabledUsers.map(String) : [],
+        maxEdits: Math.min(100, Math.max(2, Number(state.maxEdits) || 80)),
+      }));
+    },
+    settings: context => ({
+      title: "电传打字",
+      description: "打字机效果配置",
+      category: "插件配置",
+      icon: "⌨️",
+      getSchema: () => [{ key: "maxEdits", label: "最大编辑次数", type: "number", min: 2, max: 100 }],
       getValues: () => context.storage.json<State>("config.json", defaults).read(),
-      async setValues(patch) { await context.storage.json<State>("config.json", defaults).update(state => ({...state,
-        maxEdits: patch.maxEdits === undefined ? state.maxEdits : Math.min(100, Math.max(2, Number(patch.maxEdits)))})); }}),
+      async setValues(patch) {
+        await context.storage.json<State>("config.json", defaults).update(state => ({
+          ...state,
+          maxEdits: patch.maxEdits === undefined ? state.maxEdits : Math.min(100, Math.max(2, Number(patch.maxEdits))),
+        }));
+      },
+    }),
   });
 }

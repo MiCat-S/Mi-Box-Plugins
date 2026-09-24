@@ -1,40 +1,412 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {createHash} from "node:crypto";
-import {readFile} from "node:fs/promises";
-import {definePlugin, ui, type MessageEnvelope, type PluginContext} from "telebox/sdk";
-import {returnBigInt} from "teleproto/Helpers";
+import { renderHelp as renderPluginHelp } from "./v2/help";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { definePlugin, ui, type MessageEnvelope, type PluginContext } from "telebox/sdk";
+import { returnBigInt } from "teleproto/Helpers";
 
-type Action="delete"|"ban";
-type MonitoredChat={id:string;name:string;username?:string};
-type State={schemaVersion:1;enabled:boolean;monitoredChats:MonitoredChat[];bannedMD5s:Record<string,Action>;bannedStickerIds:Record<string,Action>;defaultAction:Action;importedLegacy:boolean;[key:string]:unknown};
-const defaults:State={schemaVersion:1,enabled:true,monitoredChats:[],bannedMD5s:{},bannedStickerIds:{},defaultAction:"delete",importedLegacy:false};
-const MAX_FILE_SIZE=30*1024*1024;
-class BusinessError extends Error{}
-const store=(ctx:PluginContext)=>ctx.storage.json<State>("config.json",defaults);
-const esc=(v:unknown)=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#x27;"})[c]!);
-const action=(value:unknown):Action=>value==="ban"?"ban":"delete";
-function normalize(value:any):State{return{...value,schemaVersion:1,enabled:value?.enabled!==false,monitoredChats:Array.isArray(value?.monitoredChats)?value.monitoredChats.map((v:any)=>typeof v==="object"&&v?{id:String(v.id),name:String(v.name??v.id),...(v.username?{username:String(v.username)}:{})}:{id:String(v),name:String(v)}):[],bannedMD5s:Object.fromEntries(Object.entries(value?.bannedMD5s??{}).map(([k,v])=>[k,action(v)])),bannedStickerIds:Object.fromEntries(Object.entries(value?.bannedStickerIds??{}).map(([k,v])=>[k,action(v)])),defaultAction:action(value?.defaultAction),importedLegacy:true};}
-async function optionalObject(file:string,signal:AbortSignal):Promise<Record<string,unknown>|undefined>{try{const text=await readFile(file,{encoding:"utf8",signal});signal.throwIfAborted();const value=JSON.parse(text);if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Invalid image monitor configuration");return value;}catch(e){signal.throwIfAborted();if(e instanceof Error&&"code" in e&&e.code==="ENOENT")return;throw e;}}
-export async function migrate(ctx:PluginContext){const current=await store(ctx).read();if(current.importedLegacy&&current.schemaVersion===1)return;const explicit=await optionalObject(ctx.files.dataPath("config.json"),ctx.signal)??{};const legacy=await optionalObject(ctx.files.dataPath("image_monitor_config.json"),ctx.signal)??{};ctx.signal.throwIfAborted();const source={...defaults,...legacy,...explicit};await store(ctx).update(value=>value.importedLegacy&&value.schemaVersion===1?value:normalize(source));}
+type Action = "delete" | "ban";
+type MonitoredChat = { id: string; name: string; username?: string };
+type State = {
+  schemaVersion: 1;
+  enabled: boolean;
+  monitoredChats: MonitoredChat[];
+  bannedMD5s: Record<string, Action>;
+  bannedStickerIds: Record<string, Action>;
+  defaultAction: Action;
+  importedLegacy: boolean;
+  [key: string]: unknown;
+};
+const defaults: State = {
+  schemaVersion: 1,
+  enabled: true,
+  monitoredChats: [],
+  bannedMD5s: {},
+  bannedStickerIds: {},
+  defaultAction: "delete",
+  importedLegacy: false,
+};
+const MAX_FILE_SIZE = 30 * 1024 * 1024;
+class BusinessError extends Error {}
+const store = (ctx: PluginContext) => ctx.storage.json<State>("config.json", defaults);
+const esc = (v: unknown) =>
+  String(v ?? "").replace(
+    /[&<>"']/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;" })[c]!,
+  );
+const action = (value: unknown): Action => (value === "ban" ? "ban" : "delete");
+function normalize(value: any): State {
+  return {
+    ...value,
+    schemaVersion: 1,
+    enabled: value?.enabled !== false,
+    monitoredChats: Array.isArray(value?.monitoredChats)
+      ? value.monitoredChats.map((v: any) =>
+          typeof v === "object" && v
+            ? {
+                id: String(v.id),
+                name: String(v.name ?? v.id),
+                ...(v.username ? { username: String(v.username) } : {}),
+              }
+            : { id: String(v), name: String(v) },
+        )
+      : [],
+    bannedMD5s: Object.fromEntries(Object.entries(value?.bannedMD5s ?? {}).map(([k, v]) => [k, action(v)])),
+    bannedStickerIds: Object.fromEntries(Object.entries(value?.bannedStickerIds ?? {}).map(([k, v]) => [k, action(v)])),
+    defaultAction: action(value?.defaultAction),
+    importedLegacy: true,
+  };
+}
+async function optionalObject(file: string, signal: AbortSignal): Promise<Record<string, unknown> | undefined> {
+  try {
+    const text = await readFile(file, { encoding: "utf8", signal });
+    signal.throwIfAborted();
+    const value = JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("Invalid image monitor configuration");
+    return value;
+  } catch (e) {
+    signal.throwIfAborted();
+    if (e instanceof Error && "code" in e && e.code === "ENOENT") return;
+    throw e;
+  }
+}
+export async function migrate(ctx: PluginContext) {
+  const current = await store(ctx).read();
+  if (current.importedLegacy && current.schemaVersion === 1) return;
+  const explicit = (await optionalObject(ctx.files.dataPath("config.json"), ctx.signal)) ?? {};
+  const legacy = (await optionalObject(ctx.files.dataPath("image_monitor_config.json"), ctx.signal)) ?? {};
+  ctx.signal.throwIfAborted();
+  const source = { ...defaults, ...legacy, ...explicit };
+  await store(ctx).update(value => (value.importedLegacy && value.schemaVersion === 1 ? value : normalize(source)));
+}
 
-function document(raw:any){const media=raw?.media;if(media?.className!=="MessageMediaDocument"||media.document?.className!=="Document")return;return media.document;}
-function isSticker(doc:any){return Array.isArray(doc?.attributes)&&doc.attributes.some((a:any)=>a?.className==="DocumentAttributeSticker");}
-function mediaSize(raw:any){const doc=document(raw);if(doc)return Number(doc.size??0);const photo=raw?.media?.photo;if(photo?.className!=="Photo")return 0;return Math.max(0,...(photo.sizes??[]).flatMap((s:any)=>s?.sizes?.length?s.sizes:[s?.size??0]).map(Number));}
-async function digest(ctx:PluginContext,message:MessageEnvelope){const raw=message.raw as any;if(!raw?.media)throw new BusinessError("该消息没有媒体");const size=mediaSize(raw);if(size>MAX_FILE_SIZE)throw new BusinessError("文件超过 30 MiB 限制");return ctx.telegram.withClient(async(client,signal)=>{const hash=createHash("md5");let received=0;const iterator=client.iterDownload(raw.media,{signal} as any)[Symbol.asyncIterator]();let stopPromise:Promise<unknown>|undefined;const stop=()=>stopPromise??=typeof iterator.return==="function"?iterator.return():Promise.resolve();const onAbort=()=>{void stop();};signal.addEventListener("abort",onAbort,{once:true});try{for(;;){signal.throwIfAborted();const part=await iterator.next();signal.throwIfAborted();if(part.done)break;const chunk=part.value;received+=chunk.length;if(received>MAX_FILE_SIZE)throw new BusinessError("文件超过 30 MiB 限制");hash.update(chunk);}}finally{signal.removeEventListener("abort",onAbort);await stop();}if(!received)throw new BusinessError("下载媒体失败");return hash.digest("hex");});}
-async function peerInfo(ctx:PluginContext,message:MessageEnvelope,target?:string){try{return await ctx.telegram.withClient(async(client,signal)=>{const key:any=target?(/^-?\d+$/.test(target)?returnBigInt(target):target):((message.raw as any)?.peerId??returnBigInt(message.chatId));signal.throwIfAborted();const entity:any=await client.getEntity(key);signal.throwIfAborted();const id=entity?.className==="Channel"?`-100${entity.id}`:entity?.className==="Chat"?`-${entity.id}`:String(entity?.id??message.chatId);return{id,name:entity?.username?`@${entity.username}`:String(entity?.title??entity?.firstName??id),...(entity?.username?{username:String(entity.username)}:{})};});}catch{ctx.signal.throwIfAborted();throw new BusinessError("无法解析群组 ID 或用户名");}}
-async function enforce(ctx:PluginContext,message:MessageEnvelope,act:Action){await ctx.telegram.withClient(async(client,signal)=>{const raw=message.raw as any;signal.throwIfAborted();if(act==="ban"){if(!message.senderId)throw new BusinessError("无法确定发送者");const {Api}=await import("teleproto");signal.throwIfAborted();const channel=await client.getInputEntity(raw?.peerId??returnBigInt(message.chatId));signal.throwIfAborted();const participant=await client.getInputEntity(returnBigInt(message.senderId));signal.throwIfAborted();await client.invoke(new Api.channels.EditBanned({channel,participant,bannedRights:new Api.ChatBannedRights({viewMessages:true,untilDate:0})}));signal.throwIfAborted();}signal.throwIfAborted();await client.deleteMessages(raw?.peerId??returnBigInt(message.chatId),[message.id],{revoke:true});signal.throwIfAborted();});}
-const help=(prefix:string)=>{const p=esc(prefix);return`<b>图片监控</b>\n<code>${p}im on|off</code>\n<code>${p}im addchat [群ID|@用户名]</code>\n<code>${p}im delchat [群ID|@用户名]</code>\n<code>${p}im addmd5 MD5 delete|ban</code>\n<code>${p}im delmd5 MD5</code>\n<code>${p}im setaction delete|ban</code>\n回复图片或贴纸使用 <code>${p}im [delete|ban]</code>。`;};
-async function output(ctx:PluginContext,message:MessageEnvelope,source:string){const pages=(await ui.renderRichText(source,ui.PAGE_LABEL_RESERVE)).map((page,index,all)=>page+ui.pageLabel(index,all.length));const result=await ui.deliverPages(pages,ctx.signal,(page,index)=>index?ctx.telegram.reply(message,page,{parseMode:"html"}):ctx.telegram.edit(message,page,{parseMode:"html"}));if(result.interrupted){ctx.log.info("im:pagination_interrupted",{published:result.published,total:result.total,category:ui.deliveryErrorCategory(result.error)});if(!result.published)throw result.error;try{await ctx.telegram.reply(message,ui.interruptedNotice(result),{parseMode:"html"});}catch{}}}
+function document(raw: any) {
+  const media = raw?.media;
+  if (media?.className !== "MessageMediaDocument" || media.document?.className !== "Document") return;
+  return media.document;
+}
+function isSticker(doc: any) {
+  return Array.isArray(doc?.attributes) && doc.attributes.some((a: any) => a?.className === "DocumentAttributeSticker");
+}
+function mediaSize(raw: any) {
+  const doc = document(raw);
+  if (doc) return Number(doc.size ?? 0);
+  const photo = raw?.media?.photo;
+  if (photo?.className !== "Photo") return 0;
+  return Math.max(
+    0,
+    ...(photo.sizes ?? []).flatMap((s: any) => (s?.sizes?.length ? s.sizes : [s?.size ?? 0])).map(Number),
+  );
+}
+async function digest(ctx: PluginContext, message: MessageEnvelope) {
+  const raw = message.raw as any;
+  if (!raw?.media) throw new BusinessError("该消息没有媒体");
+  const size = mediaSize(raw);
+  if (size > MAX_FILE_SIZE) throw new BusinessError("文件超过 30 MiB 限制");
+  return ctx.telegram.withClient(async (client, signal) => {
+    const hash = createHash("md5");
+    let received = 0;
+    const iterator = client.iterDownload(raw.media, { signal } as any)[Symbol.asyncIterator]();
+    let stopPromise: Promise<unknown> | undefined;
+    const stop = () => (stopPromise ??= typeof iterator.return === "function" ? iterator.return() : Promise.resolve());
+    const onAbort = () => {
+      void stop();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      for (;;) {
+        signal.throwIfAborted();
+        const part = await iterator.next();
+        signal.throwIfAborted();
+        if (part.done) break;
+        const chunk = part.value;
+        received += chunk.length;
+        if (received > MAX_FILE_SIZE) throw new BusinessError("文件超过 30 MiB 限制");
+        hash.update(chunk);
+      }
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      await stop();
+    }
+    if (!received) throw new BusinessError("下载媒体失败");
+    return hash.digest("hex");
+  });
+}
+async function peerInfo(ctx: PluginContext, message: MessageEnvelope, target?: string) {
+  try {
+    return await ctx.telegram.withClient(async (client, signal) => {
+      const key: any = target
+        ? /^-?\d+$/.test(target)
+          ? returnBigInt(target)
+          : target
+        : ((message.raw as any)?.peerId ?? returnBigInt(message.chatId));
+      signal.throwIfAborted();
+      const entity: any = await client.getEntity(key);
+      signal.throwIfAborted();
+      const id =
+        entity?.className === "Channel"
+          ? `-100${entity.id}`
+          : entity?.className === "Chat"
+            ? `-${entity.id}`
+            : String(entity?.id ?? message.chatId);
+      return {
+        id,
+        name: entity?.username ? `@${entity.username}` : String(entity?.title ?? entity?.firstName ?? id),
+        ...(entity?.username ? { username: String(entity.username) } : {}),
+      };
+    });
+  } catch {
+    ctx.signal.throwIfAborted();
+    throw new BusinessError("无法解析群组 ID 或用户名");
+  }
+}
+async function enforce(ctx: PluginContext, message: MessageEnvelope, act: Action) {
+  await ctx.telegram.withClient(async (client, signal) => {
+    const raw = message.raw as any;
+    signal.throwIfAborted();
+    if (act === "ban") {
+      if (!message.senderId) throw new BusinessError("无法确定发送者");
+      const { Api } = await import("teleproto");
+      signal.throwIfAborted();
+      const channel = await client.getInputEntity(raw?.peerId ?? returnBigInt(message.chatId));
+      signal.throwIfAborted();
+      const participant = await client.getInputEntity(returnBigInt(message.senderId));
+      signal.throwIfAborted();
+      await client.invoke(
+        new Api.channels.EditBanned({
+          channel,
+          participant,
+          bannedRights: new Api.ChatBannedRights({ viewMessages: true, untilDate: 0 }),
+        }),
+      );
+      signal.throwIfAborted();
+    }
+    signal.throwIfAborted();
+    await client.deleteMessages(raw?.peerId ?? returnBigInt(message.chatId), [message.id], { revoke: true });
+    signal.throwIfAborted();
+  });
+}
+const help = (prefix: string) => {
+  const p = esc(prefix);
+  return `<b>图片监控</b>\n<code>${p}im on|off</code>\n<code>${p}im addchat [群ID|@用户名]</code>\n<code>${p}im delchat [群ID|@用户名]</code>\n<code>${p}im addmd5 MD5 delete|ban</code>\n<code>${p}im delmd5 MD5</code>\n<code>${p}im setaction delete|ban</code>\n回复图片或贴纸使用 <code>${p}im [delete|ban]</code>。`;
+};
+async function output(ctx: PluginContext, message: MessageEnvelope, source: string) {
+  const pages = (await ui.renderRichText(source, ui.PAGE_LABEL_RESERVE)).map(
+    (page, index, all) => page + ui.pageLabel(index, all.length),
+  );
+  const result = await ui.deliverPages(pages, ctx.signal, (page, index) =>
+    index
+      ? ctx.telegram.reply(message, page, { parseMode: "html" })
+      : ctx.telegram.edit(message, page, { parseMode: "html" }),
+  );
+  if (result.interrupted) {
+    ctx.log.info("im:pagination_interrupted", {
+      published: result.published,
+      total: result.total,
+      category: ui.deliveryErrorCategory(result.error),
+    });
+    if (!result.published) throw result.error;
+    try {
+      await ctx.telegram.reply(message, ui.interruptedNotice(result), { parseMode: "html" });
+    } catch {}
+  }
+}
 
-const imageMonitorPlugin=definePlugin({renderHelp: renderPluginHelp, apiVersion:1,id:"im",description:"监控指定聊天中的图片哈希和贴纸 ID",commands:{im:{description:"配置图片监控",ignoreEdited:true,async handle({message,args,prefix},ctx){try{
-  const sub=args[0]?.toLowerCase(),state=await store(ctx).read();
-  if(message.replyToId&&(!sub||sub==="delete"||sub==="ban")){const reply=await ctx.telegram.getReply(message);if(!reply)throw new BusinessError("未找到被回复的消息");const raw=reply.raw as any,doc=document(raw),act=sub==="ban"?"ban":sub==="delete"?"delete":state.defaultAction;if(doc&&isSticker(doc)){const id=String(doc.id);await store(ctx).update(v=>({...v,bannedStickerIds:{...v.bannedStickerIds,[id]:act}}));await ctx.telegram.edit(message,`已添加贴纸 ID：<code>${esc(id)}</code>，操作：<code>${act}</code>`,{parseMode:"html"});return;}const md5=await digest(ctx,reply);await store(ctx).update(v=>({...v,bannedMD5s:{...v.bannedMD5s,[md5]:act}}));await ctx.telegram.edit(message,`已添加媒体 MD5：<code>${md5}</code>，操作：<code>${act}</code>`,{parseMode:"html"});return;}
-  if(sub==="on"||sub==="off"){await store(ctx).update(v=>({...v,enabled:sub==="on"}));await ctx.telegram.edit(message,sub==="on"?"图片监控已启用。":"图片监控已禁用。");return;}
-  if(sub==="addchat"||sub==="delchat"){const peer=await peerInfo(ctx,message,args[1]);let changed=false;await store(ctx).update(v=>{const exists=v.monitoredChats.some(x=>x.id===peer.id);changed=sub==="addchat"?!exists:exists;return{...v,monitoredChats:sub==="addchat"?(exists?v.monitoredChats:[...v.monitoredChats,peer]):v.monitoredChats.filter(x=>x.id!==peer.id)}});await ctx.telegram.edit(message,changed?`${sub==="addchat"?"已添加":"已移除"}监控群组：<code>${esc(peer.name)}</code>`:`群组 <code>${esc(peer.name)}</code> ${sub==="addchat"?"已在监控列表中":"不在监控列表中"}`,{parseMode:"html"});return;}
-  if(sub==="addmd5"){const md5=(args[1]??"").toLowerCase(),act=args[2];if(!/^[a-f0-9]{32}$/.test(md5)||!(["delete","ban"] as unknown[]).includes(act))throw new BusinessError(`用法：${prefix}im addmd5 MD5 delete|ban`);await store(ctx).update(v=>({...v,bannedMD5s:{...v.bannedMD5s,[md5]:act as Action}}));await ctx.telegram.edit(message,`已添加 MD5：<code>${md5}</code>，操作：<code>${act}</code>`,{parseMode:"html"});return;}
-  if(sub==="delmd5"){const md5=(args[1]??"").toLowerCase();if(!md5)throw new BusinessError(`用法：${prefix}im delmd5 MD5`);let removed=false;await store(ctx).update(v=>{const bannedMD5s={...v.bannedMD5s};removed=Object.hasOwn(bannedMD5s,md5);delete bannedMD5s[md5];return{...v,bannedMD5s};});await ctx.telegram.edit(message,removed?`已删除 MD5：<code>${esc(md5)}</code>`:`MD5 <code>${esc(md5)}</code> 不在列表中`,{parseMode:"html"});return;}
-  if(sub==="setaction"){if(args[1]!=="delete"&&args[1]!=="ban")throw new BusinessError("操作必须为 delete 或 ban");await store(ctx).update(v=>({...v,defaultAction:args[1] as Action}));await ctx.telegram.edit(message,`默认操作已设置为：<code>${args[1]}</code>`,{parseMode:"html"});return;}
-  if(sub==="list"){await output(ctx,message,`<b>图片监控配置</b>\n\n<b>状态：</b> ${state.enabled?"启用":"禁用"}\n<b>默认操作：</b> <code>${state.defaultAction}</code>\n<b>监控群组：</b>\n${state.monitoredChats.map(x=>`<code>- ${esc(x.name)} (${esc(x.id)})</code>`).join("\n")||"无"}\n\n<b>MD5 列表：</b>\n${Object.entries(state.bannedMD5s).map(([id,act])=>`<code>- ${esc(id)} (${act})</code>`).join("\n")||"无"}\n\n<b>贴纸 ID 列表：</b>\n${Object.entries(state.bannedStickerIds).map(([id,act])=>`<code>- ${esc(id)} (${act})</code>`).join("\n")||"无"}`);return;}
-  await ctx.telegram.edit(message,help(prefix),{parseMode:"html"});
-}catch(e){if(!ctx.signal.aborted){ctx.log.error("im:command_failed");const messageText=e instanceof BusinessError?e.message:"操作失败，请稍后重试";try{await ctx.telegram.edit(message,`操作失败：<code>${esc(messageText)}</code>`,{parseMode:"html"});}catch{}}}}}},listeners:[{edited:true,ignoreCommands:true,async handle(message,ctx){if(message.outgoing)return;const state=await store(ctx).read();if(!state.enabled||!state.monitoredChats.some(x=>x.id===message.chatId))return;const raw=message.raw as any,doc=document(raw);let act:Action|undefined;if(doc&&isSticker(doc))act=state.bannedStickerIds[String(doc.id)];else if(raw?.media&&(raw.media.className==="MessageMediaPhoto"||(doc?.mimeType??"").startsWith("image/"))){if(mediaSize(raw)>MAX_FILE_SIZE)return;try{act=state.bannedMD5s[await digest(ctx,message)];}catch{if(!ctx.signal.aborted)ctx.log.error("im:digest_failed");return;}}if(act)try{await enforce(ctx,message,act);}catch{if(!ctx.signal.aborted)ctx.log.error("im:moderation_failed");}}}],settings:ctx=>({id:"im",title:"图片监控",description:"图片监控开关与默认处置",category:"插件配置",icon:"🖼️",getSchema:()=>[{key:"enabled",label:"启用监控",type:"boolean"},{key:"defaultAction",label:"默认操作",type:"select",options:[{value:"delete",label:"删除"},{value:"ban",label:"封禁"}]}],getValues:async()=>{const v=await store(ctx).read();return{enabled:v.enabled,defaultAction:v.defaultAction};},setValues:async patch=>{await store(ctx).update(v=>({...v,enabled:typeof patch.enabled==="boolean"?patch.enabled:v.enabled,defaultAction:patch.defaultAction==="ban"?"ban":patch.defaultAction==="delete"?"delete":v.defaultAction}));}}),async setup(ctx){await migrate(ctx);}});
-export default function createImageMonitor(){return imageMonitorPlugin;}
+const imageMonitorPlugin = definePlugin({
+  renderHelp: renderPluginHelp,
+  apiVersion: 1,
+  id: "im",
+  description: "监控指定聊天中的图片哈希和贴纸 ID",
+  commands: {
+    im: {
+      description: "配置图片监控",
+      ignoreEdited: true,
+      async handle({ message, args, prefix }, ctx) {
+        try {
+          const sub = args[0]?.toLowerCase(),
+            state = await store(ctx).read();
+          if (message.replyToId && (!sub || sub === "delete" || sub === "ban")) {
+            const reply = await ctx.telegram.getReply(message);
+            if (!reply) throw new BusinessError("未找到被回复的消息");
+            const raw = reply.raw as any,
+              doc = document(raw),
+              act = sub === "ban" ? "ban" : sub === "delete" ? "delete" : state.defaultAction;
+            if (doc && isSticker(doc)) {
+              const id = String(doc.id);
+              await store(ctx).update(v => ({ ...v, bannedStickerIds: { ...v.bannedStickerIds, [id]: act } }));
+              await ctx.telegram.edit(message, `已添加贴纸 ID：<code>${esc(id)}</code>，操作：<code>${act}</code>`, {
+                parseMode: "html",
+              });
+              return;
+            }
+            const md5 = await digest(ctx, reply);
+            await store(ctx).update(v => ({ ...v, bannedMD5s: { ...v.bannedMD5s, [md5]: act } }));
+            await ctx.telegram.edit(message, `已添加媒体 MD5：<code>${md5}</code>，操作：<code>${act}</code>`, {
+              parseMode: "html",
+            });
+            return;
+          }
+          if (sub === "on" || sub === "off") {
+            await store(ctx).update(v => ({ ...v, enabled: sub === "on" }));
+            await ctx.telegram.edit(message, sub === "on" ? "图片监控已启用。" : "图片监控已禁用。");
+            return;
+          }
+          if (sub === "addchat" || sub === "delchat") {
+            const peer = await peerInfo(ctx, message, args[1]);
+            let changed = false;
+            await store(ctx).update(v => {
+              const exists = v.monitoredChats.some(x => x.id === peer.id);
+              changed = sub === "addchat" ? !exists : exists;
+              return {
+                ...v,
+                monitoredChats:
+                  sub === "addchat"
+                    ? exists
+                      ? v.monitoredChats
+                      : [...v.monitoredChats, peer]
+                    : v.monitoredChats.filter(x => x.id !== peer.id),
+              };
+            });
+            await ctx.telegram.edit(
+              message,
+              changed
+                ? `${sub === "addchat" ? "已添加" : "已移除"}监控群组：<code>${esc(peer.name)}</code>`
+                : `群组 <code>${esc(peer.name)}</code> ${sub === "addchat" ? "已在监控列表中" : "不在监控列表中"}`,
+              { parseMode: "html" },
+            );
+            return;
+          }
+          if (sub === "addmd5") {
+            const md5 = (args[1] ?? "").toLowerCase(),
+              act = args[2];
+            if (!/^[a-f0-9]{32}$/.test(md5) || !(["delete", "ban"] as unknown[]).includes(act))
+              throw new BusinessError(`用法：${prefix}im addmd5 MD5 delete|ban`);
+            await store(ctx).update(v => ({ ...v, bannedMD5s: { ...v.bannedMD5s, [md5]: act as Action } }));
+            await ctx.telegram.edit(message, `已添加 MD5：<code>${md5}</code>，操作：<code>${act}</code>`, {
+              parseMode: "html",
+            });
+            return;
+          }
+          if (sub === "delmd5") {
+            const md5 = (args[1] ?? "").toLowerCase();
+            if (!md5) throw new BusinessError(`用法：${prefix}im delmd5 MD5`);
+            let removed = false;
+            await store(ctx).update(v => {
+              const bannedMD5s = { ...v.bannedMD5s };
+              removed = Object.hasOwn(bannedMD5s, md5);
+              delete bannedMD5s[md5];
+              return { ...v, bannedMD5s };
+            });
+            await ctx.telegram.edit(
+              message,
+              removed ? `已删除 MD5：<code>${esc(md5)}</code>` : `MD5 <code>${esc(md5)}</code> 不在列表中`,
+              { parseMode: "html" },
+            );
+            return;
+          }
+          if (sub === "setaction") {
+            if (args[1] !== "delete" && args[1] !== "ban") throw new BusinessError("操作必须为 delete 或 ban");
+            await store(ctx).update(v => ({ ...v, defaultAction: args[1] as Action }));
+            await ctx.telegram.edit(message, `默认操作已设置为：<code>${args[1]}</code>`, { parseMode: "html" });
+            return;
+          }
+          if (sub === "list") {
+            await output(
+              ctx,
+              message,
+              `<b>图片监控配置</b>\n\n<b>状态：</b> ${state.enabled ? "启用" : "禁用"}\n<b>默认操作：</b> <code>${state.defaultAction}</code>\n<b>监控群组：</b>\n${state.monitoredChats.map(x => `<code>- ${esc(x.name)} (${esc(x.id)})</code>`).join("\n") || "无"}\n\n<b>MD5 列表：</b>\n${
+                Object.entries(state.bannedMD5s)
+                  .map(([id, act]) => `<code>- ${esc(id)} (${act})</code>`)
+                  .join("\n") || "无"
+              }\n\n<b>贴纸 ID 列表：</b>\n${
+                Object.entries(state.bannedStickerIds)
+                  .map(([id, act]) => `<code>- ${esc(id)} (${act})</code>`)
+                  .join("\n") || "无"
+              }`,
+            );
+            return;
+          }
+          await ctx.telegram.edit(message, help(prefix), { parseMode: "html" });
+        } catch (e) {
+          if (!ctx.signal.aborted) {
+            ctx.log.error("im:command_failed");
+            const messageText = e instanceof BusinessError ? e.message : "操作失败，请稍后重试";
+            try {
+              await ctx.telegram.edit(message, `操作失败：<code>${esc(messageText)}</code>`, { parseMode: "html" });
+            } catch {}
+          }
+        }
+      },
+    },
+  },
+  listeners: [
+    {
+      edited: true,
+      ignoreCommands: true,
+      async handle(message, ctx) {
+        if (message.outgoing) return;
+        const state = await store(ctx).read();
+        if (!state.enabled || !state.monitoredChats.some(x => x.id === message.chatId)) return;
+        const raw = message.raw as any,
+          doc = document(raw);
+        let act: Action | undefined;
+        if (doc && isSticker(doc)) act = state.bannedStickerIds[String(doc.id)];
+        else if (
+          raw?.media &&
+          (raw.media.className === "MessageMediaPhoto" || (doc?.mimeType ?? "").startsWith("image/"))
+        ) {
+          if (mediaSize(raw) > MAX_FILE_SIZE) return;
+          try {
+            act = state.bannedMD5s[await digest(ctx, message)];
+          } catch {
+            if (!ctx.signal.aborted) ctx.log.error("im:digest_failed");
+            return;
+          }
+        }
+        if (act)
+          try {
+            await enforce(ctx, message, act);
+          } catch {
+            if (!ctx.signal.aborted) ctx.log.error("im:moderation_failed");
+          }
+      },
+    },
+  ],
+  settings: ctx => ({
+    id: "im",
+    title: "图片监控",
+    description: "图片监控开关与默认处置",
+    category: "插件配置",
+    icon: "🖼️",
+    getSchema: () => [
+      { key: "enabled", label: "启用监控", type: "boolean" },
+      {
+        key: "defaultAction",
+        label: "默认操作",
+        type: "select",
+        options: [
+          { value: "delete", label: "删除" },
+          { value: "ban", label: "封禁" },
+        ],
+      },
+    ],
+    getValues: async () => {
+      const v = await store(ctx).read();
+      return { enabled: v.enabled, defaultAction: v.defaultAction };
+    },
+    setValues: async patch => {
+      await store(ctx).update(v => ({
+        ...v,
+        enabled: typeof patch.enabled === "boolean" ? patch.enabled : v.enabled,
+        defaultAction:
+          patch.defaultAction === "ban" ? "ban" : patch.defaultAction === "delete" ? "delete" : v.defaultAction,
+      }));
+    },
+  }),
+  async setup(ctx) {
+    await migrate(ctx);
+  },
+});
+export default function createImageMonitor() {
+  return imageMonitorPlugin;
+}

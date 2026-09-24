@@ -1,31 +1,399 @@
-import {constants} from "node:fs";
-import {access,lstat,readdir,rename,writeFile} from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, lstat, readdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import {setTimeout as delay} from "node:timers/promises";
-import type {MessageEnvelope,PluginContext} from "telebox/sdk";
+import { setTimeout as delay } from "node:timers/promises";
+import type { MessageEnvelope, PluginContext } from "telebox/sdk";
 
-const YTDLP=["/usr/local/bin/yt-dlp","/usr/bin/yt-dlp","/opt/homebrew/bin/yt-dlp"] as const;
-const FFMPEG=["/usr/local/bin/ffmpeg","/usr/bin/ffmpeg","/opt/homebrew/bin/ffmpeg"] as const;
-const HOSTS=new Set(["youtube.com","www.youtube.com","m.youtube.com","music.youtube.com","youtu.be"]);
-const PROCESS_OUTPUT=512*1024,WORKSPACE_MAX=160*1024*1024,WORKSPACE_OVERHEAD=10*1024*1024,WORKSPACE_ENTRIES=64;
-export type ToolPaths={ytDlp:string;ffmpeg:string};
-export type SongMetadata={title:string;artist:string;album?:string};
-export type DownloadDependencies={locateTools?:()=>Promise<ToolPaths>};
-export type DownloadOptions={cookie:string;proxy:string;quality:string;maxDurationSeconds:number;maxUploadBytes:number};
-export type DownloadResult={title:string;artist:string;duration:number};
-type Inspection={result:DownloadResult;target:string};
-async function executable(paths:readonly string[]){for(const file of paths)try{await access(file,constants.X_OK);return file;}catch{}throw new Error("DEPENDENCY_MISSING");}
-export async function locateTools(){const[ytDlp,ffmpeg]=await Promise.all([executable(YTDLP),executable(FFMPEG)]);return{ytDlp,ffmpeg};}
-export const workspaceBudget=(max:number)=>Math.min(WORKSPACE_MAX,max*3+WORKSPACE_OVERHEAD);
-function target(input:string){const q=input.trim();if(!q||q.length>300||/[\u0000-\u001f]/.test(q))throw new Error("INVALID_QUERY");if(!q.includes("://"))return`ytsearch1:${q}`;const u=new URL(q);if(u.protocol!=="https:"||u.username||u.password||!HOSTS.has(u.hostname.toLowerCase()))throw new Error("INVALID_URL");const candidate=u.hostname.toLowerCase()==="youtu.be"?u.pathname.split("/").filter(Boolean)[0]:u.pathname==="/watch"?u.searchParams.get("v"):u.pathname.startsWith("/shorts/")?u.pathname.split("/")[2]:undefined;if(!candidate||!/^[A-Za-z0-9_-]{6,20}$/.test(candidate))throw new Error("INVALID_URL");return`https://www.youtube.com/watch?v=${candidate}`;}
-function cookieText(input:string){const value=input.trim();if(!value)return"";if(value.includes("\t")&&/(^|\n)# Netscape HTTP Cookie File/.test(value))return value.endsWith("\n")?value:`${value}\n`;try{const parsed=JSON.parse(value);if(Array.isArray(parsed)){const rows=parsed.flatMap(item=>{const c=item&&typeof item==="object"?item as Record<string,unknown>:{};const name=typeof c.name==="string"?c.name:"",content=typeof c.value==="string"?c.value:"",domain=typeof c.domain==="string"&&c.domain?c.domain:".youtube.com",cookiePath=typeof c.path==="string"&&c.path?c.path:"/";if(!name||/[\t\r\n]/.test(name+content+domain+cookiePath))return[];const expires=Number(c.expirationDate??c.expires??0);return[`${domain}\t${domain.startsWith(".")?"TRUE":"FALSE"}\t${cookiePath}\t${c.secure===false?"FALSE":"TRUE"}\t${Number.isFinite(expires)?Math.max(0,Math.floor(expires)):0}\t${name}\t${content}`];});if(rows.length)return`# Netscape HTTP Cookie File\n${rows.join("\n")}\n`;}}catch{}const rows=value.split(/;\s*/).flatMap(pair=>{const at=pair.indexOf("=");if(at<1)return[];const name=pair.slice(0,at).trim(),content=pair.slice(at+1).trim();return name&&!/[\t\r\n]/.test(name+content)?[`.youtube.com\tTRUE\t/\tTRUE\t0\t${name}\t${content}`]:[];});if(!rows.length)throw new Error("INVALID_COOKIE");return`# Netscape HTTP Cookie File\n${rows.join("\n")}\n`;}
-function proxyUrl(input:string){const u=new URL(input);if(!["http:","https:","socks5:","socks5h:"].includes(u.protocol)||!u.hostname)throw new Error("INVALID_PROXY");return u.toString();}
-function environment(t:ToolPaths){return{PATH:[...new Set([path.dirname(t.ytDlp),path.dirname(t.ffmpeg),"/usr/local/bin","/usr/bin","/bin"])].join(":"),LC_ALL:"C.UTF-8"};}
-function parseInfo(stdout:Buffer,o:DownloadOptions):Inspection{const line=stdout.toString("utf8").trim().split(/\r?\n/).filter(Boolean).at(-1);if(!line)throw new Error("NO_RESULT");const root=JSON.parse(line)as Record<string,unknown>,candidates=Array.isArray(root.entries)?root.entries:[root],valid=candidates.flatMap(item=>{if(!item||typeof item!=="object")return[];const v=item as Record<string,unknown>,id=typeof v.id==="string"&&/^[A-Za-z0-9_-]{6,20}$/.test(v.id)?v.id:"",title=typeof v.title==="string"?v.title.trim():"",duration=Number(v.duration);if(!id||!title||!Number.isFinite(duration)||duration<=0||duration>o.maxDurationSeconds||v.is_live===true)return[];const requested=Array.isArray(v.requested_downloads)?v.requested_downloads:[],bytes=requested.reduce((sum,entry)=>{const r=entry&&typeof entry==="object"?entry as Record<string,unknown>:{};const n=Number(r.filesize??r.filesize_approx??0);return Number.isFinite(n)&&n>0?sum+n:sum;},0)||Number(v.filesize??v.filesize_approx??0);if(Number.isFinite(bytes)&&bytes>o.maxUploadBytes)return[];const artist=typeof v.artist==="string"&&v.artist.trim()?v.artist.trim():typeof v.uploader==="string"&&v.uploader.trim()?v.uploader.trim():"未知歌手";return[{result:{title,artist,duration:Math.floor(duration)},target:`https://www.youtube.com/watch?v=${id}`}];});if(valid.length!==1)throw new Error(valid.length?"AMBIGUOUS_RESULT":"UNSUPPORTED_MEDIA");return valid[0]!;}
-function safeName(v:string){const clean=v.replace(/[\u0000-\u001f\\/:*?"<>|]/g,"_").replace(/\s+/g," ").trim().replace(/[. ]+$/g,"");return Array.from(clean||"YouTube Music").slice(0,100).join("");}
-async function bytes(directory:string){const entries=await readdir(directory,{withFileTypes:true});if(entries.length>WORKSPACE_ENTRIES)throw new Error("WORKSPACE_LIMIT");let total=0;for(const entry of entries){if(!entry.isFile()){if(entry.isSymbolicLink())throw new Error("INVALID_OUTPUT");continue;}try{total+=(await lstat(path.join(directory,entry.name))).size;}catch(e){if(!missing(e))throw e;}}return total;}
-const missing=(e:unknown)=>e instanceof Error&&"code"in e&&e.code==="ENOENT";
-async function thumbnail(directory:string){for(const name of await readdir(directory)){if(!/^track\.(?:jpe?g|png|webp)$/i.test(name))continue;const file=path.join(directory,name),s=await lstat(file);if(s.isFile()&&!s.isSymbolicLink()&&s.size>0&&s.size<=10*1024*1024)return file;}}
-async function monitored(c:PluginContext,command:string,args:readonly string[],directory:string,env:NodeJS.ProcessEnv,signal:AbortSignal,timeoutMs:number,budget:number){const limit=new AbortController(),active=AbortSignal.any([signal,limit.signal]);let settled=false,exceeded=false,monitorError:unknown;const monitor=(async()=>{try{while(!settled){signal.throwIfAborted();if(await bytes(directory)>budget){exceeded=true;limit.abort();return;}await delay(100,undefined,{signal});}}catch(e){monitorError=e;limit.abort();}})();let result:Awaited<ReturnType<PluginContext["processes"]["run"]>>|undefined,processError:unknown;try{result=await c.processes.run(command,args,{cwd:directory,env,signal:active,timeoutMs,maxOutputBytes:PROCESS_OUTPUT});}catch(e){processError=e;}finally{settled=true;}await monitor;signal.throwIfAborted();if(monitorError)throw monitorError;if(exceeded)throw new Error("WORKSPACE_LIMIT");if(processError)throw processError;return result!;}
-async function applyMetadata(c:PluginContext,tools:ToolPaths,directory:string,audio:string,metadata:SongMetadata,env:NodeJS.ProcessEnv,signal:AbortSignal,budget:number){const output=path.join(directory,"track.metadata.mp3"),args=["-nostdin","-y","-i",audio,"-map","0","-c","copy","-id3v2_version","3","-metadata",`title=${metadata.title}`,"-metadata",`artist=${metadata.artist}`,...(metadata.album?["-metadata",`album=${metadata.album}`]:[]),output];await monitored(c,tools.ffmpeg,args,directory,env,signal,60000,budget);signal.throwIfAborted();const result=await lstat(output);if(!result.isFile()||result.isSymbolicLink()||result.size<=0||result.size>WORKSPACE_MAX)throw new Error("INVALID_OUTPUT");if(await bytes(directory)>budget)throw new Error("WORKSPACE_LIMIT");signal.throwIfAborted();await rename(output,audio);signal.throwIfAborted();}
-export async function downloadAndSend(c:PluginContext,message:MessageEnvelope,query:string,o:DownloadOptions,preferred:SongMetadata|undefined,signal:AbortSignal,deps:DownloadDependencies={}):Promise<DownloadResult>{signal.throwIfAborted();const tools=await(deps.locateTools??locateTools)();signal.throwIfAborted();const destination=target(query),env=environment(tools);let delivered:DownloadResult|undefined;try{return await c.files.withTemp(async(directory,tempSignal)=>{const active=AbortSignal.any([signal,tempSignal]);active.throwIfAborted();const config:string[]=[];if(o.cookie){const file=path.join(directory,"cookies.txt");await writeFile(file,cookieText(o.cookie),{encoding:"utf8",mode:0o600,signal:active});active.throwIfAborted();config.push("--cookies",file);}if(o.proxy){const file=path.join(directory,"yt-dlp.conf");await writeFile(file,`--proxy ${JSON.stringify(proxyUrl(o.proxy))}\n`,{encoding:"utf8",mode:0o600,signal:active});active.throwIfAborted();config.push("--config-locations",file);}const common=["--ignore-config","--no-cache-dir","--no-playlist","--no-warnings","--quiet",...config],budget=workspaceBudget(o.maxUploadBytes);const inspected=await monitored(c,tools.ytDlp,[...common,"--dump-single-json","--skip-download",destination],directory,env,active,60000,budget),selection=parseInfo(inspected.stdout,o),info=selection.result;active.throwIfAborted();await monitored(c,tools.ytDlp,[...common,"--match-filter",`duration <= ${o.maxDurationSeconds} & !is_live`,`--max-filesize`,String(o.maxUploadBytes),"--format","bestaudio/best","--ffmpeg-location",path.dirname(tools.ffmpeg),"-x","--audio-format","mp3","--audio-quality",o.quality||"0","--embed-metadata","--write-thumbnail","--convert-thumbnails","jpg","--embed-thumbnail","-P",directory,"-o","track.%(ext)s","--print","after_move:filepath",selection.target],directory,env,active,180000,budget);if(await bytes(directory)>budget)throw new Error("WORKSPACE_LIMIT");active.throwIfAborted();const audio=path.join(directory,"track.mp3"),initial=await lstat(audio);if(!initial.isFile()||initial.isSymbolicLink()||initial.size<=0||initial.size>o.maxUploadBytes)throw new Error("INVALID_OUTPUT");if(preferred)await applyMetadata(c,tools,directory,audio,preferred,env,active,budget);const final=await lstat(audio);if(!final.isFile()||final.isSymbolicLink()||final.size<=0||final.size>o.maxUploadBytes)throw new Error("INVALID_OUTPUT");const thumb=await thumbnail(directory),title=safeName(preferred?.title||info.title),artist=safeName(preferred?.artist||info.artist),raw=message.raw as any;if(!raw?.peerId)throw new Error("MISSING_PEER");await c.telegram.withClient(async(client,nativeSignal)=>{const upload=AbortSignal.any([active,nativeSignal]);upload.throwIfAborted();const{Api}=await import("teleproto");upload.throwIfAborted();await client.sendFile(raw.peerId,{file:audio,...(thumb?{thumb}:{}),forceDocument:false,replyTo:message.replyToId??message.id,...(message.topicId!==undefined?{topMsgId:message.topicId}:{}),attributes:[new Api.DocumentAttributeAudio({voice:false,duration:info.duration,title,performer:artist}),new Api.DocumentAttributeFilename({fileName:`${title} - ${artist}.mp3`})]});upload.throwIfAborted();});delivered={title,artist,duration:info.duration};return delivered;});}catch(error){signal.throwIfAborted();if(!delivered)throw error;c.log.info("yt_dlp_temp_cleanup_failed");return delivered;}}
+const YTDLP = ["/usr/local/bin/yt-dlp", "/usr/bin/yt-dlp", "/opt/homebrew/bin/yt-dlp"] as const;
+const FFMPEG = ["/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"] as const;
+const HOSTS = new Set(["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"]);
+const PROCESS_OUTPUT = 512 * 1024,
+  WORKSPACE_MAX = 160 * 1024 * 1024,
+  WORKSPACE_OVERHEAD = 10 * 1024 * 1024,
+  WORKSPACE_ENTRIES = 64;
+export type ToolPaths = { ytDlp: string; ffmpeg: string };
+export type SongMetadata = { title: string; artist: string; album?: string };
+export type DownloadDependencies = { locateTools?: () => Promise<ToolPaths> };
+export type DownloadOptions = {
+  cookie: string;
+  proxy: string;
+  quality: string;
+  maxDurationSeconds: number;
+  maxUploadBytes: number;
+};
+export type DownloadResult = { title: string; artist: string; duration: number };
+type Inspection = { result: DownloadResult; target: string };
+async function executable(paths: readonly string[]) {
+  for (const file of paths)
+    try {
+      await access(file, constants.X_OK);
+      return file;
+    } catch {}
+  throw new Error("DEPENDENCY_MISSING");
+}
+export async function locateTools() {
+  const [ytDlp, ffmpeg] = await Promise.all([executable(YTDLP), executable(FFMPEG)]);
+  return { ytDlp, ffmpeg };
+}
+export const workspaceBudget = (max: number) => Math.min(WORKSPACE_MAX, max * 3 + WORKSPACE_OVERHEAD);
+function target(input: string) {
+  const q = input.trim();
+  if (!q || q.length > 300 || /[\u0000-\u001f]/.test(q)) throw new Error("INVALID_QUERY");
+  if (!q.includes("://")) return `ytsearch1:${q}`;
+  const u = new URL(q);
+  if (u.protocol !== "https:" || u.username || u.password || !HOSTS.has(u.hostname.toLowerCase()))
+    throw new Error("INVALID_URL");
+  const candidate =
+    u.hostname.toLowerCase() === "youtu.be"
+      ? u.pathname.split("/").filter(Boolean)[0]
+      : u.pathname === "/watch"
+        ? u.searchParams.get("v")
+        : u.pathname.startsWith("/shorts/")
+          ? u.pathname.split("/")[2]
+          : undefined;
+  if (!candidate || !/^[A-Za-z0-9_-]{6,20}$/.test(candidate)) throw new Error("INVALID_URL");
+  return `https://www.youtube.com/watch?v=${candidate}`;
+}
+function cookieText(input: string) {
+  const value = input.trim();
+  if (!value) return "";
+  if (value.includes("\t") && /(^|\n)# Netscape HTTP Cookie File/.test(value))
+    return value.endsWith("\n") ? value : `${value}\n`;
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      const rows = parsed.flatMap(item => {
+        const c = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+        const name = typeof c.name === "string" ? c.name : "",
+          content = typeof c.value === "string" ? c.value : "",
+          domain = typeof c.domain === "string" && c.domain ? c.domain : ".youtube.com",
+          cookiePath = typeof c.path === "string" && c.path ? c.path : "/";
+        if (!name || /[\t\r\n]/.test(name + content + domain + cookiePath)) return [];
+        const expires = Number(c.expirationDate ?? c.expires ?? 0);
+        return [
+          `${domain}\t${domain.startsWith(".") ? "TRUE" : "FALSE"}\t${cookiePath}\t${c.secure === false ? "FALSE" : "TRUE"}\t${Number.isFinite(expires) ? Math.max(0, Math.floor(expires)) : 0}\t${name}\t${content}`,
+        ];
+      });
+      if (rows.length) return `# Netscape HTTP Cookie File\n${rows.join("\n")}\n`;
+    }
+  } catch {}
+  const rows = value.split(/;\s*/).flatMap(pair => {
+    const at = pair.indexOf("=");
+    if (at < 1) return [];
+    const name = pair.slice(0, at).trim(),
+      content = pair.slice(at + 1).trim();
+    return name && !/[\t\r\n]/.test(name + content) ? [`.youtube.com\tTRUE\t/\tTRUE\t0\t${name}\t${content}`] : [];
+  });
+  if (!rows.length) throw new Error("INVALID_COOKIE");
+  return `# Netscape HTTP Cookie File\n${rows.join("\n")}\n`;
+}
+function proxyUrl(input: string) {
+  const u = new URL(input);
+  if (!["http:", "https:", "socks5:", "socks5h:"].includes(u.protocol) || !u.hostname) throw new Error("INVALID_PROXY");
+  return u.toString();
+}
+function environment(t: ToolPaths) {
+  return {
+    PATH: [...new Set([path.dirname(t.ytDlp), path.dirname(t.ffmpeg), "/usr/local/bin", "/usr/bin", "/bin"])].join(":"),
+    LC_ALL: "C.UTF-8",
+  };
+}
+function parseInfo(stdout: Buffer, o: DownloadOptions): Inspection {
+  const line = stdout.toString("utf8").trim().split(/\r?\n/).filter(Boolean).at(-1);
+  if (!line) throw new Error("NO_RESULT");
+  const root = JSON.parse(line) as Record<string, unknown>,
+    candidates = Array.isArray(root.entries) ? root.entries : [root],
+    valid = candidates.flatMap(item => {
+      if (!item || typeof item !== "object") return [];
+      const v = item as Record<string, unknown>,
+        id = typeof v.id === "string" && /^[A-Za-z0-9_-]{6,20}$/.test(v.id) ? v.id : "",
+        title = typeof v.title === "string" ? v.title.trim() : "",
+        duration = Number(v.duration);
+      if (
+        !id ||
+        !title ||
+        !Number.isFinite(duration) ||
+        duration <= 0 ||
+        duration > o.maxDurationSeconds ||
+        v.is_live === true
+      )
+        return [];
+      const requested = Array.isArray(v.requested_downloads) ? v.requested_downloads : [],
+        bytes =
+          requested.reduce((sum, entry) => {
+            const r = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {};
+            const n = Number(r.filesize ?? r.filesize_approx ?? 0);
+            return Number.isFinite(n) && n > 0 ? sum + n : sum;
+          }, 0) || Number(v.filesize ?? v.filesize_approx ?? 0);
+      if (Number.isFinite(bytes) && bytes > o.maxUploadBytes) return [];
+      const artist =
+        typeof v.artist === "string" && v.artist.trim()
+          ? v.artist.trim()
+          : typeof v.uploader === "string" && v.uploader.trim()
+            ? v.uploader.trim()
+            : "未知歌手";
+      return [
+        { result: { title, artist, duration: Math.floor(duration) }, target: `https://www.youtube.com/watch?v=${id}` },
+      ];
+    });
+  if (valid.length !== 1) throw new Error(valid.length ? "AMBIGUOUS_RESULT" : "UNSUPPORTED_MEDIA");
+  return valid[0]!;
+}
+function safeName(v: string) {
+  const clean = v
+    .replace(/[\u0000-\u001f\\/:*?"<>|]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/g, "");
+  return Array.from(clean || "YouTube Music")
+    .slice(0, 100)
+    .join("");
+}
+async function bytes(directory: string) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  if (entries.length > WORKSPACE_ENTRIES) throw new Error("WORKSPACE_LIMIT");
+  let total = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      if (entry.isSymbolicLink()) throw new Error("INVALID_OUTPUT");
+      continue;
+    }
+    try {
+      total += (await lstat(path.join(directory, entry.name))).size;
+    } catch (e) {
+      if (!missing(e)) throw e;
+    }
+  }
+  return total;
+}
+const missing = (e: unknown) => e instanceof Error && "code" in e && e.code === "ENOENT";
+async function thumbnail(directory: string) {
+  for (const name of await readdir(directory)) {
+    if (!/^track\.(?:jpe?g|png|webp)$/i.test(name)) continue;
+    const file = path.join(directory, name),
+      s = await lstat(file);
+    if (s.isFile() && !s.isSymbolicLink() && s.size > 0 && s.size <= 10 * 1024 * 1024) return file;
+  }
+}
+async function monitored(
+  c: PluginContext,
+  command: string,
+  args: readonly string[],
+  directory: string,
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+  timeoutMs: number,
+  budget: number,
+) {
+  const limit = new AbortController(),
+    active = AbortSignal.any([signal, limit.signal]);
+  let settled = false,
+    exceeded = false,
+    monitorError: unknown;
+  const monitor = (async () => {
+    try {
+      while (!settled) {
+        signal.throwIfAborted();
+        if ((await bytes(directory)) > budget) {
+          exceeded = true;
+          limit.abort();
+          return;
+        }
+        await delay(100, undefined, { signal });
+      }
+    } catch (e) {
+      monitorError = e;
+      limit.abort();
+    }
+  })();
+  let result: Awaited<ReturnType<PluginContext["processes"]["run"]>> | undefined, processError: unknown;
+  try {
+    result = await c.processes.run(command, args, {
+      cwd: directory,
+      env,
+      signal: active,
+      timeoutMs,
+      maxOutputBytes: PROCESS_OUTPUT,
+    });
+  } catch (e) {
+    processError = e;
+  } finally {
+    settled = true;
+  }
+  await monitor;
+  signal.throwIfAborted();
+  if (monitorError) throw monitorError;
+  if (exceeded) throw new Error("WORKSPACE_LIMIT");
+  if (processError) throw processError;
+  return result!;
+}
+async function applyMetadata(
+  c: PluginContext,
+  tools: ToolPaths,
+  directory: string,
+  audio: string,
+  metadata: SongMetadata,
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+  budget: number,
+) {
+  const output = path.join(directory, "track.metadata.mp3"),
+    args = [
+      "-nostdin",
+      "-y",
+      "-i",
+      audio,
+      "-map",
+      "0",
+      "-c",
+      "copy",
+      "-id3v2_version",
+      "3",
+      "-metadata",
+      `title=${metadata.title}`,
+      "-metadata",
+      `artist=${metadata.artist}`,
+      ...(metadata.album ? ["-metadata", `album=${metadata.album}`] : []),
+      output,
+    ];
+  await monitored(c, tools.ffmpeg, args, directory, env, signal, 60000, budget);
+  signal.throwIfAborted();
+  const result = await lstat(output);
+  if (!result.isFile() || result.isSymbolicLink() || result.size <= 0 || result.size > WORKSPACE_MAX)
+    throw new Error("INVALID_OUTPUT");
+  if ((await bytes(directory)) > budget) throw new Error("WORKSPACE_LIMIT");
+  signal.throwIfAborted();
+  await rename(output, audio);
+  signal.throwIfAborted();
+}
+export async function downloadAndSend(
+  c: PluginContext,
+  message: MessageEnvelope,
+  query: string,
+  o: DownloadOptions,
+  preferred: SongMetadata | undefined,
+  signal: AbortSignal,
+  deps: DownloadDependencies = {},
+): Promise<DownloadResult> {
+  signal.throwIfAborted();
+  const tools = await (deps.locateTools ?? locateTools)();
+  signal.throwIfAborted();
+  const destination = target(query),
+    env = environment(tools);
+  let delivered: DownloadResult | undefined;
+  try {
+    return await c.files.withTemp(async (directory, tempSignal) => {
+      const active = AbortSignal.any([signal, tempSignal]);
+      active.throwIfAborted();
+      const config: string[] = [];
+      if (o.cookie) {
+        const file = path.join(directory, "cookies.txt");
+        await writeFile(file, cookieText(o.cookie), { encoding: "utf8", mode: 0o600, signal: active });
+        active.throwIfAborted();
+        config.push("--cookies", file);
+      }
+      if (o.proxy) {
+        const file = path.join(directory, "yt-dlp.conf");
+        await writeFile(file, `--proxy ${JSON.stringify(proxyUrl(o.proxy))}\n`, {
+          encoding: "utf8",
+          mode: 0o600,
+          signal: active,
+        });
+        active.throwIfAborted();
+        config.push("--config-locations", file);
+      }
+      const common = ["--ignore-config", "--no-cache-dir", "--no-playlist", "--no-warnings", "--quiet", ...config],
+        budget = workspaceBudget(o.maxUploadBytes);
+      const inspected = await monitored(
+          c,
+          tools.ytDlp,
+          [...common, "--dump-single-json", "--skip-download", destination],
+          directory,
+          env,
+          active,
+          60000,
+          budget,
+        ),
+        selection = parseInfo(inspected.stdout, o),
+        info = selection.result;
+      active.throwIfAborted();
+      await monitored(
+        c,
+        tools.ytDlp,
+        [
+          ...common,
+          "--match-filter",
+          `duration <= ${o.maxDurationSeconds} & !is_live`,
+          `--max-filesize`,
+          String(o.maxUploadBytes),
+          "--format",
+          "bestaudio/best",
+          "--ffmpeg-location",
+          path.dirname(tools.ffmpeg),
+          "-x",
+          "--audio-format",
+          "mp3",
+          "--audio-quality",
+          o.quality || "0",
+          "--embed-metadata",
+          "--write-thumbnail",
+          "--convert-thumbnails",
+          "jpg",
+          "--embed-thumbnail",
+          "-P",
+          directory,
+          "-o",
+          "track.%(ext)s",
+          "--print",
+          "after_move:filepath",
+          selection.target,
+        ],
+        directory,
+        env,
+        active,
+        180000,
+        budget,
+      );
+      if ((await bytes(directory)) > budget) throw new Error("WORKSPACE_LIMIT");
+      active.throwIfAborted();
+      const audio = path.join(directory, "track.mp3"),
+        initial = await lstat(audio);
+      if (!initial.isFile() || initial.isSymbolicLink() || initial.size <= 0 || initial.size > o.maxUploadBytes)
+        throw new Error("INVALID_OUTPUT");
+      if (preferred) await applyMetadata(c, tools, directory, audio, preferred, env, active, budget);
+      const final = await lstat(audio);
+      if (!final.isFile() || final.isSymbolicLink() || final.size <= 0 || final.size > o.maxUploadBytes)
+        throw new Error("INVALID_OUTPUT");
+      const thumb = await thumbnail(directory),
+        title = safeName(preferred?.title || info.title),
+        artist = safeName(preferred?.artist || info.artist),
+        raw = message.raw as any;
+      if (!raw?.peerId) throw new Error("MISSING_PEER");
+      await c.telegram.withClient(async (client, nativeSignal) => {
+        const upload = AbortSignal.any([active, nativeSignal]);
+        upload.throwIfAborted();
+        const { Api } = await import("teleproto");
+        upload.throwIfAborted();
+        await client.sendFile(raw.peerId, {
+          file: audio,
+          ...(thumb ? { thumb } : {}),
+          forceDocument: false,
+          replyTo: message.replyToId ?? message.id,
+          ...(message.topicId !== undefined ? { topMsgId: message.topicId } : {}),
+          attributes: [
+            new Api.DocumentAttributeAudio({ voice: false, duration: info.duration, title, performer: artist }),
+            new Api.DocumentAttributeFilename({ fileName: `${title} - ${artist}.mp3` }),
+          ],
+        });
+        upload.throwIfAborted();
+      });
+      delivered = { title, artist, duration: info.duration };
+      return delivered;
+    });
+  } catch (error) {
+    signal.throwIfAborted();
+    if (!delivered) throw error;
+    c.log.info("yt_dlp_temp_cleanup_failed");
+    return delivered;
+  }
+}

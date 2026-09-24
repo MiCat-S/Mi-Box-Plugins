@@ -1,4 +1,4 @@
-import {ui} from "telebox/sdk";
+import { ui } from "telebox/sdk";
 
 export function renderHelp(prefix: string): string {
   const p = ui.text(prefix);

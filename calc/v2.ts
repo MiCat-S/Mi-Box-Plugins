@@ -1,5 +1,5 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin} from "telebox/sdk";
+import { renderHelp as renderPluginHelp } from "./v2/help";
+import { definePlugin } from "telebox/sdk";
 
 const MAX_EXPR_LENGTH = 120;
 const MAX_ABS_RESULT = Number.MAX_SAFE_INTEGER;
@@ -102,7 +102,10 @@ class Parser {
 }
 
 function escape(value: string): string {
-  return value.replace(/[&<>\"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"})[char]!);
+  return value.replace(
+    /[&<>\"']/g,
+    char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!,
+  );
 }
 
 function format(value: number): string {
@@ -112,33 +115,53 @@ function format(value: number): string {
 }
 
 export default function createCalc() {
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "calc", description: "安全计算四则运算表达式",
-    commands: {calc: {helpArgs: ["help","h"], helpOnEmpty: true, description: "计算四则运算表达式", async handle(invocation, ctx) {
-      const expression = invocation.args.join(" ").trim();
-      if (!expression || expression.toLowerCase() === "help" || expression.toLowerCase() === "h") {
-        await ctx.telegram.edit(invocation.message, renderPluginHelp(invocation.prefix), {parseMode: "html", linkPreview: false});
-        return;
-      }
-      if (expression.length > MAX_EXPR_LENGTH) {
-        await ctx.telegram.edit(invocation.message,
-          `❌ <b>表达式过长</b><br/><br/>最大长度: ${MAX_EXPR_LENGTH} 字符<br/>当前长度: ${expression.length}`,
-          {parseMode: "html"});
-        return;
-      }
-      let result: number;
-      try {
-        result = new Parser(expression).parse();
-      } catch (error) {
-        const message = error instanceof CalculationError ? error.publicMessage : "表达式无效";
-        if (!(error instanceof CalculationError)) ctx.log.error("calc_calculation_failed");
-        await ctx.telegram.edit(invocation.message,
-          `🚫 <b>计算失败</b><br/><br/>表达式: <code>${escape(expression)}</code><br/>错误: ${message}`,
-          {parseMode: "html"});
-        return;
-      }
-      await ctx.telegram.edit(invocation.message,
-        `🧮 <b>计算结果</b><br/><br/><code>${escape(expression)}</code><br/>= <b>${format(result)}</b>`,
-        {parseMode: "html", linkPreview: false});
-    }}},
+  return definePlugin({
+    renderHelp: renderPluginHelp,
+    apiVersion: 1,
+    id: "calc",
+    description: "安全计算四则运算表达式",
+    commands: {
+      calc: {
+        helpArgs: ["help", "h"],
+        helpOnEmpty: true,
+        description: "计算四则运算表达式",
+        async handle(invocation, ctx) {
+          const expression = invocation.args.join(" ").trim();
+          if (!expression || expression.toLowerCase() === "help" || expression.toLowerCase() === "h") {
+            await ctx.telegram.edit(invocation.message, renderPluginHelp(invocation.prefix), {
+              parseMode: "html",
+              linkPreview: false,
+            });
+            return;
+          }
+          if (expression.length > MAX_EXPR_LENGTH) {
+            await ctx.telegram.edit(
+              invocation.message,
+              `❌ <b>表达式过长</b><br/><br/>最大长度: ${MAX_EXPR_LENGTH} 字符<br/>当前长度: ${expression.length}`,
+              { parseMode: "html" },
+            );
+            return;
+          }
+          let result: number;
+          try {
+            result = new Parser(expression).parse();
+          } catch (error) {
+            const message = error instanceof CalculationError ? error.publicMessage : "表达式无效";
+            if (!(error instanceof CalculationError)) ctx.log.error("calc_calculation_failed");
+            await ctx.telegram.edit(
+              invocation.message,
+              `🚫 <b>计算失败</b><br/><br/>表达式: <code>${escape(expression)}</code><br/>错误: ${message}`,
+              { parseMode: "html" },
+            );
+            return;
+          }
+          await ctx.telegram.edit(
+            invocation.message,
+            `🧮 <b>计算结果</b><br/><br/><code>${escape(expression)}</code><br/>= <b>${format(result)}</b>`,
+            { parseMode: "html", linkPreview: false },
+          );
+        },
+      },
+    },
   });
 }

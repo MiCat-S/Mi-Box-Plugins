@@ -1,12 +1,13 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {readFile, writeFile} from "node:fs/promises";
-import {definePlugin} from "telebox/sdk";
+import { renderHelp as renderPluginHelp } from "./v2/help";
+import { readFile, writeFile } from "node:fs/promises";
+import { definePlugin } from "telebox/sdk";
 
 const help = renderPluginHelp;
 
 export default function createKeepOnline() {
   let lastSuccess = 0;
-  return definePlugin({renderHelp: renderPluginHelp,
+  return definePlugin({
+    renderHelp: renderPluginHelp,
     apiVersion: 1,
     id: "keep_online",
     description: "定时验证 Telegram 会话并写入在线时间戳",
@@ -23,14 +24,15 @@ export default function createKeepOnline() {
                 if (Number.isSafeInteger(value) && value > 0) success = value;
               }
             } catch (error) {
-              if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) context.log.error("keep_online_status_read_failed");
+              if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
+                context.log.error("keep_online_status_read_failed");
             }
           }
           context.signal.throwIfAborted();
           const status = success
-            ? `\n\n最近成功：<code>${new Date(success).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai"})}</code>`
+            ? `\n\n最近成功：<code>${new Date(success).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</code>`
             : "\n\n最近成功：等待首次探测";
-          await context.telegram.edit(invocation.message, `${help(invocation.prefix)}${status}`, {parseMode: "html"});
+          await context.telegram.edit(invocation.message, `${help(invocation.prefix)}${status}`, { parseMode: "html" });
         },
       },
     },
@@ -48,7 +50,7 @@ export default function createKeepOnline() {
             const timestamp = Date.now();
             const file = await context.files.dataFile("keep_online.txt");
             signal.throwIfAborted();
-            await writeFile(file, String(Math.floor(timestamp / 1000)), {encoding: "utf8", mode: 0o600});
+            await writeFile(file, String(Math.floor(timestamp / 1000)), { encoding: "utf8", mode: 0o600 });
             signal.throwIfAborted();
             lastSuccess = timestamp;
           } catch {

@@ -1,14 +1,260 @@
-'use strict';
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
-const core=path.resolve(__dirname,'../../TeleBox-Core'),{buildPlugin}=require(path.join(core,'scripts/build-v2-plugin.cjs')),{PluginHost}=require(path.join(core,'dist/v2/host.js')),{Api,helpers,utils}=require(path.join(core,'node_modules/teleproto'));
-const moduleUnderTest=require(path.join(buildPlugin({id:'restore_pin',packageRoot:process.env.RESTORE_PIN_TEST_SOURCE||path.resolve(__dirname,'../restore_pin'),entry:'v2.ts'}).artifactDir,'index.cjs')),create=moduleUnderTest.default;
-const id=helpers.returnBigInt('9007199254740993'),chat=new Api.Channel({id,accessHash:helpers.returnBigInt(7),title:'Pins'});
-const message=(id,pinned=false)=>new Api.Message({id,peerId:new Api.PeerChannel({channelId:helpers.returnBigInt(1)}),message:'pin',date:1,...(pinned===undefined?{}:{pinned})});
-const event=(id,msg)=>new Api.ChannelAdminLogEvent({id:helpers.returnBigInt(id),date:1,userId:helpers.returnBigInt(1),action:new Api.ChannelAdminLogEventActionUpdatePinned({message:msg})});
-test('restore_pin final receipt failure does not reverse completed pins',async()=>{const signal=new AbortController().signal,edits=[],logs=[];let pins=0;const log=new Api.channels.AdminLogResults({events:[event(1,message(7))],chats:[],users:[]}),client={async getEntity(){return chat;},async invoke(request){if(request instanceof Api.channels.GetParticipant)return{participant:new Api.ChannelParticipantCreator({userId:id})};if(request instanceof Api.channels.GetAdminLog)return log;if(request instanceof Api.messages.UpdatePinnedMessage){pins++;return{};}}};await create({pause:async()=>{}}).commands.restore_pin.handle({command:'restore_pin',prefix:'.',args:[],message:{id:9,chatId:'-1001',outgoing:true,text:'.restore_pin',raw:{peerId:{}}}},{signal,log:{error:event=>logs.push(event)},telegram:{async edit(_m,text){edits.push(text);if(text.includes('恢复完成'))throw new Error('private receipt failure');},withClient:fn=>fn(client,signal)}});assert.equal(pins,1);assert.equal(edits.filter(x=>x.includes('恢复完成')).length,1);assert.ok(!edits.some(x=>x.includes('操作失败')));assert.deepEqual(logs,['restore_pin_receipt_failed']);});
-test('restore_pin treats an absent pinned flag as an unpin like the legacy implementation',()=>{const implicit=new Api.Message({id:6,peerId:new Api.PeerChannel({channelId:helpers.returnBigInt(1)}),message:'pin',date:1});assert.equal(implicit.pinned,undefined);const log=new Api.channels.AdminLogResults({events:[event(1,implicit)],chats:[],users:[]});assert.deepEqual(moduleUnderTest.unpinnedIds(log),[6]);});
-async function fixture(t,options={}){const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'restore-pin-'))),edits=[],logs=[],requests=[],targets=[];const events=options.events||[];const client={async getEntity(target){targets.push(target);if(options.entityError)throw options.entityError;return chat;},async getInputEntity(){return new Api.InputPeerChannel({channelId:id,accessHash:helpers.returnBigInt(7)});},async invoke(request){requests.push(request);await request.resolve(this,utils);assert.ok(request.getBytes().length>0);if(request instanceof Api.channels.GetParticipant)return{participant:options.participant||new Api.ChannelParticipantCreator({userId:id})};if(request instanceof Api.channels.GetAdminLog)return new Api.channels.AdminLogResults({events,chats:[],users:[]});if(request instanceof Api.messages.UpdatePinnedMessage&&options.failIds?.includes(request.id))throw new Error('private pin failure');return{};}};const host=new PluginHost({storageRoot:root,prefixes:['!'],logger:{info(){},error:event=>logs.push(event)},telegram:{async edit(_m,text){edits.push(text);},async reply(){},async invoke(){},async getReply(){},async withClient(fn,signal){return fn(client,signal);}}});await host.load(create({pause:async signal=>signal.throwIfAborted()}));t.after(async()=>{await host.shutdown(1000);await fs.rm(root,{recursive:true,force:true});});return{edits,logs,requests,targets,run:(extra={})=>host.dispatchPrimary({id:99,chatId:'-1009007199254740993',senderId:'1',outgoing:true,text:'!restore_pin',...extra})};}
-test('restore_pin extracts unique unpins, preserves progress order, and reports partial results',async t=>{const f=await fixture(t,{events:[event(1,message(1)),event(2,message(2)),event(3,message(1)),event(4,message(3)),event(5,message(4))],failIds:[2,4]});await f.run({raw:{peerId:new Api.PeerChannel({channelId:id})}});const pins=f.requests.filter(x=>x instanceof Api.messages.UpdatePinnedMessage);assert.deepEqual(pins.map(x=>x.id),[1,2,3,4]);assert.match(f.edits.find(x=>/第 3\/4/.test(x)),/成功: 1 ❌ 失败: 1/);assert.match(f.edits.at(-1),/成功恢复: 2 条/);assert.match(f.edits.at(-1),/失败: 2 条/);assert.match(f.edits.at(-1),/消息 2 恢复失败/);assert.match(f.edits.at(-1),/消息 4 恢复失败/);assert.deepEqual(f.logs,['restore_pin_item_failed','restore_pin_item_failed']);});
-test('restore_pin uses exact rawless channel peer and serializes permission, log, and pin requests',async t=>{const f=await fixture(t,{events:[event(1,message(7))]});await f.run();assert.ok(f.targets[0] instanceof Api.PeerChannel);assert.equal(f.targets[0].channelId.toString(),id.toString());assert.ok(f.requests.some(x=>x instanceof Api.channels.GetParticipant));assert.ok(f.requests.some(x=>x instanceof Api.channels.GetAdminLog));assert.ok(f.requests.some(x=>x instanceof Api.messages.UpdatePinnedMessage));});
-test('restore_pin keeps complete help, empty result, permission denial, and private diagnostics stable',async t=>{const help=await fixture(t);await help.run({text:'!restore_pin help'});assert.match(help.edits.at(-1),/自动扫描并恢复最近取消的置顶消息/);const empty=await fixture(t);await empty.run();assert.match(empty.edits.at(-1),/未找到可恢复/);const denied=await fixture(t,{participant:new Api.ChannelParticipant({userId:id,date:1})});await denied.run();assert.equal(denied.edits.at(-1),'❌ 需要管理员权限');assert.doesNotMatch(denied.edits.join('\n'),/CHAT_ADMIN_REQUIRED/);const failed=await fixture(t,{entityError:new Error('private-token')});await failed.run();assert.equal(failed.edits.at(-1),'❌ 操作失败，请稍后重试');assert.deepEqual(failed.logs,['restore_pin_failed']);});
-test('restore_pin cancellation after a pin performs no next pin or result edit',async()=>{const controller=new AbortController(),edits=[],requests=[];let release;const gate=new Promise(resolve=>{release=resolve;});const log=new Api.channels.AdminLogResults({events:[event(1,message(1)),event(2,message(2))],chats:[],users:[]}),client={async getEntity(){return chat;},async invoke(request){requests.push(request);if(request instanceof Api.channels.GetParticipant)return{participant:new Api.ChannelParticipantCreator({userId:id})};if(request instanceof Api.channels.GetAdminLog)return log;if(request instanceof Api.messages.UpdatePinnedMessage){await gate;return{};}}};const running=create({pause:async()=>{}}).commands.restore_pin.handle({command:'restore_pin',prefix:'.',args:[],message:{id:9,chatId:'-1001',outgoing:true,text:'.restore_pin',raw:{peerId:{}}}},{signal:controller.signal,log:{error(){}},telegram:{edit:async(_m,text)=>edits.push(text),withClient:fn=>fn(client,controller.signal)}});while(!requests.some(x=>x instanceof Api.messages.UpdatePinnedMessage))await new Promise(resolve=>setImmediate(resolve));controller.abort();release();await running;assert.equal(requests.filter(x=>x instanceof Api.messages.UpdatePinnedMessage).length,1);assert.ok(!edits.some(x=>x.includes('恢复完成')));});
+"use strict";
+const test = require("node:test"),
+  assert = require("node:assert/strict"),
+  fs = require("node:fs/promises"),
+  os = require("node:os"),
+  path = require("node:path");
+const core = path.resolve(__dirname, "../../TeleBox-Core"),
+  { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs")),
+  { PluginHost } = require(path.join(core, "dist/v2/host.js")),
+  { Api, helpers, utils } = require(path.join(core, "node_modules/teleproto"));
+const moduleUnderTest = require(
+    path.join(
+      buildPlugin({
+        id: "restore_pin",
+        packageRoot: process.env.RESTORE_PIN_TEST_SOURCE || path.resolve(__dirname, "../restore_pin"),
+        entry: "v2.ts",
+      }).artifactDir,
+      "index.cjs",
+    ),
+  ),
+  create = moduleUnderTest.default;
+const id = helpers.returnBigInt("9007199254740993"),
+  chat = new Api.Channel({ id, accessHash: helpers.returnBigInt(7), title: "Pins" });
+const message = (id, pinned = false) =>
+  new Api.Message({
+    id,
+    peerId: new Api.PeerChannel({ channelId: helpers.returnBigInt(1) }),
+    message: "pin",
+    date: 1,
+    ...(pinned === undefined ? {} : { pinned }),
+  });
+const event = (id, msg) =>
+  new Api.ChannelAdminLogEvent({
+    id: helpers.returnBigInt(id),
+    date: 1,
+    userId: helpers.returnBigInt(1),
+    action: new Api.ChannelAdminLogEventActionUpdatePinned({ message: msg }),
+  });
+test("restore_pin final receipt failure does not reverse completed pins", async () => {
+  const signal = new AbortController().signal,
+    edits = [],
+    logs = [];
+  let pins = 0;
+  const log = new Api.channels.AdminLogResults({ events: [event(1, message(7))], chats: [], users: [] }),
+    client = {
+      async getEntity() {
+        return chat;
+      },
+      async invoke(request) {
+        if (request instanceof Api.channels.GetParticipant)
+          return { participant: new Api.ChannelParticipantCreator({ userId: id }) };
+        if (request instanceof Api.channels.GetAdminLog) return log;
+        if (request instanceof Api.messages.UpdatePinnedMessage) {
+          pins++;
+          return {};
+        }
+      },
+    };
+  await create({ pause: async () => {} }).commands.restore_pin.handle(
+    {
+      command: "restore_pin",
+      prefix: ".",
+      args: [],
+      message: { id: 9, chatId: "-1001", outgoing: true, text: ".restore_pin", raw: { peerId: {} } },
+    },
+    {
+      signal,
+      log: { error: event => logs.push(event) },
+      telegram: {
+        async edit(_m, text) {
+          edits.push(text);
+          if (text.includes("恢复完成")) throw new Error("private receipt failure");
+        },
+        withClient: fn => fn(client, signal),
+      },
+    },
+  );
+  assert.equal(pins, 1);
+  assert.equal(edits.filter(x => x.includes("恢复完成")).length, 1);
+  assert.ok(!edits.some(x => x.includes("操作失败")));
+  assert.deepEqual(logs, ["restore_pin_receipt_failed"]);
+});
+test("restore_pin treats an absent pinned flag as an unpin like the legacy implementation", () => {
+  const implicit = new Api.Message({
+    id: 6,
+    peerId: new Api.PeerChannel({ channelId: helpers.returnBigInt(1) }),
+    message: "pin",
+    date: 1,
+  });
+  assert.equal(implicit.pinned, undefined);
+  const log = new Api.channels.AdminLogResults({ events: [event(1, implicit)], chats: [], users: [] });
+  assert.deepEqual(moduleUnderTest.unpinnedIds(log), [6]);
+});
+async function fixture(t, options = {}) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "restore-pin-"))),
+    edits = [],
+    logs = [],
+    requests = [],
+    targets = [];
+  const events = options.events || [];
+  const client = {
+    async getEntity(target) {
+      targets.push(target);
+      if (options.entityError) throw options.entityError;
+      return chat;
+    },
+    async getInputEntity() {
+      return new Api.InputPeerChannel({ channelId: id, accessHash: helpers.returnBigInt(7) });
+    },
+    async invoke(request) {
+      requests.push(request);
+      await request.resolve(this, utils);
+      assert.ok(request.getBytes().length > 0);
+      if (request instanceof Api.channels.GetParticipant)
+        return { participant: options.participant || new Api.ChannelParticipantCreator({ userId: id }) };
+      if (request instanceof Api.channels.GetAdminLog)
+        return new Api.channels.AdminLogResults({ events, chats: [], users: [] });
+      if (request instanceof Api.messages.UpdatePinnedMessage && options.failIds?.includes(request.id))
+        throw new Error("private pin failure");
+      return {};
+    },
+  };
+  const host = new PluginHost({
+    storageRoot: root,
+    prefixes: ["!"],
+    logger: { info() {}, error: event => logs.push(event) },
+    telegram: {
+      async edit(_m, text) {
+        edits.push(text);
+      },
+      async reply() {},
+      async invoke() {},
+      async getReply() {},
+      async withClient(fn, signal) {
+        return fn(client, signal);
+      },
+    },
+  });
+  await host.load(create({ pause: async signal => signal.throwIfAborted() }));
+  t.after(async () => {
+    await host.shutdown(1000);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  return {
+    edits,
+    logs,
+    requests,
+    targets,
+    run: (extra = {}) =>
+      host.dispatchPrimary({
+        id: 99,
+        chatId: "-1009007199254740993",
+        senderId: "1",
+        outgoing: true,
+        text: "!restore_pin",
+        ...extra,
+      }),
+  };
+}
+test("restore_pin extracts unique unpins, preserves progress order, and reports partial results", async t => {
+  const f = await fixture(t, {
+    events: [
+      event(1, message(1)),
+      event(2, message(2)),
+      event(3, message(1)),
+      event(4, message(3)),
+      event(5, message(4)),
+    ],
+    failIds: [2, 4],
+  });
+  await f.run({ raw: { peerId: new Api.PeerChannel({ channelId: id }) } });
+  const pins = f.requests.filter(x => x instanceof Api.messages.UpdatePinnedMessage);
+  assert.deepEqual(
+    pins.map(x => x.id),
+    [1, 2, 3, 4],
+  );
+  assert.match(
+    f.edits.find(x => /第 3\/4/.test(x)),
+    /成功: 1 ❌ 失败: 1/,
+  );
+  assert.match(f.edits.at(-1), /成功恢复: 2 条/);
+  assert.match(f.edits.at(-1), /失败: 2 条/);
+  assert.match(f.edits.at(-1), /消息 2 恢复失败/);
+  assert.match(f.edits.at(-1), /消息 4 恢复失败/);
+  assert.deepEqual(f.logs, ["restore_pin_item_failed", "restore_pin_item_failed"]);
+});
+test("restore_pin uses exact rawless channel peer and serializes permission, log, and pin requests", async t => {
+  const f = await fixture(t, { events: [event(1, message(7))] });
+  await f.run();
+  assert.ok(f.targets[0] instanceof Api.PeerChannel);
+  assert.equal(f.targets[0].channelId.toString(), id.toString());
+  assert.ok(f.requests.some(x => x instanceof Api.channels.GetParticipant));
+  assert.ok(f.requests.some(x => x instanceof Api.channels.GetAdminLog));
+  assert.ok(f.requests.some(x => x instanceof Api.messages.UpdatePinnedMessage));
+});
+test("restore_pin keeps complete help, empty result, permission denial, and private diagnostics stable", async t => {
+  const help = await fixture(t);
+  await help.run({ text: "!restore_pin help" });
+  assert.match(help.edits.at(-1), /自动扫描并恢复最近取消的置顶消息/);
+  const empty = await fixture(t);
+  await empty.run();
+  assert.match(empty.edits.at(-1), /未找到可恢复/);
+  const denied = await fixture(t, { participant: new Api.ChannelParticipant({ userId: id, date: 1 }) });
+  await denied.run();
+  assert.equal(denied.edits.at(-1), "❌ 需要管理员权限");
+  assert.doesNotMatch(denied.edits.join("\n"), /CHAT_ADMIN_REQUIRED/);
+  const failed = await fixture(t, { entityError: new Error("private-token") });
+  await failed.run();
+  assert.equal(failed.edits.at(-1), "❌ 操作失败，请稍后重试");
+  assert.deepEqual(failed.logs, ["restore_pin_failed"]);
+});
+test("restore_pin cancellation after a pin performs no next pin or result edit", async () => {
+  const controller = new AbortController(),
+    edits = [],
+    requests = [];
+  let release;
+  const gate = new Promise(resolve => {
+    release = resolve;
+  });
+  const log = new Api.channels.AdminLogResults({
+      events: [event(1, message(1)), event(2, message(2))],
+      chats: [],
+      users: [],
+    }),
+    client = {
+      async getEntity() {
+        return chat;
+      },
+      async invoke(request) {
+        requests.push(request);
+        if (request instanceof Api.channels.GetParticipant)
+          return { participant: new Api.ChannelParticipantCreator({ userId: id }) };
+        if (request instanceof Api.channels.GetAdminLog) return log;
+        if (request instanceof Api.messages.UpdatePinnedMessage) {
+          await gate;
+          return {};
+        }
+      },
+    };
+  const running = create({ pause: async () => {} }).commands.restore_pin.handle(
+    {
+      command: "restore_pin",
+      prefix: ".",
+      args: [],
+      message: { id: 9, chatId: "-1001", outgoing: true, text: ".restore_pin", raw: { peerId: {} } },
+    },
+    {
+      signal: controller.signal,
+      log: { error() {} },
+      telegram: { edit: async (_m, text) => edits.push(text), withClient: fn => fn(client, controller.signal) },
+    },
+  );
+  while (!requests.some(x => x instanceof Api.messages.UpdatePinnedMessage))
+    await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+  release();
+  await running;
+  assert.equal(requests.filter(x => x instanceof Api.messages.UpdatePinnedMessage).length, 1);
+  assert.ok(!edits.some(x => x.includes("恢复完成")));
+});

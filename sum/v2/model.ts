@@ -1,4 +1,8 @@
-export const htmlEscape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]!);
+export const htmlEscape = (value: unknown): string =>
+  String(value ?? "").replace(
+    /[&<>"']/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+  );
 
 export function formatDate(date: Date): string {
   const year = date.getFullYear();
@@ -93,11 +97,7 @@ export function buildChatLink(chatId: string, username?: string): string {
 }
 
 // 构建消息链接
-export function buildMessageLink(
-  chatId: string,
-  messageId: number,
-  username?: string,
-): string {
+export function buildMessageLink(chatId: string, messageId: number, username?: string): string {
   if (username) {
     return `https://t.me/${username}/${messageId}`;
   }
@@ -127,10 +127,7 @@ export function extractUrlsFromEntities(message: any): string[] {
       }
       // Url 类型：消息中的纯文本 URL
       if (entity.className === "MessageEntityUrl" && message.message) {
-        const url = message.message.substring(
-          entity.offset,
-          entity.offset + entity.length,
-        );
+        const url = message.message.substring(entity.offset, entity.offset + entity.length);
         urls.push(url);
       }
     }
@@ -148,9 +145,7 @@ export function extractUrlsFromText(text: string): string[] {
 // 格式化消息数据为文本
 export function formatMessagesForAI(messageData: MessageData[]): string {
   // 消息正文，每条消息附带 Telegram 链接
-  const messageTexts = messageData.map(
-    (m) => `${m.text} [来源](${m.telegramLink})`,
-  );
+  const messageTexts = messageData.map(m => `${m.text} [来源](${m.telegramLink})`);
 
   // 提取所有外部 URL 及其对应的 Telegram 消息链接
   // 优先使用 entities 中提取的 URL，其次使用文本中的 URL
@@ -160,7 +155,7 @@ export function formatMessagesForAI(messageData: MessageData[]): string {
     const allUrls = [...m.urls, ...extractUrlsFromText(m.content)];
     for (const url of allUrls) {
       // 去重：检查是否已存在相同 URL
-      if (!urlMappings.some((u) => u.url === url)) {
+      if (!urlMappings.some(u => u.url === url)) {
         urlMappings.push({ url, telegramLink: m.telegramLink });
       }
     }

@@ -38,14 +38,94 @@ function ensureCjkFont(): void {
 }
 
 const STOP_WORDS = new Set([
-  "这个", "那个", "就是", "不是", "可以", "没有", "一下", "一个", "什么", "怎么", "为什么",
-  "然后", "现在", "还是", "但是", "因为", "所以", "如果", "已经", "应该", "可能", "感觉",
-  "不要", "知道", "看看", "哈哈", "哈哈哈", "你们", "我们", "他们", "自己", "直接", "确实",
-  "来源", "情况", "情况下", "耗时", "输入", "输出", "回复", "问题", "最近", "消息", "有效",
-  "今天", "昨天", "明天", "时候", "东西", "里面", "这里", "那里", "这样", "那样", "进行",
-  "使用", "需要", "更新", "主要", "内容", "新增", "版本", "发布", "包括", "所有", "不会",
-  "the", "and", "for", "with", "this", "that", "you", "are", "not", "but", "from", "have",
-  "http", "https", "com", "www", "telegram", "t.me", "true", "false", "null", "undefined",
+  "这个",
+  "那个",
+  "就是",
+  "不是",
+  "可以",
+  "没有",
+  "一下",
+  "一个",
+  "什么",
+  "怎么",
+  "为什么",
+  "然后",
+  "现在",
+  "还是",
+  "但是",
+  "因为",
+  "所以",
+  "如果",
+  "已经",
+  "应该",
+  "可能",
+  "感觉",
+  "不要",
+  "知道",
+  "看看",
+  "哈哈",
+  "哈哈哈",
+  "你们",
+  "我们",
+  "他们",
+  "自己",
+  "直接",
+  "确实",
+  "来源",
+  "情况",
+  "情况下",
+  "耗时",
+  "输入",
+  "输出",
+  "回复",
+  "问题",
+  "最近",
+  "消息",
+  "有效",
+  "今天",
+  "昨天",
+  "明天",
+  "时候",
+  "东西",
+  "里面",
+  "这里",
+  "那里",
+  "这样",
+  "那样",
+  "进行",
+  "使用",
+  "需要",
+  "更新",
+  "主要",
+  "内容",
+  "新增",
+  "版本",
+  "发布",
+  "包括",
+  "所有",
+  "不会",
+  "the",
+  "and",
+  "for",
+  "with",
+  "this",
+  "that",
+  "you",
+  "are",
+  "not",
+  "but",
+  "from",
+  "have",
+  "http",
+  "https",
+  "com",
+  "www",
+  "telegram",
+  "t.me",
+  "true",
+  "false",
+  "null",
+  "undefined",
 ]);
 
 const PALETTE = ["#0f766e", "#166534", "#1d4ed8", "#0891b2", "#2563eb", "#ca8a04", "#dc2626", "#7c3aed"];
@@ -149,7 +229,7 @@ function overlaps(a: WordItem, placed: WordItem[]): boolean {
   const ay1 = (a.y || 0) - (a.height || 0) - padding;
   const ax2 = (a.x || 0) + (a.width || 0) + padding;
   const ay2 = (a.y || 0) + padding;
-  return placed.some((b) => {
+  return placed.some(b => {
     const bx1 = (b.x || 0) - padding;
     const by1 = (b.y || 0) - (b.height || 0) - padding;
     const bx2 = (b.x || 0) + (b.width || 0) + padding;
@@ -178,15 +258,21 @@ function layoutWords(ctx: CanvasContext, words: WordItem[]): WordItem[] {
       item.height = item.size;
       let placedItem = false;
       for (let t = 0; t < 3600; t++) {
-      const angle = t * 0.38;
-      const radius = 5.2 * Math.sqrt(t);
-      item.x = centerX + Math.cos(angle) * radius - item.width / 2;
-      item.y = centerY + Math.sin(angle) * radius + item.height / 2;
-      if (item.x < MARGIN || item.y < MARGIN + item.height || item.x + item.width > WIDTH - MARGIN || item.y > HEIGHT - 78) continue;
-      if (overlaps(item, placed)) continue;
-      placed.push({ ...item });
-      placedItem = true;
-      break;
+        const angle = t * 0.38;
+        const radius = 5.2 * Math.sqrt(t);
+        item.x = centerX + Math.cos(angle) * radius - item.width / 2;
+        item.y = centerY + Math.sin(angle) * radius + item.height / 2;
+        if (
+          item.x < MARGIN ||
+          item.y < MARGIN + item.height ||
+          item.x + item.width > WIDTH - MARGIN ||
+          item.y > HEIGHT - 78
+        )
+          continue;
+        if (overlaps(item, placed)) continue;
+        placed.push({ ...item });
+        placedItem = true;
+        break;
       }
       if (placedItem) break;
     }
@@ -213,4 +299,3 @@ export function renderWordCloud(words: WordItem[], limit: number, validMessages:
   ctx.fillText(`最近 ${limit} 条热词云 | ${validMessages} 条有效消息`, 42, HEIGHT - 34);
   return canvas.toBuffer("image/png");
 }
-

@@ -1,7 +1,7 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {isIP} from "node:net";
-import {domainToASCII} from "node:url";
-import {definePlugin, ui, type MessageEnvelope, type PluginContext} from "telebox/sdk";
+import { renderHelp as renderPluginHelp } from "./v2/help";
+import { isIP } from "node:net";
+import { domainToASCII } from "node:url";
+import { definePlugin, ui, type MessageEnvelope, type PluginContext } from "telebox/sdk";
 
 const help = `📍 <b>IP查询插件</b>
 
@@ -28,11 +28,22 @@ IP 查询插件：
 
 const fields = "status,message,country,regionName,city,isp,org,as,query,timezone,proxy,hosting";
 const maxResponseBytes = 64 * 1024;
-const escape = (text: string): string => text.replace(/[&<>"']/g, character => ({
-  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;",
-})[character]!);
+const escape = (text: string): string =>
+  text.replace(
+    /[&<>"']/g,
+    character =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#x27;",
+      })[character]!,
+  );
 class OutputDeliveryError extends Error {
-  constructor() { super("IP_OUTPUT_DELIVERY_FAILED"); }
+  constructor() {
+    super("IP_OUTPUT_DELIVERY_FAILED");
+  }
 }
 
 function target(query: string): string | undefined {
@@ -42,9 +53,14 @@ function target(query: string): string | undefined {
   const ascii = domainToASCII(query);
   const name = ascii.endsWith(".") ? ascii.slice(0, -1) : ascii;
   const labels = name.split(".");
-  if (!name || name.length > 253 || labels.length < 2 ||
-      labels.some(label => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label)) ||
-      !/^(?:[a-z]{2,}|xn--[a-z0-9-]+)$/i.test(labels.at(-1)!)) return;
+  if (
+    !name ||
+    name.length > 253 ||
+    labels.length < 2 ||
+    labels.some(label => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label)) ||
+    !/^(?:[a-z]{2,}|xn--[a-z0-9-]+)$/i.test(labels.at(-1)!)
+  )
+    return;
   return ascii;
 }
 
@@ -52,7 +68,9 @@ function fromReply(text: string): string {
   const clean = text.trim();
   const ipv4 = clean.match(/\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/);
   // Unicode-aware boundaries prevent taking an ASCII suffix of an IDN label.
-  const domain = clean.match(/(?<![\p{L}\p{M}\p{N}.-])(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(?![\p{L}\p{M}\p{N}-])/u);
+  const domain = clean.match(
+    /(?<![\p{L}\p{M}\p{N}.-])(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(?![\p{L}\p{M}\p{N}-])/u,
+  );
   return ipv4?.[0] ?? domain?.[0] ?? clean.split(/\s+/)[0];
 }
 
@@ -82,18 +100,20 @@ function parseFailure(query: string): string {
 💡 <b>建议:</b> 请稍后重试或联系管理员`;
 }
 
-type ApiResult = {kind: "data"; value: unknown} | {kind: "invalid"} | {kind: "http"; status: number};
+type ApiResult = { kind: "data"; value: unknown } | { kind: "invalid" } | { kind: "http"; status: number };
 
 async function consume(response: Response, signal: AbortSignal): Promise<ApiResult> {
-  if (response.status !== 200) return {kind: "http", status: response.status};
-  if (!response.body) return {kind: "invalid"};
+  if (response.status !== 200) return { kind: "http", status: response.status };
+  if (!response.body) return { kind: "invalid" };
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
   let cancellation: Promise<void> | undefined;
-  const cancel = () => cancellation ??= reader.cancel();
-  const onAbort = () => { void cancel().catch(() => undefined); };
-  signal.addEventListener("abort", onAbort, {once: true});
+  const cancel = () => (cancellation ??= reader.cancel());
+  const onAbort = () => {
+    void cancel().catch(() => undefined);
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
   try {
     while (true) {
       signal.throwIfAborted();
@@ -101,23 +121,27 @@ async function consume(response: Response, signal: AbortSignal): Promise<ApiResu
       signal.throwIfAborted();
       if (chunk.done) break;
       total += chunk.value.byteLength;
-      if (total > maxResponseBytes) return {kind: "invalid"};
+      if (total > maxResponseBytes) return { kind: "invalid" };
       if (chunk.value.byteLength) chunks.push(chunk.value);
     }
     try {
-      return {kind: "data", value: JSON.parse(Buffer.concat(chunks, total).toString("utf8"))};
+      return { kind: "data", value: JSON.parse(Buffer.concat(chunks, total).toString("utf8")) };
     } catch {
-      return {kind: "invalid"};
+      return { kind: "invalid" };
     }
   } finally {
     signal.removeEventListener("abort", onAbort);
-    try { await cancel(); } finally { reader.releaseLock(); }
+    try {
+      await cancel();
+    } finally {
+      reader.releaseLock();
+    }
   }
 }
 
-function format(query: string, result: ApiResult): {text: string; linkPreview?: boolean} {
-  const invalid = () => ({text: parseFailure(query)});
-  if (result.kind === "http") return {text: failure(query, `API请求失败，HTTP状态码: ${result.status}`)};
+function format(query: string, result: ApiResult): { text: string; linkPreview?: boolean } {
+  const invalid = () => ({ text: parseFailure(query) });
+  if (result.kind === "http") return { text: failure(query, `API请求失败，HTTP状态码: ${result.status}`) };
   if (result.kind === "invalid") return invalid();
   const data = result.value;
   if (!data || typeof data !== "object" || Array.isArray(data)) return invalid();
@@ -125,15 +149,17 @@ function format(query: string, result: ApiResult): {text: string; linkPreview?: 
   if (record.status === "fail") {
     if (record.message != null && typeof record.message !== "string") return invalid();
     const message = record.message || "查询失败，请检查IP地址或域名是否正确";
-    return {text: failure(query, message as string)};
+    return { text: failure(query, message as string) };
   }
   if (record.status !== "success") return invalid();
   const textFields = ["country", "regionName", "city", "isp", "org", "as", "query", "timezone"] as const;
-  if (textFields.some(field => record[field] != null && typeof record[field] !== "string") ||
-      ["proxy", "hosting"].some(field => record[field] != null && typeof record[field] !== "boolean")) {
+  if (
+    textFields.some(field => record[field] != null && typeof record[field] !== "string") ||
+    ["proxy", "hosting"].some(field => record[field] != null && typeof record[field] !== "boolean")
+  ) {
     return invalid();
   }
-  const value = (field: typeof textFields[number]) => record[field] as string || "N/A";
+  const value = (field: (typeof textFields)[number]) => (record[field] as string) || "N/A";
   let output = "";
   if (record.proxy) output += "此 IP 可能为代理 IP\n";
   if (record.hosting) output += "此 IP 可能为数据中心 IP\n";
@@ -148,84 +174,140 @@ function format(query: string, result: ApiResult): {text: string; linkPreview?: 
   if (record.timezone) output += `\n<b>⏰ 时区:</b> ${escape(value("timezone"))}`;
   const asNumber = value("as").match(/^AS(\d+)/)?.[1];
   if (asNumber) output += `\n\nhttps://bgp.he.net/AS${asNumber}`;
-  return {text: output, linkPreview: true};
+  return { text: output, linkPreview: true };
 }
 
-async function edit(context: PluginContext, message: MessageEnvelope, text: string, linkPreview?: boolean): Promise<void> {
+async function edit(
+  context: PluginContext,
+  message: MessageEnvelope,
+  text: string,
+  linkPreview?: boolean,
+): Promise<void> {
   context.signal.throwIfAborted();
-  await context.telegram.edit(message, text, {parseMode: "html", ...(linkPreview === undefined ? {} : {linkPreview})});
+  await context.telegram.edit(message, text, {
+    parseMode: "html",
+    ...(linkPreview === undefined ? {} : { linkPreview }),
+  });
 }
 
 export default function createIp() {
-  return definePlugin({renderHelp: renderPluginHelp,
-    apiVersion: 1, id: "ip", description,
+  return definePlugin({
+    renderHelp: renderPluginHelp,
+    apiVersion: 1,
+    id: "ip",
+    description,
     commands: {
-      ip: {description: "查询 IP 地址或域名的详细信息", async handle({message, args}, context) {
-        try {
-          context.signal.throwIfAborted();
-          let query = args.join(" ").trim();
-          if (!query) {
-            try {
-              const reply = await context.telegram.getReply(message);
-              context.signal.throwIfAborted();
-              if (reply?.text) query = fromReply(reply.text);
-            } catch {
-              if (context.signal.aborted) return;
-              context.log.error("ip.reply.failed");
+      ip: {
+        description: "查询 IP 地址或域名的详细信息",
+        async handle({ message, args }, context) {
+          try {
+            context.signal.throwIfAborted();
+            let query = args.join(" ").trim();
+            if (!query) {
+              try {
+                const reply = await context.telegram.getReply(message);
+                context.signal.throwIfAborted();
+                if (reply?.text) query = fromReply(reply.text);
+              } catch {
+                if (context.signal.aborted) return;
+                context.log.error("ip.reply.failed");
+              }
             }
-          }
-          if (!query) { await edit(context, message, help); return; }
-          const clean = target(query);
-          if (!clean) { await edit(context, message, failure(query, "请提供有效的IP地址或域名")); return; }
-          await edit(context, message, `🔍 <b>正在查询:</b> <code>${escape(query)}</code>`);
-          let result: ApiResult;
-          try {
-            result = await context.http.withResponse(
-              `http://ip-api.com/json/${encodeURIComponent(clean)}?lang=zh-CN&fields=${fields}`,
-              {method: "GET", redirect: "manual", credentials: "omit", headers: {"User-Agent": "TeleBox-IP-Plugin/1.0"}},
-              consume, {signal: context.signal, timeoutMs: 15000, redirects:{allowedHosts:["ip-api.com"],maxRedirects:2}},
+            if (!query) {
+              await edit(context, message, help);
+              return;
+            }
+            const clean = target(query);
+            if (!clean) {
+              await edit(context, message, failure(query, "请提供有效的IP地址或域名"));
+              return;
+            }
+            await edit(context, message, `🔍 <b>正在查询:</b> <code>${escape(query)}</code>`);
+            let result: ApiResult;
+            try {
+              result = await context.http.withResponse(
+                `http://ip-api.com/json/${encodeURIComponent(clean)}?lang=zh-CN&fields=${fields}`,
+                {
+                  method: "GET",
+                  redirect: "manual",
+                  credentials: "omit",
+                  headers: { "User-Agent": "TeleBox-IP-Plugin/1.0" },
+                },
+                consume,
+                {
+                  signal: context.signal,
+                  timeoutMs: 15000,
+                  redirects: { allowedHosts: ["ip-api.com"], maxRedirects: 2 },
+                },
+              );
+            } catch (error) {
+              if (context.signal.aborted) return;
+              const code = error instanceof Error && "code" in error ? error.code : undefined;
+              const reason =
+                code === "TIMEOUT"
+                  ? "请求超时，请稍后重试"
+                  : code === "DNS_FAILED"
+                    ? "DNS解析失败，请检查网络连接"
+                    : code === "CONNECTION_REFUSED"
+                      ? "连接被拒绝，请稍后重试"
+                      : "网络请求失败";
+              context.log.error("ip.request.failed", { timeout: code === "TIMEOUT" });
+              await edit(context, message, failure(query, reason));
+              return;
+            }
+            context.signal.throwIfAborted();
+            const output = format(query, result);
+            const rendered =
+              output.text.length <= ui.MAX_HTML_LENGTH
+                ? [output.text]
+                : (await ui.renderRichText(output.text, ui.PAGE_LABEL_RESERVE)).map(
+                    (page, index, all) => page + ui.pageLabel(index, all.length),
+                  );
+            const delivery = await ui.deliverPages(rendered, context.signal, (page, index) =>
+              index
+                ? context.telegram.reply(message, page, {
+                    parseMode: "html",
+                    ...(output.linkPreview === undefined ? {} : { linkPreview: output.linkPreview }),
+                  })
+                : context.telegram.edit(message, page, {
+                    parseMode: "html",
+                    ...(output.linkPreview === undefined ? {} : { linkPreview: output.linkPreview }),
+                  }),
             );
+            if (delivery.interrupted) {
+              context.log.info("ip.delivery.interrupted", {
+                published: delivery.published,
+                total: delivery.total,
+                category: ui.deliveryErrorCategory(delivery.error),
+              });
+              if (!delivery.published) throw new OutputDeliveryError();
+              try {
+                await context.telegram.reply(message, ui.interruptedNotice(delivery), { parseMode: "html" });
+              } catch {}
+            }
           } catch (error) {
+            if (error instanceof OutputDeliveryError) throw error;
             if (context.signal.aborted) return;
-            const code = error instanceof Error && "code" in error ? error.code : undefined;
-            const reason = code === "TIMEOUT" ? "请求超时，请稍后重试"
-              : code === "DNS_FAILED" ? "DNS解析失败，请检查网络连接"
-              : code === "CONNECTION_REFUSED" ? "连接被拒绝，请稍后重试" : "网络请求失败";
-            context.log.error("ip.request.failed", {timeout: code === "TIMEOUT"});
-            await edit(context, message, failure(query, reason));
-            return;
-          }
-          context.signal.throwIfAborted();
-          const output = format(query, result);
-          const rendered = output.text.length <= ui.MAX_HTML_LENGTH
-            ? [output.text]
-            : (await ui.renderRichText(output.text, ui.PAGE_LABEL_RESERVE)).map((page, index, all) => page + ui.pageLabel(index, all.length));
-          const delivery = await ui.deliverPages(rendered, context.signal, (page, index) => index
-            ? context.telegram.reply(message, page, {parseMode: "html", ...(output.linkPreview === undefined ? {} : {linkPreview: output.linkPreview})})
-            : context.telegram.edit(message, page, {parseMode: "html", ...(output.linkPreview === undefined ? {} : {linkPreview: output.linkPreview})}));
-          if (delivery.interrupted) {
-            context.log.info("ip.delivery.interrupted", {published: delivery.published, total: delivery.total, category: ui.deliveryErrorCategory(delivery.error)});
-            if (!delivery.published) throw new OutputDeliveryError();
-            try { await context.telegram.reply(message, ui.interruptedNotice(delivery), {parseMode: "html"}); } catch {}
-          }
-        } catch (error) {
-          if (error instanceof OutputDeliveryError) throw error;
-          if (context.signal.aborted) return;
-          context.log.error("ip.command.failed");
-          try {
-            await edit(context, message, `❌ <b>IP查询失败</b>
+            context.log.error("ip.command.failed");
+            try {
+              await edit(
+                context,
+                message,
+                `❌ <b>IP查询失败</b>
 
 <b>错误信息:</b> 消息处理失败，请稍后重试
 
 💡 <b>建议:</b>
 • 检查网络连接
 • 稍后重试查询
-• 确认IP地址或域名格式正确`);
-          } catch {
-            if (!context.signal.aborted) context.log.error("ip.message.failed");
+• 确认IP地址或域名格式正确`,
+              );
+            } catch {
+              if (!context.signal.aborted) context.log.error("ip.message.failed");
+            }
           }
-        }
-      }},
+        },
+      },
     },
   });
 }

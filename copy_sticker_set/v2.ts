@@ -1,36 +1,41 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {Api} from "teleproto";
-import {definePlugin, type CommandDefinition, type CommandInvocation, type PluginContext} from "telebox/sdk";
+import { renderHelp as renderPluginHelp } from "./v2/help";
+import { Api } from "teleproto";
+import { definePlugin, type CommandDefinition, type CommandInvocation, type PluginContext } from "telebox/sdk";
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 120;
 const CREATE_NOTICE_MS = 60_000;
 
-const escape = (value: unknown): string => String(value ?? "").replace(/[&<>\"']/g,
-  character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;"})[character]!);
+const escape = (value: unknown): string =>
+  String(value ?? "").replace(
+    /[&<>\"']/g,
+    character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;" })[character]!,
+  );
 
 type ParseFailure = "help" | "link" | "limit" | "limit_max" | "name" | "title";
-type ParsedInput = {ok: true; name: string; title?: string; limit: number} | {ok: false; reason: ParseFailure};
+type ParsedInput = { ok: true; name: string; title?: string; limit: number } | { ok: false; reason: ParseFailure };
 
 function parse(args: readonly string[]): ParsedInput {
-  if (!args.length) return {ok: false, reason: "help"};
+  if (!args.length) return { ok: false, reason: "help" };
   let name = args[0]!;
   const link = /^https?:\/\//i.test(name)
     ? name
-    : /^(?:www\.)?t\.me\/addstickers\//i.test(name) ? `https://${name}` : undefined;
+    : /^(?:www\.)?t\.me\/addstickers\//i.test(name)
+      ? `https://${name}`
+      : undefined;
   if (link) {
     try {
       const url = new URL(link);
-      if (url.protocol !== "http:" && url.protocol !== "https:") return {ok: false, reason: "link"};
-      if (!["t.me", "www.t.me"].includes(url.hostname.toLowerCase())) return {ok: false, reason: "name"};
+      if (url.protocol !== "http:" && url.protocol !== "https:") return { ok: false, reason: "link" };
+      if (!["t.me", "www.t.me"].includes(url.hostname.toLowerCase())) return { ok: false, reason: "name" };
       const match = url.pathname.match(/^\/addstickers\/([A-Za-z0-9_]+)\/?$/);
-      if (!match) return {ok: false, reason: "link"};
+      if (!match) return { ok: false, reason: "link" };
       name = match[1]!;
     } catch {
-      return {ok: false, reason: "link"};
+      return { ok: false, reason: "link" };
     }
   }
-  if (!/^[A-Za-z0-9_]{1,64}$/.test(name)) return {ok: false, reason: "name"};
+  if (!/^[A-Za-z0-9_]{1,64}$/.test(name)) return { ok: false, reason: "name" };
 
   let limit = DEFAULT_LIMIT;
   const title: string[] = [];
@@ -41,13 +46,13 @@ function parse(args: readonly string[]): ParsedInput {
       continue;
     }
     const requested = Number(match[1]);
-    if (!Number.isSafeInteger(requested) || requested < 1) return {ok: false, reason: "limit"};
-    if (requested > MAX_LIMIT) return {ok: false, reason: "limit_max"};
+    if (!Number.isSafeInteger(requested) || requested < 1) return { ok: false, reason: "limit" };
+    if (requested > MAX_LIMIT) return { ok: false, reason: "limit_max" };
     limit = requested;
   }
   const joined = title.join(" ").trim();
-  if (joined.length > 64) return {ok: false, reason: "title"};
-  return {ok: true, name, title: joined || undefined, limit};
+  if (joined.length > 64) return { ok: false, reason: "title" };
+  return { ok: true, name, title: joined || undefined, limit };
 }
 
 function usage(prefix: string): string {
@@ -73,9 +78,13 @@ function parseFailure(invocation: CommandInvocation, reason: ParseFailure): stri
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
-  if (error && typeof error === "object" && "errorMessage" in error &&
-      typeof (error as {errorMessage?: unknown}).errorMessage === "string") {
-    return (error as {errorMessage: string}).errorMessage;
+  if (
+    error &&
+    typeof error === "object" &&
+    "errorMessage" in error &&
+    typeof (error as { errorMessage?: unknown }).errorMessage === "string"
+  ) {
+    return (error as { errorMessage: string }).errorMessage;
   }
   return "";
 }
@@ -100,13 +109,13 @@ function createFailure(invocation: CommandInvocation, failure: CreateFailure): s
   return `<b>❌ 创建错误</b><br/><br/>创建贴纸包时出现错误${suffix}`;
 }
 
-function sourceSet(value: unknown): {set: {title: string}; documents: unknown[]} | undefined {
+function sourceSet(value: unknown): { set: { title: string }; documents: unknown[] } | undefined {
   if (!value || typeof value !== "object") return;
-  const source = value as {set?: unknown; documents?: unknown};
+  const source = value as { set?: unknown; documents?: unknown };
   if (!source.set || typeof source.set !== "object" || !Array.isArray(source.documents)) return;
-  const title = (source.set as {title?: unknown}).title;
+  const title = (source.set as { title?: unknown }).title;
   if (typeof title !== "string") return;
-  return {set: {title}, documents: source.documents};
+  return { set: { title }, documents: source.documents };
 }
 
 function scheduleCreateNotice(context: PluginContext, invocation: CommandInvocation): () => Promise<void> {
@@ -123,14 +132,20 @@ function scheduleCreateNotice(context: PluginContext, invocation: CommandInvocat
       void releaseTimer();
       return;
     }
-    notification = context.tasks.run("copy_sticker_set:create-timeout-notification", async signal => {
-      signal.throwIfAborted();
-      await context.telegram.edit(invocation.message,
-        "⏳ 创建贴纸包超时，操作仍在等待服务器确认。请勿重复提交；收到服务器结果后会继续更新此消息。");
-    }).catch(() => {
-      if (!context.signal.aborted) context.log.error("copy_sticker_set_timeout_notice_failed");
+    notification = context.tasks
+      .run("copy_sticker_set:create-timeout-notification", async signal => {
+        signal.throwIfAborted();
+        await context.telegram.edit(
+          invocation.message,
+          "⏳ 创建贴纸包超时，操作仍在等待服务器确认。请勿重复提交；收到服务器结果后会继续更新此消息。",
+        );
+      })
+      .catch(() => {
+        if (!context.signal.aborted) context.log.error("copy_sticker_set_timeout_notice_failed");
+      });
+    void notification.then(() => {
+      void releaseTimer();
     });
-    void notification.then(() => { void releaseTimer(); });
   }, CREATE_NOTICE_MS);
   return async () => {
     await releaseTimer();
@@ -146,8 +161,10 @@ export default function createCopyStickerSet() {
     async handle(invocation, context) {
       const input = parse(invocation.args);
       if (!input.ok) {
-        await context.telegram.edit(invocation.message, parseFailure(invocation, input.reason),
-          {parseMode: "html", linkPreview: false});
+        await context.telegram.edit(invocation.message, parseFailure(invocation, input.reason), {
+          parseMode: "html",
+          linkPreview: false,
+        });
         return;
       }
 
@@ -156,85 +173,110 @@ export default function createCopyStickerSet() {
       try {
         response = await context.telegram.withClient(async (client, signal) => {
           signal.throwIfAborted();
-          const result = await client.invoke(new Api.messages.GetStickerSet({
-            stickerset: new Api.InputStickerSetShortName({shortName: input.name}),
-            hash: 0,
-          }));
+          const result = await client.invoke(
+            new Api.messages.GetStickerSet({
+              stickerset: new Api.InputStickerSetShortName({ shortName: input.name }),
+              hash: 0,
+            }),
+          );
           signal.throwIfAborted();
           return result;
         });
       } catch {
         context.signal.throwIfAborted();
         context.log.error("copy_sticker_set_lookup_failed");
-        await context.telegram.edit(invocation.message,
+        await context.telegram.edit(
+          invocation.message,
           `<b>❌ 贴纸包不存在</b><br/><br/>无法找到贴纸包：<code>${escape(input.name)}</code><br/>请检查贴纸包名称是否正确<br/><br/>使用 ${usage(invocation.prefix)} 查看帮助`,
-          {parseMode: "html"});
+          { parseMode: "html" },
+        );
         return;
       }
 
       const source = sourceSet(response);
       if (!source) {
         context.log.error("copy_sticker_set_lookup_invalid_response");
-        await context.telegram.edit(invocation.message,
+        await context.telegram.edit(
+          invocation.message,
           `<b>❌ 获取失败</b><br/><br/>获取贴纸包信息失败<br/><br/>使用 ${usage(invocation.prefix)} 查看帮助`,
-          {parseMode: "html"});
+          { parseMode: "html" },
+        );
         return;
       }
       if (!source.documents.length) {
-        await context.telegram.edit(invocation.message,
+        await context.telegram.edit(
+          invocation.message,
           `<b>❌ 贴纸包为空</b><br/><br/>贴纸包中没有贴纸<br/><br/>使用 ${usage(invocation.prefix)} 查看帮助`,
-          {parseMode: "html"});
+          { parseMode: "html" },
+        );
         return;
       }
 
-      await context.telegram.edit(invocation.message,
+      await context.telegram.edit(
+        invocation.message,
         `📦 找到贴纸包：${escape(source.set.title)}<br/>🎯 包含 ${source.documents.length} 个贴纸<br/><br/>⏳ 开始复制贴纸包...`,
-        {parseMode: "html"});
+        { parseMode: "html" },
+      );
 
       const selected = source.documents.slice(0, input.limit);
       if (source.documents.length > selected.length) {
-        await context.telegram.edit(invocation.message,
+        await context.telegram.edit(
+          invocation.message,
           `📦 贴纸包：${escape(source.set.title)}<br/>🎯 原包含 ${source.documents.length} 个贴纸<br/>` +
-          `⚠️ 为避免超时，将只复制前 ${selected.length} 个贴纸（limit=${input.limit}，最大允许 ${MAX_LIMIT}）<br/><br/>⏳ 开始处理贴纸...`,
-          {parseMode: "html"});
+            `⚠️ 为避免超时，将只复制前 ${selected.length} 个贴纸（limit=${input.limit}，最大允许 ${MAX_LIMIT}）<br/><br/>⏳ 开始处理贴纸...`,
+          { parseMode: "html" },
+        );
       }
 
       const stickers: Api.InputStickerSetItem[] = [];
       for (const [index, document] of selected.entries()) {
         context.signal.throwIfAborted();
-        await context.telegram.edit(invocation.message,
+        await context.telegram.edit(
+          invocation.message,
           `📦 贴纸包：${escape(source.set.title)}<br/>🎯 处理贴纸 ${index + 1}/${selected.length}...`,
-          {parseMode: "html"});
+          { parseMode: "html" },
+        );
         if (!(document instanceof Api.Document)) continue;
         try {
           const attribute = (document.attributes ?? []).find(value => value instanceof Api.DocumentAttributeSticker);
           const emoji = attribute instanceof Api.DocumentAttributeSticker && attribute.alt ? attribute.alt : "🙂";
-          stickers.push(new Api.InputStickerSetItem({
-            document: new Api.InputDocument({
-              id: document.id,
-              accessHash: document.accessHash,
-              fileReference: document.fileReference ?? Buffer.alloc(0),
+          stickers.push(
+            new Api.InputStickerSetItem({
+              document: new Api.InputDocument({
+                id: document.id,
+                accessHash: document.accessHash,
+                fileReference: document.fileReference ?? Buffer.alloc(0),
+              }),
+              emoji,
             }),
-            emoji,
-          }));
+          );
         } catch {
           context.log.error("copy_sticker_set_item_skipped");
         }
       }
 
       if (!stickers.length) {
-        await context.telegram.edit(invocation.message,
+        await context.telegram.edit(
+          invocation.message,
           `<b>❌ 处理失败</b><br/><br/>无法处理任何贴纸<br/><br/>使用 ${usage(invocation.prefix)} 查看帮助`,
-          {parseMode: "html"});
+          { parseMode: "html" },
+        );
         return;
       }
 
-      await context.telegram.edit(invocation.message,
+      await context.telegram.edit(
+        invocation.message,
         `📦 贴纸包：${escape(source.set.title)}<br/>🎯 已处理 ${stickers.length} 个贴纸<br/><br/>🚀 正在创建新贴纸包...`,
-        {parseMode: "html"});
+        { parseMode: "html" },
+      );
 
       const suffix = Date.now().toString(36);
-      const stem = input.name.toLowerCase().replace(/_+/g, "_").slice(0, 40).replace(/^_+|_+$/g, "") || "stickers";
+      const stem =
+        input.name
+          .toLowerCase()
+          .replace(/_+/g, "_")
+          .slice(0, 40)
+          .replace(/^_+|_+$/g, "") || "stickers";
       const shortName = `mibox_${stem}_${suffix}`.slice(0, 64);
       const title = input.title || `${source.set.title} (复制)`;
       let result: unknown;
@@ -242,12 +284,14 @@ export default function createCopyStickerSet() {
       try {
         result = await context.telegram.withClient(async (client, signal) => {
           signal.throwIfAborted();
-          const created = await client.invoke(new Api.stickers.CreateStickerSet({
-            userId: new Api.InputUserSelf(),
-            title,
-            shortName,
-            stickers,
-          }));
+          const created = await client.invoke(
+            new Api.stickers.CreateStickerSet({
+              userId: new Api.InputUserSelf(),
+              title,
+              shortName,
+              stickers,
+            }),
+          );
           signal.throwIfAborted();
           return created;
         });
@@ -255,7 +299,7 @@ export default function createCopyStickerSet() {
         context.signal.throwIfAborted();
         const failure = classifyCreateFailure(error);
         context.log.error(`copy_sticker_set_create_${failure}`);
-        await context.telegram.edit(invocation.message, createFailure(invocation, failure), {parseMode: "html"});
+        await context.telegram.edit(invocation.message, createFailure(invocation, failure), { parseMode: "html" });
         return;
       } finally {
         await stopCreateNotice();
@@ -263,17 +307,21 @@ export default function createCopyStickerSet() {
 
       if (!(result instanceof Api.messages.StickerSet)) {
         context.log.error("copy_sticker_set_create_invalid_response");
-        await context.telegram.edit(invocation.message,
+        await context.telegram.edit(
+          invocation.message,
           `<b>❌ 创建失败</b><br/><br/>创建贴纸包失败，请稍后重试<br/><br/>使用 ${usage(invocation.prefix)} 查看帮助`,
-          {parseMode: "html"});
+          { parseMode: "html" },
+        );
         return;
       }
 
-      await context.telegram.edit(invocation.message,
+      await context.telegram.edit(
+        invocation.message,
         `<b>✅ 贴纸包复制完成</b><br/><br/>📦 原贴纸包：${escape(source.set.title)}<br/>` +
-        `🆕 新贴纸包：${escape(title)}<br/>📊 数量：${stickers.length}（limit=${input.limit}）<br/>` +
-        `<a href="https://t.me/addstickers/${shortName}">打开新贴纸包</a>`,
-        {parseMode: "html", linkPreview: false});
+          `🆕 新贴纸包：${escape(title)}<br/>📊 数量：${stickers.length}（limit=${input.limit}）<br/>` +
+          `<a href="https://t.me/addstickers/${shortName}">打开新贴纸包</a>`,
+        { parseMode: "html", linkPreview: false },
+      );
     },
   };
 
@@ -282,6 +330,6 @@ export default function createCopyStickerSet() {
     apiVersion: 1,
     id: "copy_sticker_set",
     description: "复制 Telegram 贴纸包",
-    commands: {copy_sticker_set: command, css: command},
+    commands: { copy_sticker_set: command, css: command },
   });
 }

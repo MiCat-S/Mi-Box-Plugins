@@ -16,21 +16,30 @@ function snippet(start, end) {
 }
 
 const moduleObject = { exports: {} };
-vm.runInNewContext(esbuild.transformSync(`
+vm.runInNewContext(
+  esbuild.transformSync(
+    `
   class Checkin {
     ${snippet("  private async clickCallbackButton(", "  private parseButtonMatcher(")}
     ${snippet("  private decodeData(", "  private isAfterMessage(")}
   }
   module.exports = Checkin;
-`, { loader: "ts", format: "cjs", target: "es2022" }).code, {
-  Api, Buffer, module: moduleObject,
-});
+`,
+    { loader: "ts", format: "cjs", target: "es2022" },
+  ).code,
+  {
+    Api,
+    Buffer,
+    module: moduleObject,
+  },
+);
 const Checkin = moduleObject.exports;
 
 test("checkin matches Layer 229 callbacks by text or data and sends the original bytes", async () => {
   const payload = Buffer.from("checkin");
   const button = new Api.KeyboardInlineButton({
-    text: "Sign in", type: new Api.InlineButtonTypeCallback({ data: payload }),
+    text: "Sign in",
+    type: new Api.InlineButtonTypeCallback({ data: payload }),
   });
   const msg = {
     id: 99,
@@ -41,7 +50,16 @@ test("checkin matches Layer 229 callbacks by text or data and sends the original
   const checkin = new Checkin();
   for (const target of [{ callbackData: "checkin" }, { buttonText: "Sign in" }]) {
     let sent;
-    await checkin.clickCallbackButton({ invoke: async (request) => { sent = request; } }, "test-bot", msg, target);
+    await checkin.clickCallbackButton(
+      {
+        invoke: async request => {
+          sent = request;
+        },
+      },
+      "test-bot",
+      msg,
+      target,
+    );
     assert.deepEqual(sent.data, payload);
     assert.equal(sent.msgId, 99);
   }
@@ -50,13 +68,28 @@ test("checkin matches Layer 229 callbacks by text or data and sends the original
 test("checkin ignores URL buttons with matching text", async () => {
   const checkin = new Checkin();
   const msg = {
-    replyMarkup: { rows: [{ buttons: [
-      new Api.KeyboardInlineButton({
-        text: "Sign in", type: new Api.InlineButtonTypeUrl({ url: "https://example.com" }),
-      }),
-    ] }] },
+    replyMarkup: {
+      rows: [
+        {
+          buttons: [
+            new Api.KeyboardInlineButton({
+              text: "Sign in",
+              type: new Api.InlineButtonTypeUrl({ url: "https://example.com" }),
+            }),
+          ],
+        },
+      ],
+    },
   };
-  await assert.rejects(checkin.clickCallbackButton({
-    invoke: async () => assert.fail("unexpected request"),
-  }, "test-bot", msg, { buttonText: "Sign in" }), /未找到回调按钮/);
+  await assert.rejects(
+    checkin.clickCallbackButton(
+      {
+        invoke: async () => assert.fail("unexpected request"),
+      },
+      "test-bot",
+      msg,
+      { buttonText: "Sign in" },
+    ),
+    /未找到回调按钮/,
+  );
 });

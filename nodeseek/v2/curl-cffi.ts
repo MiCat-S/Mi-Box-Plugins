@@ -1,7 +1,7 @@
-import {constants} from "node:fs";
-import {access, stat} from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, stat } from "node:fs/promises";
 import path from "node:path";
-import type {PluginContext} from "telebox/sdk";
+import type { PluginContext } from "telebox/sdk";
 
 // -E retains user site installations but ignores PYTHON* settings. Exclude the
 // implicit current directory before importing modules, for both probe and request.
@@ -12,7 +12,9 @@ import json
 `;
 
 // Embedded source is bundled with the plugin; no helper asset or installation step is required.
-const script = prelude + `
+const script =
+  prelude +
+  `
 from curl_cffi import requests
 
 payload = json.load(sys.stdin)
@@ -33,7 +35,9 @@ finally:
     response.close()
 `;
 
-const probeScript = prelude + `
+const probeScript =
+  prelude +
+  `
 try:
     from curl_cffi import requests
 except ModuleNotFoundError as error:
@@ -55,7 +59,10 @@ export function validatePythonPath(value: unknown): void {
 
 async function python(ctx: PluginContext, configured: unknown, signal: AbortSignal): Promise<string> {
   return ctx.tasks.run("nodeseek:python-path", async scopeSignal => {
-    const check = () => { scopeSignal.throwIfAborted(); signal.throwIfAborted(); };
+    const check = () => {
+      scopeSignal.throwIfAborted();
+      signal.throwIfAborted();
+    };
     check();
     if (configured !== undefined && configured !== "") {
       validatePythonPath(configured);
@@ -76,8 +83,10 @@ async function python(ctx: PluginContext, configured: unknown, signal: AbortSign
       }
     };
     // dataPath is resolution-only: checking an absent legacy venv never creates data directories.
-    const legacy = process.platform === "win32" ?
-      ["curl_cffi_venv/Scripts/python.exe", "curl_cffi_venv/bin/python"] : ["curl_cffi_venv/bin/python"];
+    const legacy =
+      process.platform === "win32"
+        ? ["curl_cffi_venv/Scripts/python.exe", "curl_cffi_venv/bin/python"]
+        : ["curl_cffi_venv/bin/python"];
     for (const relative of legacy) {
       const candidate = ctx.files.dataPath(relative);
       if (await exists(candidate)) return candidate;
@@ -100,10 +109,13 @@ export async function probeCurlCffi(ctx: PluginContext, signal: AbortSignal): Pr
     const executable = await python(ctx, config.pythonPath, signal);
     signal.throwIfAborted();
     const output = await ctx.processes.run(executable, ["-E", "-c", probeScript], {
-      signal, timeoutMs: 5000, maxOutputBytes: 4096,
+      signal,
+      timeoutMs: 5000,
+      maxOutputBytes: 4096,
     });
     signal.throwIfAborted();
-    if (output.exitCode !== 0 || output.stdout.byteLength + output.stderr.byteLength > 4096) throw new Error("Invalid probe result");
+    if (output.exitCode !== 0 || output.stdout.byteLength + output.stderr.byteLength > 4096)
+      throw new Error("Invalid probe result");
     const result: unknown = JSON.parse(output.stdout.toString("utf8"));
     if (result && typeof result === "object" && "state" in result) {
       if (result.state === "available") return "可用（仅本地依赖导入检查）";
@@ -112,7 +124,10 @@ export async function probeCurlCffi(ctx: PluginContext, signal: AbortSignal): Pr
     throw new Error("Dependency check failed");
   } catch (error) {
     signal.throwIfAborted();
-    if (error instanceof PythonUnavailable || (error instanceof Error && "code" in error && error.code === "SPAWN_FAILED")) {
+    if (
+      error instanceof PythonUnavailable ||
+      (error instanceof Error && "code" in error && error.code === "SPAWN_FAILED")
+    ) {
       return "不可用（Python 不可执行）";
     }
     ctx.log.error("nodeseek.probe.failed");
@@ -125,7 +140,10 @@ export async function curlCffi(ctx: PluginContext, url: string, headers: Record<
   const executable = await python(ctx, config.pythonPath, signal);
   signal.throwIfAborted();
   const output = await ctx.processes.run(executable, ["-E", "-c", script], {
-    input: JSON.stringify({url, headers}), signal, timeoutMs: 30000, maxOutputBytes: 1024 * 1024,
+    input: JSON.stringify({ url, headers }),
+    signal,
+    timeoutMs: 30000,
+    maxOutputBytes: 1024 * 1024,
   });
   signal.throwIfAborted();
   if (output.exitCode !== 0 || output.stdout.byteLength + output.stderr.byteLength > 1024 * 1024) {
@@ -134,9 +152,15 @@ export async function curlCffi(ctx: PluginContext, url: string, headers: Record<
   const parsed: unknown = JSON.parse(output.stdout.toString("utf8"));
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid curl_cffi response");
   const result = parsed as Record<string, unknown>;
-  if (!Number.isInteger(result.status) || Number(result.status) < 100 || Number(result.status) > 599 ||
-      typeof result.server !== "string" || typeof result.text !== "string" || Buffer.byteLength(result.text) > 65536) {
+  if (
+    !Number.isInteger(result.status) ||
+    Number(result.status) < 100 ||
+    Number(result.status) > 599 ||
+    typeof result.server !== "string" ||
+    typeof result.text !== "string" ||
+    Buffer.byteLength(result.text) > 65536
+  ) {
     throw new Error("Invalid curl_cffi response");
   }
-  return {status: result.status as number, server: result.server, body: result.text};
+  return { status: result.status as number, server: result.server, body: result.text };
 }

@@ -1,5 +1,5 @@
-export type Cached = {id: number; senderId: string; date: number; text: string; [key: string]: unknown};
-export type Chat = {username?: string; title?: string; msgs: Cached[]; lastActiveAt?: number; [key: string]: unknown};
+export type Cached = { id: number; senderId: string; date: number; text: string; [key: string]: unknown };
+export type Chat = { username?: string; title?: string; msgs: Cached[]; lastActiveAt?: number; [key: string]: unknown };
 export const MAX_MESSAGES = 3000;
 const EXPIRE = 30 * 86400;
 
@@ -34,20 +34,20 @@ export function trimGroups(chats: Map<string, Chat>, limit: number): boolean {
 
 // Map insertion order is oldest to newest; store the activity explicitly because
 // JSON object keys that look like integers do not preserve insertion order.
-export function restore(cache: Record<string, Chat>, limit: number): {chats: Map<string, Chat>; changed: boolean} {
+export function restore(cache: Record<string, Chat>, limit: number): { chats: Map<string, Chat>; changed: boolean } {
   const entries = Object.entries(cache);
   const chats = new Map(entries.filter(([peer]) => isGroupPeer(peer)).sort((a, b) => activity(a[1]) - activity(b[1])));
   let changed = chats.size !== entries.length;
   for (const chat of chats.values()) changed = prune(chat) || changed;
   changed = trimGroups(chats, limit) || changed;
-  return {chats, changed};
+  return { chats, changed };
 }
 
 export function upsert(chat: Chat, message: Cached): void {
   const index = chat.msgs.findIndex(previous => previous.id === message.id);
   if (index >= 0) {
     const previous = chat.msgs.splice(index, 1)[0]!;
-    message = {...previous, ...message};
+    message = { ...previous, ...message };
   }
   chat.msgs.unshift(message);
   prune(chat);
@@ -60,13 +60,17 @@ export function upsert(chat: Chat, message: Cached): void {
  * the existing cached message survive, and old messages never re-enter the
  * result. The result is newest-first.
  */
-export function mergeMessages(base: readonly Cached[], increments: Iterable<Cached>, previous: readonly Cached[] = []): Cached[] {
+export function mergeMessages(
+  base: readonly Cached[],
+  increments: Iterable<Cached>,
+  previous: readonly Cached[] = [],
+): Cached[] {
   const metadata = new Map<number, Cached>();
   for (const message of previous) metadata.set(message.id, message);
   const result = new Map<number, Cached>();
   const put = (message: Cached): void => {
     const prior = result.get(message.id) ?? metadata.get(message.id);
-    result.set(message.id, prior ? {...prior, ...message} : message);
+    result.set(message.id, prior ? { ...prior, ...message } : message);
   };
   for (const message of base) put(message);
   for (const message of increments) put(message);

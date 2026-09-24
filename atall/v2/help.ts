@@ -1,7 +1,12 @@
-import {ui} from "telebox/sdk";
+import { ui } from "telebox/sdk";
 
-export function renderHelp(prefix: string, maxMentions: number, maxPages: number,
-  maxMentionsPerPage: number, maxPageChars: number): string {
+export function renderHelp(
+  prefix: string,
+  maxMentions: number,
+  maxPages: number,
+  maxMentionsPerPage: number,
+  maxPageChars: number,
+): string {
   const p = ui.text(prefix);
   return `📢 <b>AtAll</b>
 

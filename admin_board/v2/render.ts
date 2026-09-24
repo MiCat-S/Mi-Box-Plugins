@@ -14,13 +14,16 @@ export type Stat = {
   creator: boolean;
 };
 
-export type Counts = {totalCount: number; botCount: number; nonBotCount: number};
-export type TargetDisplay = {title: string; username: string | null};
+export type Counts = { totalCount: number; botCount: number; nonBotCount: number };
+export type TargetDisplay = { title: string; username: string | null };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const escapeHtml = (value: unknown): string =>
-  String(value ?? "").replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;"})[char]!);
+  String(value ?? "").replace(
+    /[&<>"']/g,
+    char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;" })[char]!,
+  );
 
 export function formatAvgPerDay(value: number): string {
   return value.toFixed(2).replace(/\.?0+$/, "");
@@ -76,15 +79,55 @@ function buildTailComment(stat: Stat, index: number, total: number): string {
   const seed = `tail:${stat.id}:${index}:${total}:${Math.round(avg * 100)}`;
 
   if (total === 1) return "全场就你一个，尾榜也只能你来站岗";
-  if (isBottom && hasNoMessages) return pickStableText(seed, ["尾王登基，发言记录比头发还稀", "喜提垫底，群聊存在感约等于空气", "本群静音代言人，查无发言"]);
-  if (isBottom) return pickStableText(seed, ["稳居榜尾，主打一个陪伴不发言", "尾榜状元，今天也把字省下来了", "发言效率感人，成功拿下最后一名"]);
-  if (isBottomThree && hasNoMessages && recentDays > 7) return pickStableText(seed, ["长期失踪人口，像是顺手加进来的管理员", "潜水深度过高，群消息已经追不上你", "上次开口像在上个版本"]);
-  if (isBottomThree && avg < 1) return pickStableText(seed, ["尾部常驻嘉宾，发言全靠缘分刷新", "输入法像是包月到期了", "平时不说话，一说话可能是手滑"]);
-  if (isBottomFive && recentDays > 3) return pickStableText(seed, ["最近略显安静，像是把群折叠了", "看得出来人在群里，魂不一定在", "出勤勉强合格，输出接近请假"]);
-  if (avg < 1) return pickStableText(seed, ["低频营业，惜字如金到像在收费", "主打沉默管理，发言像限量发售", "在线旁听专家，开口次数相当克制"]);
-  if (avg < 2 && recentDays <= 1) return pickStableText(seed, ["今天象征性冒了个泡，任务算完成", "刚打完卡就准备继续潜水", "有在努力，但不多"]);
-  if (avg < 3) return pickStableText(seed, ["在卷王堆里显得格外佛系", "不是完全不说，只是存在感很节能", "稳定尾部，压力全给前排扛了"]);
-  return pickStableText(seed, ["虽然在尾部，但至少还算偶尔出声", "尾榜里算是比较有求生欲的", "再努努力，至少能先脱离倒数区"]);
+  if (isBottom && hasNoMessages)
+    return pickStableText(seed, [
+      "尾王登基，发言记录比头发还稀",
+      "喜提垫底，群聊存在感约等于空气",
+      "本群静音代言人，查无发言",
+    ]);
+  if (isBottom)
+    return pickStableText(seed, [
+      "稳居榜尾，主打一个陪伴不发言",
+      "尾榜状元，今天也把字省下来了",
+      "发言效率感人，成功拿下最后一名",
+    ]);
+  if (isBottomThree && hasNoMessages && recentDays > 7)
+    return pickStableText(seed, [
+      "长期失踪人口，像是顺手加进来的管理员",
+      "潜水深度过高，群消息已经追不上你",
+      "上次开口像在上个版本",
+    ]);
+  if (isBottomThree && avg < 1)
+    return pickStableText(seed, [
+      "尾部常驻嘉宾，发言全靠缘分刷新",
+      "输入法像是包月到期了",
+      "平时不说话，一说话可能是手滑",
+    ]);
+  if (isBottomFive && recentDays > 3)
+    return pickStableText(seed, [
+      "最近略显安静，像是把群折叠了",
+      "看得出来人在群里，魂不一定在",
+      "出勤勉强合格，输出接近请假",
+    ]);
+  if (avg < 1)
+    return pickStableText(seed, [
+      "低频营业，惜字如金到像在收费",
+      "主打沉默管理，发言像限量发售",
+      "在线旁听专家，开口次数相当克制",
+    ]);
+  if (avg < 2 && recentDays <= 1)
+    return pickStableText(seed, ["今天象征性冒了个泡，任务算完成", "刚打完卡就准备继续潜水", "有在努力，但不多"]);
+  if (avg < 3)
+    return pickStableText(seed, [
+      "在卷王堆里显得格外佛系",
+      "不是完全不说，只是存在感很节能",
+      "稳定尾部，压力全给前排扛了",
+    ]);
+  return pickStableText(seed, [
+    "虽然在尾部，但至少还算偶尔出声",
+    "尾榜里算是比较有求生欲的",
+    "再努努力，至少能先脱离倒数区",
+  ]);
 }
 
 function getRankDisplay(index: number): string {
@@ -98,14 +141,15 @@ export function buildCompactSortLine(
   stat: Stat,
   index: number,
   total: number,
-  options?: {commentText?: string; commentPrefix?: string; rankLabel?: string},
+  options?: { commentText?: string; commentPrefix?: string; rankLabel?: string },
 ): string {
   const identityParts: string[] = [];
   if (stat.rank !== "无") identityParts.push(`<code>${escapeHtml(stat.rank)}</code>`);
 
   const displayName = stat.name.trim();
   const usernameText = stat.username || "";
-  if (displayName && displayName !== stat.id && displayName !== usernameText) identityParts.push(escapeHtml(displayName));
+  if (displayName && displayName !== stat.id && displayName !== usernameText)
+    identityParts.push(escapeHtml(displayName));
   if (stat.username) identityParts.push(`<code>${escapeHtml(stat.username)}</code>`);
   identityParts.push(`<code>${stat.id}</code>`);
 
@@ -150,7 +194,9 @@ export function buildTailText(target: TargetDisplay, stats: Stat[], counts: Coun
   const bodyLines = visibleStats.map(stat => {
     const originalIndex = unlockedStats.findIndex(candidate => candidate.id === stat.id);
     const index = originalIndex >= 0 ? originalIndex : 0;
-    return buildCompactSortLine(stat, index, unlockedStats.length, {commentText: buildTailComment(stat, index, unlockedStats.length)});
+    return buildCompactSortLine(stat, index, unlockedStats.length, {
+      commentText: buildTailComment(stat, index, unlockedStats.length),
+    });
   });
   return [...headerLines, ...bodyLines].join("\n").trim();
 }
@@ -165,7 +211,7 @@ export function userDisplay(user: any): string {
   return parts.join(" ");
 }
 
-export function cachedUserDisplay(userId: string, cached?: {name?: string; username?: string | null}): string {
+export function cachedUserDisplay(userId: string, cached?: { name?: string; username?: string | null }): string {
   if (!cached) return `<a href="tg://user?id=${escapeHtml(userId)}">${escapeHtml(userId)}</a>`;
   const parts: string[] = [];
   const name = (cached.name || "").trim();

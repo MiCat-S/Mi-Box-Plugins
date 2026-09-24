@@ -87,45 +87,40 @@ function formatExpiredDate(dateStr: string): string {
   }
 }
 
+export function createReports(makeRequest: (baseUrl: string, endpoint: string) => Promise<any>) {
+  async function getServerInfo(baseUrl: string): Promise<string> {
+    try {
+      // 获取公开信息
+      const publicData = await makeRequest(baseUrl, "/api/public");
 
-export function createReports(makeRequest:(baseUrl:string,endpoint:string)=>Promise<any>){
-async function getServerInfo(baseUrl: string): Promise<string> {
-  try {
-    // 获取公开信息
-    const publicData = await makeRequest(baseUrl, "/api/public");
+      // 获取版本信息
+      const versionData = await makeRequest(baseUrl, "/api/version");
 
-    // 获取版本信息
-    const versionData = await makeRequest(baseUrl, "/api/version");
+      // 获取节点列表
+      const nodesData = await makeRequest(baseUrl, "/api/nodes");
 
-    // 获取节点列表
-    const nodesData = await makeRequest(baseUrl, "/api/nodes");
+      if (publicData.status !== "success" || versionData.status !== "success" || nodesData.status !== "success") {
+        throw new Error("API 返回状态异常");
+      }
 
-    if (
-      publicData.status !== "success" ||
-      versionData.status !== "success" ||
-      nodesData.status !== "success"
-    ) {
-      throw new Error("API 返回状态异常");
-    }
+      const siteName = publicData.data.sitename || "未知站点";
+      const version = `${versionData.data.version}-${versionData.data.hash}`;
+      const nodes = nodesData.data;
 
-    const siteName = publicData.data.sitename || "未知站点";
-    const version = `${versionData.data.version}-${versionData.data.hash}`;
-    const nodes = nodesData.data;
+      // 计算总资源
+      let totalCores = 0;
+      let totalMemory = 0;
+      let totalSwap = 0;
+      let totalDisk = 0;
 
-    // 计算总资源
-    let totalCores = 0;
-    let totalMemory = 0;
-    let totalSwap = 0;
-    let totalDisk = 0;
+      nodes.forEach((node: any) => {
+        totalCores += node.cpu_cores || 0;
+        totalMemory += node.mem_total || 0;
+        totalSwap += node.swap_total || 0;
+        totalDisk += node.disk_total || 0;
+      });
 
-    nodes.forEach((node: any) => {
-      totalCores += node.cpu_cores || 0;
-      totalMemory += node.mem_total || 0;
-      totalSwap += node.swap_total || 0;
-      totalDisk += node.disk_total || 0;
-    });
-
-    return `🎯 **Komari 服务信息**
+      return `🎯 **Komari 服务信息**
 
 **📊 基本信息**
 • **站点名称**: \`${siteName}\`
@@ -137,144 +132,123 @@ async function getServerInfo(baseUrl: string): Promise<string> {
 • **内存总量**: \`${formatBytes(totalMemory)}\`
 • **交换分区总量**: \`${formatBytes(totalSwap)}\`
 • **硬盘总量**: \`${formatBytes(totalDisk)}\``;
-  } catch (error: any) {
-    throw new Error(`获取服务器信息失败: ${error.message}`);
+    } catch (error: any) {
+      throw new Error(`获取服务器信息失败: ${error.message}`);
+    }
   }
-}
 
-// 获取节点总览信息
-async function getNodesOverview(baseUrl: string): Promise<string> {
-  try {
-    // 获取公开信息
-    const publicData = await makeRequest(baseUrl, "/api/public");
-
-    // 获取节点列表
-    const nodesData = await makeRequest(baseUrl, "/api/nodes");
-
-    if (publicData.status !== "success" || nodesData.status !== "success") {
-      throw new Error("API 返回状态异常");
-    }
-
-    const siteName = publicData.data.sitename || "未知站点";
-    const nodes = nodesData.data;
-
-    // 尝试通过 WebSocket 获取实时数据
-    let onlineNodes: string[] = [];
-    let realtimeData: { [key: string]: any } = {};
-
+  // 获取节点总览信息
+  async function getNodesOverview(baseUrl: string): Promise<string> {
     try {
-      // 这里我们通过 /api/recent/ 接口来获取每个节点的最新数据
-      // 作为 WebSocket 的替代方案
-      for (const node of nodes) {
-        try {
-          const recentData = await makeRequest(
-            baseUrl,
-            `/api/recent/${node.uuid}`
-          );
-          if (recentData.status === "success" && recentData.data.length > 0) {
-            onlineNodes.push(node.uuid);
-            realtimeData[node.uuid] = recentData.data[0];
+      // 获取公开信息
+      const publicData = await makeRequest(baseUrl, "/api/public");
+
+      // 获取节点列表
+      const nodesData = await makeRequest(baseUrl, "/api/nodes");
+
+      if (publicData.status !== "success" || nodesData.status !== "success") {
+        throw new Error("API 返回状态异常");
+      }
+
+      const siteName = publicData.data.sitename || "未知站点";
+      const nodes = nodesData.data;
+
+      // 尝试通过 WebSocket 获取实时数据
+      let onlineNodes: string[] = [];
+      let realtimeData: { [key: string]: any } = {};
+
+      try {
+        // 这里我们通过 /api/recent/ 接口来获取每个节点的最新数据
+        // 作为 WebSocket 的替代方案
+        for (const node of nodes) {
+          try {
+            const recentData = await makeRequest(baseUrl, `/api/recent/${node.uuid}`);
+            if (recentData.status === "success" && recentData.data.length > 0) {
+              onlineNodes.push(node.uuid);
+              realtimeData[node.uuid] = recentData.data[0];
+            }
+          } catch {
+            // 节点可能离线，忽略错误
           }
-        } catch {
-          // 节点可能离线，忽略错误
         }
+      } catch {
+        // 如果获取实时数据失败，使用节点列表数据
       }
-    } catch {
-      // 如果获取实时数据失败，使用节点列表数据
-    }
 
-    const totalNodes = nodes.length;
-    const onlineCount = onlineNodes.length;
-    const onlinePercent =
-      totalNodes > 0 ? ((onlineCount / totalNodes) * 100).toFixed(2) : "0.00";
+      const totalNodes = nodes.length;
+      const onlineCount = onlineNodes.length;
+      const onlinePercent = totalNodes > 0 ? ((onlineCount / totalNodes) * 100).toFixed(2) : "0.00";
 
-    // 计算平均值
-    let totalCores = 0;
-    let avgCpu = 0;
-    let avgLoad1 = 0;
-    let avgLoad5 = 0;
-    let avgLoad15 = 0;
-    let totalMemUsed = 0;
-    let totalMemTotal = 0;
-    let totalSwapUsed = 0;
-    let totalSwapTotal = 0;
-    let totalDiskUsed = 0;
-    let totalDiskTotal = 0;
-    let totalDownload = 0;
-    let totalUpload = 0;
-    let totalDownSpeed = 0;
-    let totalUpSpeed = 0;
-    let totalTcpConnections = 0;
-    let totalUdpConnections = 0;
+      // 计算平均值
+      let totalCores = 0;
+      let avgCpu = 0;
+      let avgLoad1 = 0;
+      let avgLoad5 = 0;
+      let avgLoad15 = 0;
+      let totalMemUsed = 0;
+      let totalMemTotal = 0;
+      let totalSwapUsed = 0;
+      let totalSwapTotal = 0;
+      let totalDiskUsed = 0;
+      let totalDiskTotal = 0;
+      let totalDownload = 0;
+      let totalUpload = 0;
+      let totalDownSpeed = 0;
+      let totalUpSpeed = 0;
+      let totalTcpConnections = 0;
+      let totalUdpConnections = 0;
 
-    onlineNodes.forEach((uuid) => {
-      const data = realtimeData[uuid];
-      if (data) {
-        // 找到对应的节点信息以获取核心数
-        const node = nodes.find((n: any) => n.uuid === uuid);
-        if (node) {
-          totalCores += node.cpu_cores || 0;
+      onlineNodes.forEach(uuid => {
+        const data = realtimeData[uuid];
+        if (data) {
+          // 找到对应的节点信息以获取核心数
+          const node = nodes.find((n: any) => n.uuid === uuid);
+          if (node) {
+            totalCores += node.cpu_cores || 0;
+          }
+
+          avgCpu += data.cpu?.usage || 0;
+          avgLoad1 += data.load?.load1 || 0;
+          avgLoad5 += data.load?.load5 || 0;
+          avgLoad15 += data.load?.load15 || 0;
+          totalMemUsed += data.ram?.used || 0;
+          totalMemTotal += data.ram?.total || 0;
+          totalSwapUsed += data.swap?.used || 0;
+          totalSwapTotal += data.swap?.total || 0;
+          totalDiskUsed += data.disk?.used || 0;
+          totalDiskTotal += data.disk?.total || 0;
+          totalDownload += data.network?.totalDown || 0;
+          totalUpload += data.network?.totalUp || 0;
+          totalDownSpeed += data.network?.down || 0;
+          totalUpSpeed += data.network?.up || 0;
+          totalTcpConnections += data.connections?.tcp || 0;
+          totalUdpConnections += data.connections?.udp || 0;
         }
+      });
 
-        avgCpu += data.cpu?.usage || 0;
-        avgLoad1 += data.load?.load1 || 0;
-        avgLoad5 += data.load?.load5 || 0;
-        avgLoad15 += data.load?.load15 || 0;
-        totalMemUsed += data.ram?.used || 0;
-        totalMemTotal += data.ram?.total || 0;
-        totalSwapUsed += data.swap?.used || 0;
-        totalSwapTotal += data.swap?.total || 0;
-        totalDiskUsed += data.disk?.used || 0;
-        totalDiskTotal += data.disk?.total || 0;
-        totalDownload += data.network?.totalDown || 0;
-        totalUpload += data.network?.totalUp || 0;
-        totalDownSpeed += data.network?.down || 0;
-        totalUpSpeed += data.network?.up || 0;
-        totalTcpConnections += data.connections?.tcp || 0;
-        totalUdpConnections += data.connections?.udp || 0;
+      if (onlineCount > 0) {
+        avgCpu /= onlineCount;
+        avgLoad1 /= onlineCount;
+        avgLoad5 /= onlineCount;
+        avgLoad15 /= onlineCount;
       }
-    });
 
-    if (onlineCount > 0) {
-      avgCpu /= onlineCount;
-      avgLoad1 /= onlineCount;
-      avgLoad5 /= onlineCount;
-      avgLoad15 /= onlineCount;
-    }
+      const memPercent = totalMemTotal > 0 ? ((totalMemUsed / totalMemTotal) * 100).toFixed(2) : "0.00";
+      const swapPercent = totalSwapTotal > 0 ? ((totalSwapUsed / totalSwapTotal) * 100).toFixed(2) : "0.00";
+      const diskPercent = totalDiskTotal > 0 ? ((totalDiskUsed / totalDiskTotal) * 100).toFixed(2) : "0.00";
 
-    const memPercent =
-      totalMemTotal > 0
-        ? ((totalMemUsed / totalMemTotal) * 100).toFixed(2)
-        : "0.00";
-    const swapPercent =
-      totalSwapTotal > 0
-        ? ((totalSwapUsed / totalSwapTotal) * 100).toFixed(2)
-        : "0.00";
-    const diskPercent =
-      totalDiskTotal > 0
-        ? ((totalDiskUsed / totalDiskTotal) * 100).toFixed(2)
-        : "0.00";
-
-    return `🌐 **${siteName}** 节点总览
+      return `🌐 **${siteName}** 节点总览
 
 **📡 节点状态**
 • **在线状态**: \`${onlineCount} / ${totalNodes}\` (\`${onlinePercent}%\`)
 • **总核心数**: \`${totalCores}\`
 • **平均 CPU**: \`${avgCpu.toFixed(2)}%\`
-• **负载**: \`${avgLoad1.toFixed(2)} / ${avgLoad5.toFixed(
-      2
-    )} / ${avgLoad15.toFixed(2)}\`
+• **负载**: \`${avgLoad1.toFixed(2)} / ${avgLoad5.toFixed(2)} / ${avgLoad15.toFixed(2)}\`
 
 **💾 资源使用**
-• **内存**: \`${formatBytes(totalMemUsed)} / ${formatBytes(
-      totalMemTotal
-    )}\` (\`${memPercent}%\`)
-• **交换分区**: \`${formatBytes(totalSwapUsed)} / ${formatBytes(
-      totalSwapTotal
-    )}\` (\`${swapPercent}%\`)
-• **硬盘**: \`${formatBytes(totalDiskUsed)} / ${formatBytes(
-      totalDiskTotal
-    )}\` (\`${diskPercent}%\`)
+• **内存**: \`${formatBytes(totalMemUsed)} / ${formatBytes(totalMemTotal)}\` (\`${memPercent}%\`)
+• **交换分区**: \`${formatBytes(totalSwapUsed)} / ${formatBytes(totalSwapTotal)}\` (\`${swapPercent}%\`)
+• **硬盘**: \`${formatBytes(totalDiskUsed)} / ${formatBytes(totalDiskTotal)}\` (\`${diskPercent}%\`)
 
 **🌍 网络统计**
 • **总下载**: \`${formatBytes(totalDownload)}\`
@@ -282,94 +256,85 @@ async function getNodesOverview(baseUrl: string): Promise<string> {
 • **下载速度**: \`${formatSpeed(totalDownSpeed)}\`
 • **上传速度**: \`${formatSpeed(totalUpSpeed)}\`
 • **连接数**: \`${totalTcpConnections} TCP / ${totalUdpConnections} UDP\``;
-  } catch (error: any) {
-    throw new Error(`获取节点总览失败: ${error.message}`);
+    } catch (error: any) {
+      throw new Error(`获取节点总览失败: ${error.message}`);
+    }
   }
-}
 
-// 获取指定节点详细信息
-async function getNodeDetails(
-  baseUrl: string,
-  nodeName: string
-): Promise<string> {
-  try {
-    // 获取公开信息
-    const publicData = await makeRequest(baseUrl, "/api/public");
+  // 获取指定节点详细信息
+  async function getNodeDetails(baseUrl: string, nodeName: string): Promise<string> {
+    try {
+      // 获取公开信息
+      const publicData = await makeRequest(baseUrl, "/api/public");
 
-    // 获取节点列表
-    const nodesData = await makeRequest(baseUrl, "/api/nodes");
+      // 获取节点列表
+      const nodesData = await makeRequest(baseUrl, "/api/nodes");
 
-    if (publicData.status !== "success" || nodesData.status !== "success") {
-      throw new Error("API 返回状态异常");
-    }
+      if (publicData.status !== "success" || nodesData.status !== "success") {
+        throw new Error("API 返回状态异常");
+      }
 
-    const siteName = publicData.data.sitename || "未知站点";
-    const nodes = nodesData.data;
+      const siteName = publicData.data.sitename || "未知站点";
+      const nodes = nodesData.data;
 
-    // 查找指定名称的节点
-    const targetNode = nodes.find((node: any) => node.name === nodeName);
-    if (!targetNode) {
-      throw new Error(`未找到名为 "${nodeName}" 的节点`);
-    }
+      // 查找指定名称的节点
+      const targetNode = nodes.find((node: any) => node.name === nodeName);
+      if (!targetNode) {
+        throw new Error(`未找到名为 "${nodeName}" 的节点`);
+      }
 
-    // 获取节点实时数据
-    const recentData = await makeRequest(
-      baseUrl,
-      `/api/recent/${targetNode.uuid}`
-    );
-    if (recentData.status !== "success" || recentData.data.length === 0) {
-      throw new Error(`无法获取节点 "${nodeName}" 的实时数据，节点可能离线`);
-    }
+      // 获取节点实时数据
+      const recentData = await makeRequest(baseUrl, `/api/recent/${targetNode.uuid}`);
+      if (recentData.status !== "success" || recentData.data.length === 0) {
+        throw new Error(`无法获取节点 "${nodeName}" 的实时数据，节点可能离线`);
+      }
 
-    const realtime = recentData.data[0];
-    const node = targetNode;
+      const realtime = recentData.data[0];
+      const node = targetNode;
 
-    // 格式化数据
-    const cpuUsage = (realtime.cpu?.usage || 0).toFixed(2);
+      // 格式化数据
+      const cpuUsage = (realtime.cpu?.usage || 0).toFixed(2);
 
-    const memUsed = realtime.ram?.used || 0;
-    const memTotal = realtime.ram?.total || 0;
-    const memPercent =
-      memTotal > 0 ? ((memUsed / memTotal) * 100).toFixed(2) : "0.00";
+      const memUsed = realtime.ram?.used || 0;
+      const memTotal = realtime.ram?.total || 0;
+      const memPercent = memTotal > 0 ? ((memUsed / memTotal) * 100).toFixed(2) : "0.00";
 
-    const swapUsed = realtime.swap?.used || 0;
-    const swapTotal = realtime.swap?.total || 0;
-    const swapPercent =
-      swapTotal > 0 ? ((swapUsed / swapTotal) * 100).toFixed(2) : "0.00";
+      const swapUsed = realtime.swap?.used || 0;
+      const swapTotal = realtime.swap?.total || 0;
+      const swapPercent = swapTotal > 0 ? ((swapUsed / swapTotal) * 100).toFixed(2) : "0.00";
 
-    const diskUsed = realtime.disk?.used || 0;
-    const diskTotal = realtime.disk?.total || 0;
-    const diskPercent =
-      diskTotal > 0 ? ((diskUsed / diskTotal) * 100).toFixed(2) : "0.00";
+      const diskUsed = realtime.disk?.used || 0;
+      const diskTotal = realtime.disk?.total || 0;
+      const diskPercent = diskTotal > 0 ? ((diskUsed / diskTotal) * 100).toFixed(2) : "0.00";
 
-    const netDown = realtime.network?.totalDown || 0;
-    const netUp = realtime.network?.totalUp || 0;
+      const netDown = realtime.network?.totalDown || 0;
+      const netUp = realtime.network?.totalUp || 0;
 
-    const upSpeed = formatSpeed(realtime.network?.up || 0);
-    const downSpeed = formatSpeed(realtime.network?.down || 0);
+      const upSpeed = formatSpeed(realtime.network?.up || 0);
+      const downSpeed = formatSpeed(realtime.network?.down || 0);
 
-    const uptime = formatUptime(realtime.uptime || 0);
-    const updateTime = realtime.updated_at || "未知";
+      const uptime = formatUptime(realtime.uptime || 0);
+      const updateTime = realtime.updated_at || "未知";
 
-    // 构建付费信息部分
-    let billingInfo = "";
-    const price = node.price || 0;
-    const billingCycle = node.billing_cycle || 0;
+      // 构建付费信息部分
+      let billingInfo = "";
+      const price = node.price || 0;
+      const billingCycle = node.billing_cycle || 0;
 
-    if (price !== 0 && price !== -1 && billingCycle !== 0) {
-      const currency = node.currency || "$";
-      const autoRenewal = node.auto_renewal ? "是" : "否";
-      const expiredDate = formatExpiredDate(node.expired_at);
+      if (price !== 0 && price !== -1 && billingCycle !== 0) {
+        const currency = node.currency || "$";
+        const autoRenewal = node.auto_renewal ? "是" : "否";
+        const expiredDate = formatExpiredDate(node.expired_at);
 
-      billingInfo = `
+        billingInfo = `
 
 **💰 账单信息**
 • **价格**: \`${currency}${price} / ${billingCycle} 天\`
 • **自动续费**: \`${autoRenewal}\`
 • **过期时间**: \`${expiredDate}\``;
-    }
+      }
 
-    return `🖥️ **${nodeName}** ${node.region || "🇺🇳"}
+      return `🖥️ **${nodeName}** ${node.region || "🇺🇳"}
 > 🌐 **${siteName}**
 
 **⚙️ 硬件信息**
@@ -385,35 +350,26 @@ async function getNodeDetails(
 
 **📊 资源使用**
 • **CPU**: \`${cpuUsage}%\`
-• **内存**: \`${formatBytes(memUsed)} / ${formatBytes(
-      memTotal
-    )}\` (\`${memPercent}%\`)
-• **交换分区**: \`${formatBytes(swapUsed)} / ${formatBytes(
-      swapTotal
-    )}\` (\`${swapPercent}%\`)
-• **硬盘**: \`${formatBytes(diskUsed)} / ${formatBytes(
-      diskTotal
-    )}\` (\`${diskPercent}%\`)
+• **内存**: \`${formatBytes(memUsed)} / ${formatBytes(memTotal)}\` (\`${memPercent}%\`)
+• **交换分区**: \`${formatBytes(swapUsed)} / ${formatBytes(swapTotal)}\` (\`${swapPercent}%\`)
+• **硬盘**: \`${formatBytes(diskUsed)} / ${formatBytes(diskTotal)}\` (\`${diskPercent}%\`)
 
 **📈 系统负载**
-• **负载**: \`${(realtime.load?.load1 || 0).toFixed(2)} / ${(
-      realtime.load?.load5 || 0
-    ).toFixed(2)} / ${(realtime.load?.load15 || 0).toFixed(2)}\`
+• **负载**: \`${(realtime.load?.load1 || 0).toFixed(2)} / ${(realtime.load?.load5 || 0).toFixed(
+        2,
+      )} / ${(realtime.load?.load15 || 0).toFixed(2)}\`
 • **进程数**: \`${realtime.process || 0}\`
 
 **🌐 网络状态**
 • **流量**: ↓ \`${formatBytes(netDown)}\` / ↑ \`${formatBytes(netUp)}\`
 • **速度**: ↓ \`${downSpeed}\` / ↑ \`${upSpeed}\`
-• **连接数**: \`${realtime.connections?.tcp || 0} TCP / ${
-      realtime.connections?.udp || 0
-    } UDP\`
+• **连接数**: \`${realtime.connections?.tcp || 0} TCP / ${realtime.connections?.udp || 0} UDP\`
 
 **⏰ 更新时间**: \`${updateTime}\``;
-  } catch (error: any) {
-    throw new Error(`获取节点详情失败: ${error.message}`);
+    } catch (error: any) {
+      throw new Error(`获取节点详情失败: ${error.message}`);
+    }
   }
-}
 
-
-return {getServerInfo,getNodesOverview,getNodeDetails};
+  return { getServerInfo, getNodesOverview, getNodeDetails };
 }

@@ -1,31 +1,34 @@
-import {isIP} from "node:net";
-import {open, readFile, stat} from "node:fs/promises";
+import { isIP } from "node:net";
+import { open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import {maskIpText, type PluginContext, type CommandInvocation} from "telebox/sdk";
-import type {SpeedtestResult} from "./cli";
-import {messageOrder, type MessageType} from "./config";
+import { maskIpText, type PluginContext, type CommandInvocation } from "telebox/sdk";
+import type { SpeedtestResult } from "./cli";
+import { messageOrder, type MessageType } from "./config";
 
 const CAPTION_UTF16_LIMIT = 1024;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 export const STICKER_INPUT_PIXEL_LIMIT = 16_777_216;
-const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, character =>
-  ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;"})[character]!);
+const escape = (value: unknown): string =>
+  String(value ?? "").replace(
+    /[&<>"']/g,
+    character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;" })[character]!,
+  );
 const clipped = (value: unknown, length = 80): string => String(value ?? "").slice(0, length);
 
 export function visibleUtf16Length(html: string): number {
-  return html
-    .replace(/<[^>]*>/g, "")
-    .replace(/&(amp|lt|gt|quot|#x27);/g, "x")
-    .length;
+  return html.replace(/<[^>]*>/g, "").replace(/&(amp|lt|gt|quot|#x27);/g, "x").length;
 }
 
-export function reportParts(report: string, result: SpeedtestResult): {body: string; caption: string; separateBody: boolean} {
-  if (visibleUtf16Length(report) <= CAPTION_UTF16_LIMIT) return {body: report, caption: report, separateBody: false};
+export function reportParts(
+  report: string,
+  result: SpeedtestResult,
+): { body: string; caption: string; separateBody: boolean } {
+  if (visibleUtf16Length(report) <= CAPTION_UTF16_LIMIT) return { body: report, caption: report, separateBody: false };
   const caption = [
     "<b>⚡ SPEEDTEST by OOKLA</b>",
     `<code>服务器</code> <code>${result.server.id} / ${escape(clipped(result.server.name, 80))}</code>`,
   ].join("\n");
-  return {body: report, caption: maskIpText(caption), separateBody: true};
+  return { body: report, caption: maskIpText(caption), separateBody: true };
 }
 
 function amount(value: number | undefined, bytes: boolean): string {
@@ -33,25 +36,38 @@ function amount(value: number | undefined, bytes: boolean): string {
   let current = bytes ? value : value * 8;
   const units = bytes ? ["B", "KB", "MB", "GB", "TB"] : ["bps", "Kbps", "Mbps", "Gbps", "Tbps"];
   let index = 0;
-  while (current >= 1000 && index < units.length - 1) { current /= 1000; index += 1; }
+  while (current >= 1000 && index < units.length - 1) {
+    current /= 1000;
+    index += 1;
+  }
   return `${Math.round(current * 100) / 100}${units[index]}`;
 }
 
 function number(value: number | null | undefined, suffix = ""): string {
-  return value === null || value === undefined || !Number.isFinite(value) ? "不可用" : `${Math.round(value * 100) / 100}${suffix}`;
+  return value === null || value === undefined || !Number.isFinite(value)
+    ? "不可用"
+    : `${Math.round(value * 100) / 100}${suffix}`;
 }
 
-type IpInfo = {as: string; country: string; code: string; flag: string};
+type IpInfo = { as: string; country: string; code: string; flag: string };
 
 async function ipInfo(context: PluginContext, ip: string): Promise<IpInfo> {
-  if (!isIP(ip)) return {as: "", country: "", code: "", flag: ""};
+  if (!isIP(ip)) return { as: "", country: "", code: "", flag: "" };
   const url = new URL(`http://ip-api.com/json/${encodeURIComponent(ip)}`);
   url.searchParams.set("fields", "as,country,countryCode");
   try {
-    const value = await context.http.json<Record<string, unknown>>(url, {method: "GET"}, {
-      timeoutMs: 8_000, redirects: {allowedHosts: ["ip-api.com"], maxRedirects: 0},
-    });
-    const code = typeof value.countryCode === "string" && /^[A-Za-z]{2}$/.test(value.countryCode) ? value.countryCode.toUpperCase() : "";
+    const value = await context.http.json<Record<string, unknown>>(
+      url,
+      { method: "GET" },
+      {
+        timeoutMs: 8_000,
+        redirects: { allowedHosts: ["ip-api.com"], maxRedirects: 0 },
+      },
+    );
+    const code =
+      typeof value.countryCode === "string" && /^[A-Za-z]{2}$/.test(value.countryCode)
+        ? value.countryCode.toUpperCase()
+        : "";
     return {
       as: clipped(typeof value.as === "string" ? value.as.split(/\s+/)[0] : "", 32),
       country: clipped(typeof value.country === "string" ? value.country : "", 48),
@@ -60,21 +76,21 @@ async function ipInfo(context: PluginContext, ip: string): Promise<IpInfo> {
     };
   } catch {
     context.signal.throwIfAborted();
-    return {as: "", country: "", code: "", flag: ""};
+    return { as: "", country: "", code: "", flag: "" };
   }
 }
 
-type Traffic = {rx: number | null; tx: number | null; mtu: number | null};
+type Traffic = { rx: number | null; tx: number | null; mtu: number | null };
 
 async function interfaceTraffic(context: PluginContext, name: string): Promise<Traffic> {
-  if (process.platform !== "linux" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(name)) return {rx: null, tx: null, mtu: null};
+  if (process.platform !== "linux" || !/^[A-Za-z0-9_.:-]{1,64}$/.test(name)) return { rx: null, tx: null, mtu: null };
   const root = path.join("/sys/class/net", name);
   try {
     const [rx, tx, mtu] = await context.tasks.run("speedtest:interface-traffic", async signal => {
       const values = await Promise.all([
-        readFile(path.join(root, "statistics/rx_bytes"), {encoding: "utf8", signal}),
-        readFile(path.join(root, "statistics/tx_bytes"), {encoding: "utf8", signal}),
-        readFile(path.join(root, "mtu"), {encoding: "utf8", signal}),
+        readFile(path.join(root, "statistics/rx_bytes"), { encoding: "utf8", signal }),
+        readFile(path.join(root, "statistics/tx_bytes"), { encoding: "utf8", signal }),
+        readFile(path.join(root, "mtu"), { encoding: "utf8", signal }),
       ]);
       return values.map(value => Number(value.trim()));
     });
@@ -85,7 +101,7 @@ async function interfaceTraffic(context: PluginContext, name: string): Promise<T
     };
   } catch {
     context.signal.throwIfAborted();
-    return {rx: null, tx: null, mtu: null};
+    return { rx: null, tx: null, mtu: null };
   }
 }
 
@@ -93,10 +109,20 @@ export function officialResultUrl(value: string | undefined): URL | undefined {
   if (!value) return undefined;
   try {
     const url = new URL(value);
-    if (url.protocol !== "https:" || url.hostname !== "www.speedtest.net" || url.username || url.password || url.search || url.hash) return undefined;
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "www.speedtest.net" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    )
+      return undefined;
     if (!/^\/result\/(?:c\/[A-Za-z0-9-]{1,128}|\d{1,20})$/.test(url.pathname)) return undefined;
     return url;
-  } catch { return undefined; }
+  } catch {
+    return undefined;
+  }
 }
 
 export async function buildReport(context: PluginContext, result: SpeedtestResult): Promise<string> {
@@ -117,54 +143,90 @@ export async function buildReport(context: PluginContext, result: SpeedtestResul
     `<code>MTU</code> <code>${escape(number(traffic.mtu))}</code>`,
     `<code>时间</code> <code>${escape(clipped(result.timestamp?.replace("T", " ").replace(/\.\d+Z$/, "Z") || "不可用", 40))}</code>`,
   ];
-  if (!result.download || !result.upload) lines.push(`<code>说明</code> <code>${!result.download ? "下载" : "上传"}阶段失败，以上仅展示 CLI 返回的真实部分结果</code>`);
+  if (!result.download || !result.upload)
+    lines.push(
+      `<code>说明</code> <code>${!result.download ? "下载" : "上传"}阶段失败，以上仅展示 CLI 返回的真实部分结果</code>`,
+    );
   return maskIpText(lines.join("\n"));
 }
 
 async function downloadImage(context: PluginContext, source: URL, destination: string): Promise<void> {
   const image = new URL(source);
   image.pathname += ".png";
-  await context.http.withResponse(image, {method: "GET"}, async (response, signal) => {
-    if (response.status !== 200 || !response.body || !/^image\/png(?:;|$)/i.test(response.headers.get("content-type") ?? "")) throw new Error("invalid image");
-    const reader = response.body.getReader();
-    let output:Awaited<ReturnType<typeof open>>|undefined;
-    let total = 0;
-    let failure:unknown,cancellation:Promise<void>|undefined;
-    const cancel=():Promise<void>=>cancellation??=reader.cancel();
-    const onAbort=()=>{void cancel().catch(()=>undefined);};
-    signal.addEventListener("abort",onAbort,{once:true});
-    try {
-      output=await open(destination,"wx",0o600);
-      for (;;) {
-        signal.throwIfAborted();
-        const chunk = await reader.read();
-        signal.throwIfAborted();
-        if (chunk.done) break;
-        total += chunk.value.byteLength;
-        if (total > MAX_IMAGE_BYTES) throw new Error("image too large");
-        let offset=0;
-        while(offset<chunk.value.byteLength){signal.throwIfAborted();const {bytesWritten}=await output.write(chunk.value,offset,chunk.value.byteLength-offset);signal.throwIfAborted();if(!Number.isSafeInteger(bytesWritten)||bytesWritten<=0)throw new Error("image write made no progress");offset+=bytesWritten;}
+  await context.http.withResponse(
+    image,
+    { method: "GET" },
+    async (response, signal) => {
+      if (
+        response.status !== 200 ||
+        !response.body ||
+        !/^image\/png(?:;|$)/i.test(response.headers.get("content-type") ?? "")
+      )
+        throw new Error("invalid image");
+      const reader = response.body.getReader();
+      let output: Awaited<ReturnType<typeof open>> | undefined;
+      let total = 0;
+      let failure: unknown, cancellation: Promise<void> | undefined;
+      const cancel = (): Promise<void> => (cancellation ??= reader.cancel());
+      const onAbort = () => {
+        void cancel().catch(() => undefined);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        output = await open(destination, "wx", 0o600);
+        for (;;) {
+          signal.throwIfAborted();
+          const chunk = await reader.read();
+          signal.throwIfAborted();
+          if (chunk.done) break;
+          total += chunk.value.byteLength;
+          if (total > MAX_IMAGE_BYTES) throw new Error("image too large");
+          let offset = 0;
+          while (offset < chunk.value.byteLength) {
+            signal.throwIfAborted();
+            const { bytesWritten } = await output.write(chunk.value, offset, chunk.value.byteLength - offset);
+            signal.throwIfAborted();
+            if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0)
+              throw new Error("image write made no progress");
+            offset += bytesWritten;
+          }
+        }
+        if (!total) throw new Error("empty image");
+      } catch (error) {
+        failure = error;
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+        if (output)
+          try {
+            await output.close();
+          } catch (error) {
+            failure ??= error;
+          }
+        try {
+          await cancel();
+        } catch (error) {
+          failure ??= error;
+        }
+        reader.releaseLock();
       }
-      if (!total) throw new Error("empty image");
-    } catch(error){failure=error;
-    } finally {
-      signal.removeEventListener("abort",onAbort);
-      if(output)try{await output.close();}catch(error){failure??=error;}
-      try{await cancel();}catch(error){failure??=error;}
-      reader.releaseLock();
-    }
-    if(failure)throw failure;
-  }, {timeoutMs: 20_000, redirects: {allowedHosts: ["www.speedtest.net"], maxRedirects: 0}});
+      if (failure) throw failure;
+    },
+    { timeoutMs: 20_000, redirects: { allowedHosts: ["www.speedtest.net"], maxRedirects: 0 } },
+  );
 }
 
 async function sticker(context: PluginContext, source: string, destination: string): Promise<void> {
   const sharp = (await import("sharp")).default;
-  await sharp(source,{limitInputPixels:STICKER_INPUT_PIXEL_LIMIT}).resize(512, 512, {fit: "contain", background: {r: 0, g: 0, b: 0, alpha: 0}})
-    .webp({quality: 82, effort: 5}).toFile(destination);
+  await sharp(source, { limitInputPixels: STICKER_INPUT_PIXEL_LIMIT })
+    .resize(512, 512, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .webp({ quality: 82, effort: 5 })
+    .toFile(destination);
   let info = await stat(destination);
   if (info.size > 512 * 1024) {
-    await sharp(source,{limitInputPixels:STICKER_INPUT_PIXEL_LIMIT}).resize(512, 512, {fit: "contain", background: {r: 0, g: 0, b: 0, alpha: 0}})
-      .webp({quality: 55, effort: 6}).toFile(destination);
+    await sharp(source, { limitInputPixels: STICKER_INPUT_PIXEL_LIMIT })
+      .resize(512, 512, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .webp({ quality: 55, effort: 6 })
+      .toFile(destination);
     info = await stat(destination);
   }
   if (!info.isFile() || info.size === 0 || info.size > 512 * 1024) throw new Error("invalid sticker");
@@ -179,7 +241,8 @@ async function sendMedia(
   caption: string,
   keepBody: boolean,
 ): Promise<boolean> {
-  const raw = invocation.message.raw as {peerId?: unknown; delete?: (options?: unknown) => Promise<unknown>} | undefined;
+  const raw = invocation.message.raw as
+    { peerId?: unknown; delete?: (options?: unknown) => Promise<unknown> } | undefined;
   if (raw?.peerId === undefined || raw.peerId === null) return false;
   let sent = false;
   try {
@@ -188,23 +251,34 @@ async function sendMedia(
       if (type === "sticker") {
         const output = path.join(path.dirname(image), "speedtest.webp");
         await sticker(context, image, output);
-        const {Api} = await import("teleproto");
-        await client.sendFile(raw.peerId as never, {file: output, forceDocument: false,
-          attributes: [new Api.DocumentAttributeSticker({alt: "speedtest", stickerset: new Api.InputStickerSetEmpty()})],
-          replyTo: invocation.message.replyToId ?? invocation.message.id});
+        const { Api } = await import("teleproto");
+        await client.sendFile(raw.peerId as never, {
+          file: output,
+          forceDocument: false,
+          attributes: [
+            new Api.DocumentAttributeSticker({ alt: "speedtest", stickerset: new Api.InputStickerSetEmpty() }),
+          ],
+          replyTo: invocation.message.replyToId ?? invocation.message.id,
+        });
       } else {
-        await client.sendFile(raw.peerId as never, {file: image, caption, parseMode: "html",
-          forceDocument: type === "file", replyTo: invocation.message.replyToId ?? invocation.message.id});
+        await client.sendFile(raw.peerId as never, {
+          file: image,
+          caption,
+          parseMode: "html",
+          forceDocument: type === "file",
+          replyTo: invocation.message.replyToId ?? invocation.message.id,
+        });
       }
       sent = true;
     });
     if (context.signal.aborted) return true;
-    if (type === "sticker") await context.telegram.edit(invocation.message, body, {parseMode: "html", linkPreview: false});
-    else if (!keepBody && typeof raw.delete === "function") await raw.delete({revoke: true}).catch(() => undefined);
+    if (type === "sticker")
+      await context.telegram.edit(invocation.message, body, { parseMode: "html", linkPreview: false });
+    else if (!keepBody && typeof raw.delete === "function") await raw.delete({ revoke: true }).catch(() => undefined);
     return true;
   } catch {
     if (context.signal.aborted) throw new Error("cancelled");
-    context.log.error("speedtest_media_send_failed", {type});
+    context.log.error("speedtest_media_send_failed", { type });
     return sent;
   }
 }
@@ -219,7 +293,7 @@ export async function deliverResult(
   const parts = reportParts(report, result);
   const order = messageOrder(preferred);
   if (order[0] === "txt") {
-    await context.telegram.edit(invocation.message, parts.body, {parseMode: "html", linkPreview: false});
+    await context.telegram.edit(invocation.message, parts.body, { parseMode: "html", linkPreview: false });
     return;
   }
   const source = officialResultUrl(result.result?.url);
@@ -231,8 +305,10 @@ export async function deliverResult(
         for (const type of order) {
           signal.throwIfAborted();
           if (type === "txt") break;
-          if (parts.separateBody) await context.telegram.edit(invocation.message, parts.body, {parseMode: "html", linkPreview: false});
-          if (await sendMedia(context, invocation, type, image, parts.body, parts.caption, parts.separateBody)) return true;
+          if (parts.separateBody)
+            await context.telegram.edit(invocation.message, parts.body, { parseMode: "html", linkPreview: false });
+          if (await sendMedia(context, invocation, type, image, parts.body, parts.caption, parts.separateBody))
+            return true;
         }
         return false;
       });
@@ -242,5 +318,6 @@ export async function deliverResult(
       context.log.error("speedtest_result_image_failed");
     }
   }
-  if (!context.signal.aborted) await context.telegram.edit(invocation.message, parts.body, {parseMode: "html", linkPreview: false});
+  if (!context.signal.aborted)
+    await context.telegram.edit(invocation.message, parts.body, { parseMode: "html", linkPreview: false });
 }

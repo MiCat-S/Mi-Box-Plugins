@@ -3,16 +3,16 @@ export const SESSION_TTL_MS = 30 * 60_000;
 export const MAX_SESSIONS = 200;
 
 export const MUSIC_SOURCES = [
-  {key: "netease", name: "网易云音乐", stable: true, aliases: ["wy", "wangyi", "163"]},
-  {key: "tencent", name: "QQ 音乐", stable: false, aliases: ["qq", "tx", "tc"]},
-  {key: "kuwo", name: "酷我音乐", stable: true, aliases: ["kw"]},
-  {key: "tidal", name: "TIDAL", stable: false, aliases: []},
-  {key: "qobuz", name: "Qobuz", stable: false, aliases: []},
-  {key: "joox", name: "JOOX", stable: true, aliases: []},
-  {key: "bilibili", name: "Bilibili", stable: false, aliases: ["bili"]},
-  {key: "apple", name: "Apple Music", stable: false, aliases: ["apple_music", "am"]},
-  {key: "ytmusic", name: "YouTube Music", stable: false, aliases: ["youtube", "yt"]},
-  {key: "spotify", name: "Spotify", stable: false, aliases: ["spot"]},
+  { key: "netease", name: "网易云音乐", stable: true, aliases: ["wy", "wangyi", "163"] },
+  { key: "tencent", name: "QQ 音乐", stable: false, aliases: ["qq", "tx", "tc"] },
+  { key: "kuwo", name: "酷我音乐", stable: true, aliases: ["kw"] },
+  { key: "tidal", name: "TIDAL", stable: false, aliases: [] },
+  { key: "qobuz", name: "Qobuz", stable: false, aliases: [] },
+  { key: "joox", name: "JOOX", stable: true, aliases: [] },
+  { key: "bilibili", name: "Bilibili", stable: false, aliases: ["bili"] },
+  { key: "apple", name: "Apple Music", stable: false, aliases: ["apple_music", "am"] },
+  { key: "ytmusic", name: "YouTube Music", stable: false, aliases: ["youtube", "yt"] },
+  { key: "spotify", name: "Spotify", stable: false, aliases: ["spot"] },
 ] as const;
 
 export type SourceKey = (typeof MUSIC_SOURCES)[number]["key"];
@@ -36,7 +36,7 @@ export type ApiSong = {
   source: SourceKey;
 };
 
-export type SongUrlInfo = {url: URL; br?: number; size?: number};
+export type SongUrlInfo = { url: URL; br?: number; size?: number };
 
 export type SearchSession = {
   query: string;
@@ -46,7 +46,11 @@ export type SearchSession = {
   page: number;
   createdAt: number;
 };
-export class MusicHubUserError extends Error {constructor(readonly feedback:string){super("MUSIC_HUB_USER_ERROR");}}
+export class MusicHubUserError extends Error {
+  constructor(readonly feedback: string) {
+    super("MUSIC_HUB_USER_ERROR");
+  }
+}
 
 export const DEFAULT_CONFIG: MusicHubConfig = {
   schemaVersion: 1,
@@ -66,7 +70,8 @@ const QUALITY: Readonly<Record<string, string>> = {
 };
 
 const SOURCE_ALIASES = new Map<string, SourceMode>([
-  ["auto", "auto"], ["a", "auto"],
+  ["auto", "auto"],
+  ["a", "auto"],
   ...MUSIC_SOURCES.flatMap(source => [
     [source.key, source.key] as const,
     ...source.aliases.map(alias => [alias, source.key] as const),
@@ -90,15 +95,19 @@ function boundedInteger(value: unknown, fallback: number, minimum: number, maxim
 }
 
 export function normalizeConfig(value: unknown): MusicHubConfig {
-  const source = value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown> : {};
+  const source = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
   return {
     ...source,
     schemaVersion: 1,
     defaultSource: normalizeSource(source.defaultSource) ?? DEFAULT_CONFIG.defaultSource,
     br: normalizeBitrate(source.br) ?? DEFAULT_CONFIG.br,
     maxResults: boundedInteger(source.maxResults, DEFAULT_CONFIG.maxResults, PAGE_SIZE, 100),
-    maxUploadBytes: boundedInteger(source.maxUploadBytes, DEFAULT_CONFIG.maxUploadBytes, 1024 * 1024, 2 * 1024 * 1024 * 1024),
+    maxUploadBytes: boundedInteger(
+      source.maxUploadBytes,
+      DEFAULT_CONFIG.maxUploadBytes,
+      1024 * 1024,
+      2 * 1024 * 1024 * 1024,
+    ),
   };
 }
 
@@ -120,11 +129,17 @@ export function formatArtists(artists: readonly string[]): string {
 }
 
 export function normalizeSearchResults(value: unknown, fallbackSource: SourceKey, maximum: number): ApiSong[] {
-  const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-  const candidates = Array.isArray(value) ? value
-    : Array.isArray(record?.data) ? record.data
-      : Array.isArray(record?.result) ? record.result
-        : Array.isArray(record?.songs) ? record.songs : [];
+  const record =
+    value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+  const candidates = Array.isArray(value)
+    ? value
+    : Array.isArray(record?.data)
+      ? record.data
+      : Array.isArray(record?.result)
+        ? record.result
+        : Array.isArray(record?.songs)
+          ? record.songs
+          : [];
   const result: ApiSong[] = [];
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
@@ -135,12 +150,14 @@ export function normalizeSearchResults(value: unknown, fallbackSource: SourceKey
     if (!name || !id || !source || source === "auto") continue;
     const artistValue = raw.artist ?? raw.artists ?? raw.singer ?? [];
     const artist = (Array.isArray(artistValue) ? artistValue.map(String) : String(artistValue).split(/[/,，]/))
-      .map(item => item.trim()).filter(Boolean).slice(0, 20);
+      .map(item => item.trim())
+      .filter(Boolean)
+      .slice(0, 20);
     result.push({
       id: id.slice(0, 512),
       name: name.slice(0, 500),
       artist,
-      ...(raw.album ? {album: String(raw.album).slice(0, 500)} : {}),
+      ...(raw.album ? { album: String(raw.album).slice(0, 500) } : {}),
       urlId: String(raw.url_id ?? id).slice(0, 512),
       source,
     });

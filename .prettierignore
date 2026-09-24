@@ -1,0 +1,13 @@
+# Only V2 sources and their tests are formatted.
+#
+# Pre-V2 sources (<id>/<id>.ts) are migration references, and several
+# compatibility tests rebuild the original behaviour by slicing their text at
+# comment markers (see scripts/aban-v2.test.js). Reformatting them would break
+# those tests, so they must keep their original bytes.
+*/*.ts
+!*/v2.ts
+outdated/
+
+# The crazy4 corpus is kept as a byte-for-byte copy of the legacy array, which
+# scripts/migration-batch-crazy4-biko-v2.test.js checks textually.
+crazy4/v2/data.ts

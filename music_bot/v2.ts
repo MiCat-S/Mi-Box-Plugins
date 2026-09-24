@@ -1,8 +1,8 @@
-import {renderHelp as renderPluginHelp} from "./v2/help";
-import {definePlugin, type PluginContext} from "telebox/sdk";
-import type {Api as ApiTypes, TelegramClient} from "teleproto";
+import { renderHelp as renderPluginHelp } from "./v2/help";
+import { definePlugin, type PluginContext } from "telebox/sdk";
+import type { Api as ApiTypes, TelegramClient } from "teleproto";
 
-const BOTS = {default: "@music_v1bot", vk: "@vkmusic_bot", ym: "@ttaudiobot"} as const;
+const BOTS = { default: "@music_v1bot", vk: "@vkmusic_bot", ym: "@ttaudiobot" } as const;
 const ACTIONS = new Set(["search", "kugou", "kuwo", "qq", "netease", "vk", "ym"]);
 
 class MusicBotState {
@@ -11,17 +11,24 @@ class MusicBotState {
   private readonly controller = new AbortController();
   private readonly tails = new Map<string, Promise<void>>();
 
-  get signal(): AbortSignal { return this.controller.signal; }
+  get signal(): AbortSignal {
+    return this.controller.signal;
+  }
 
   serial<T>(bot: string, signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
     const previous = this.tails.get(bot) ?? Promise.resolve();
     let started = false;
-    const queued = previous.catch(() => undefined).then(() => {
-      started = true;
-      signal.throwIfAborted();
-      return operation();
-    });
-    const tail = queued.then(() => undefined, () => undefined);
+    const queued = previous
+      .catch(() => undefined)
+      .then(() => {
+        started = true;
+        signal.throwIfAborted();
+        return operation();
+      });
+    const tail = queued.then(
+      () => undefined,
+      () => undefined,
+    );
     this.tails.set(bot, tail);
     void tail.finally(() => {
       if (this.tails.get(bot) === tail) this.tails.delete(bot);
@@ -40,15 +47,18 @@ class MusicBotState {
       const abort = (): void => {
         if (!started) finish(() => reject(signal.reason));
       };
-      signal.addEventListener("abort", abort, {once: true});
+      signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted) abort();
-      queued.then(value => finish(() => resolve(value)), error => finish(() => reject(error)));
+      queued.then(
+        value => finish(() => resolve(value)),
+        error => finish(() => reject(error)),
+      );
     });
   }
 
   boundary(bot: string, observed = 0n): bigint {
-    const previous=this.cursors.get(bot)??0n;
-    const boundary=previous>observed?previous:observed;
+    const previous = this.cursors.get(bot) ?? 0n;
+    const boundary = previous > observed ? previous : observed;
     if (boundary > 0n) this.cursors.set(bot, boundary);
     return boundary;
   }
@@ -65,48 +75,81 @@ class MusicBotState {
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (signal.aborted) { reject(signal.reason); return; }
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
     const timer = setTimeout(done, ms);
-    function done() { signal.removeEventListener("abort", abort); resolve(); }
-    function abort() { clearTimeout(timer); signal.removeEventListener("abort", abort); reject(signal.reason); }
-    signal.addEventListener("abort", abort, {once: true});
+    function done() {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }
+    function abort() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      reject(signal.reason);
+    }
+    signal.addEventListener("abort", abort, { once: true });
   });
 }
 
 async function messages(client: TelegramClient, bot: string, limit: number): Promise<any[]> {
-  const values = await client.getMessages(bot, {limit});
+  const values = await client.getMessages(bot, { limit });
   return Array.isArray(values) ? values : [];
 }
 
 function validMessageId(message: any): bigint | undefined {
-  try{const id=BigInt(String(message?.id));return id>0n?id:undefined;}catch{return;}
+  try {
+    const id = BigInt(String(message?.id));
+    return id > 0n ? id : undefined;
+  } catch {
+    return;
+  }
 }
 
-async function captureBoundary(state: MusicBotState, client: TelegramClient, bot: string,
-  signal: AbortSignal): Promise<bigint> {
+async function captureBoundary(
+  state: MusicBotState,
+  client: TelegramClient,
+  bot: string,
+  signal: AbortSignal,
+): Promise<bigint> {
   signal.throwIfAborted();
   const history = await messages(client, bot, 8);
   signal.throwIfAborted();
   let maximum = 0n;
-  for (const message of history){const id=validMessageId(message)??0n;if(id>maximum)maximum=id;}
+  for (const message of history) {
+    const id = validMessageId(message) ?? 0n;
+    if (id > maximum) maximum = id;
+  }
   return state.boundary(bot, maximum);
 }
 
 function raiseBoundary(state: MusicBotState, bot: string, boundary: bigint, message: any): bigint {
-  const observed=validMessageId(message)??0n;
-  return state.boundary(bot,boundary>observed?boundary:observed);
+  const observed = validMessageId(message) ?? 0n;
+  return state.boundary(bot, boundary > observed ? boundary : observed);
 }
 
-async function waitFor(state: MusicBotState, client: TelegramClient, bot: string, signal: AbortSignal,
-  boundary: bigint, attempts: number, accept: (message: any) => boolean): Promise<any | undefined> {
+async function waitFor(
+  state: MusicBotState,
+  client: TelegramClient,
+  bot: string,
+  signal: AbortSignal,
+  boundary: bigint,
+  attempts: number,
+  accept: (message: any) => boolean,
+): Promise<any | undefined> {
   for (let index = 0; index < attempts; index++) {
     signal.throwIfAborted();
     const values = await messages(client, bot, 8);
     signal.throwIfAborted();
-    const found = values.filter(message => {
-      const id = validMessageId(message);
-      return id !== undefined && id > boundary && message?.out === false && accept(message);
-    }).sort((left,right)=>validMessageId(left)!<validMessageId(right)!?-1:validMessageId(left)!>validMessageId(right)!?1:0)[0];
+    const found = values
+      .filter(message => {
+        const id = validMessageId(message);
+        return id !== undefined && id > boundary && message?.out === false && accept(message);
+      })
+      .sort((left, right) =>
+        validMessageId(left)! < validMessageId(right)! ? -1 : validMessageId(left)! > validMessageId(right)! ? 1 : 0,
+      )[0];
     if (found) {
       state.boundary(bot, validMessageId(found));
       return found;
@@ -115,31 +158,46 @@ async function waitFor(state: MusicBotState, client: TelegramClient, bot: string
   }
 }
 
-async function initialize(state: MusicBotState, client: TelegramClient, bot: string, signal: AbortSignal): Promise<void> {
+async function initialize(
+  state: MusicBotState,
+  client: TelegramClient,
+  bot: string,
+  signal: AbortSignal,
+): Promise<void> {
   if (state.ready.has(bot)) return;
   const boundary = await captureBoundary(state, client, bot, signal);
   signal.throwIfAborted();
-  const sent = await client.sendMessage(bot, {message: "/start"});
+  const sent = await client.sendMessage(bot, { message: "/start" });
   signal.throwIfAborted();
   raiseBoundary(state, bot, boundary, sent);
   state.ready.add(bot);
 }
 
-async function sendOnce(state: MusicBotState, client: TelegramClient, bot: string, request: string,
-  signal: AbortSignal): Promise<bigint> {
+async function sendOnce(
+  state: MusicBotState,
+  client: TelegramClient,
+  bot: string,
+  request: string,
+  signal: AbortSignal,
+): Promise<bigint> {
   const boundary = await captureBoundary(state, client, bot, signal);
   signal.throwIfAborted();
-  const sent = await client.sendMessage(bot, {message: request});
+  const sent = await client.sendMessage(bot, { message: request });
   signal.throwIfAborted();
   return raiseBoundary(state, bot, boundary, sent);
 }
 
-async function sendRequest(state: MusicBotState, client: TelegramClient, bot: string, request: string,
-  signal: AbortSignal): Promise<bigint> {
+async function sendRequest(
+  state: MusicBotState,
+  client: TelegramClient,
+  bot: string,
+  request: string,
+  signal: AbortSignal,
+): Promise<bigint> {
   const boundary = await captureBoundary(state, client, bot, signal);
   try {
     signal.throwIfAborted();
-    const sent = await client.sendMessage(bot, {message: request});
+    const sent = await client.sendMessage(bot, { message: request });
     signal.throwIfAborted();
     return raiseBoundary(state, bot, boundary, sent);
   } catch {
@@ -150,16 +208,28 @@ async function sendRequest(state: MusicBotState, client: TelegramClient, bot: st
   }
 }
 
-async function search(state: MusicBotState, context: PluginContext, invocation: any,
-  action: string, query: string, bot: string, displayQuery=query): Promise<void> {
+async function search(
+  state: MusicBotState,
+  context: PluginContext,
+  invocation: any,
+  action: string,
+  query: string,
+  bot: string,
+  displayQuery = query,
+): Promise<void> {
   if (!ACTIONS.has(action) || !displayQuery.trim() || displayQuery.length > 300) {
-    await context.telegram.edit(invocation.message,
+    await context.telegram.edit(
+      invocation.message,
       `<b>多音源音乐搜索</b>\n<code>${escape(invocation.prefix)}music_bot search 关键词</code>\n` +
-      `<code>${escape(invocation.prefix)}mbvk 关键词</code> · <code>${escape(invocation.prefix)}mbym 关键词</code>\n` +
-      `支持 search、kugou、kuwo、qq、netease、vk、ym。`, {parseMode: "html"});
+        `<code>${escape(invocation.prefix)}mbvk 关键词</code> · <code>${escape(invocation.prefix)}mbym 关键词</code>\n` +
+        `支持 search、kugou、kuwo、qq、netease、vk、ym。`,
+      { parseMode: "html" },
+    );
     return;
   }
-  await context.telegram.edit(invocation.message, `🔎 搜索中：<code>${escape(displayQuery)}</code>`,{parseMode:"html"});
+  await context.telegram.edit(invocation.message, `🔎 搜索中：<code>${escape(displayQuery)}</code>`, {
+    parseMode: "html",
+  });
   let operationSignal: AbortSignal | undefined;
   try {
     await context.telegram.withClient(async (client, clientSignal) => {
@@ -167,25 +237,38 @@ async function search(state: MusicBotState, context: PluginContext, invocation: 
       operationSignal = signal;
       return state.serial(bot, signal, async () => {
         signal.throwIfAborted();
-          const [{Api},{returnBigInt}]=await Promise.all([import("teleproto"),import("teleproto/Helpers.js")]);
-          signal.throwIfAborted();
-          try { await client.invoke(new Api.contacts.Unblock({id: bot})); } catch {}
+        const [{ Api }, { returnBigInt }] = await Promise.all([import("teleproto"), import("teleproto/Helpers.js")]);
+        signal.throwIfAborted();
+        try {
+          await client.invoke(new Api.contacts.Unblock({ id: bot }));
+        } catch {}
         signal.throwIfAborted();
         try {
           const peer = await client.getInputEntity(bot);
           signal.throwIfAborted();
-          await client.invoke(new Api.account.UpdateNotifySettings({peer:new Api.InputNotifyPeer({peer}) as any,
-            settings: new Api.InputPeerNotifySettings({silent: true, muteUntil: 2_147_483_647})}));
+          await client.invoke(
+            new Api.account.UpdateNotifySettings({
+              peer: new Api.InputNotifyPeer({ peer }) as any,
+              settings: new Api.InputPeerNotifySettings({ silent: true, muteUntil: 2_147_483_647 }),
+            }),
+          );
         } catch {}
         signal.throwIfAborted();
         const request = action === "vk" || action === "ym" ? query : `/${action} ${query}`;
         const choicesBoundary = await sendRequest(state, client, bot, request, signal);
-        const choices = await waitFor(state, client, bot, signal, choicesBoundary, 15,
-          message => Number(message.buttonCount ?? 0) > 0);
+        const choices = await waitFor(
+          state,
+          client,
+          bot,
+          signal,
+          choicesBoundary,
+          15,
+          message => Number(message.buttonCount ?? 0) > 0,
+        );
         if (!choices) throw new Error("No choices");
         let mediaBoundary = await captureBoundary(state, client, bot, signal);
         let clicked = false;
-        for (const value of [{i: 0}, {row: 0, col: 0}, {text: "1"}]) {
+        for (const value of [{ i: 0 }, { row: 0, col: 0 }, { text: "1" }]) {
           signal.throwIfAborted();
           try {
             const result = await choices.click(value);
@@ -202,39 +285,74 @@ async function search(state: MusicBotState, context: PluginContext, invocation: 
         if (!media?.media) throw new Error("No media");
         const raw = invocation.message.raw as ApiTypes.Message | undefined;
         signal.throwIfAborted();
-        const target=raw?.peerId??returnBigInt(invocation.message.chatId);
-        await client.sendFile(target, {file: media.media, replyTo: invocation.message.replyToId,
-          ...(action === "ym" ? {} : {caption: `🎵 ${displayQuery}`})});
+        const target = raw?.peerId ?? returnBigInt(invocation.message.chatId);
+        await client.sendFile(target, {
+          file: media.media,
+          replyTo: invocation.message.replyToId,
+          ...(action === "ym" ? {} : { caption: `🎵 ${displayQuery}` }),
+        });
         signal.throwIfAborted();
-        if (typeof raw?.delete === "function") {try{await raw.delete({revoke:true});}catch{context.log.info("music_bot_command_cleanup_failed");}}
+        if (typeof raw?.delete === "function") {
+          try {
+            await raw.delete({ revoke: true });
+          } catch {
+            context.log.info("music_bot_command_cleanup_failed");
+          }
+        }
       });
     });
   } catch (error) {
-    if (context.signal.aborted || state.signal.aborted || operationSignal?.aborted ||
-        error instanceof DOMException && error.name === "AbortError") return;
+    if (
+      context.signal.aborted ||
+      state.signal.aborted ||
+      operationSignal?.aborted ||
+      (error instanceof DOMException && error.name === "AbortError")
+    )
+      return;
     context.log.error("music_bot_failed");
     await context.telegram.edit(invocation.message, `音乐搜索失败，请先打开 ${bot} 并点击 Start 后重试`);
   }
 }
 
-type Binding = {action: string; bot: string; nested?: boolean};
+type Binding = { action: string; bot: string; nested?: boolean };
 const BINDINGS: Readonly<Record<string, Binding>> = {
-  music_bot: {action: "", bot: BOTS.default, nested: true}, mbs: {action: "search", bot: BOTS.default},
-  mbkw: {action: "kuwo", bot: BOTS.default}, mbkg: {action: "kugou", bot: BOTS.default},
-  mbqq: {action: "qq", bot: BOTS.default}, mbne: {action: "netease", bot: BOTS.default},
-  mbvk: {action: "vk", bot: BOTS.vk}, mbym: {action: "ym", bot: BOTS.ym},
+  music_bot: { action: "", bot: BOTS.default, nested: true },
+  mbs: { action: "search", bot: BOTS.default },
+  mbkw: { action: "kuwo", bot: BOTS.default },
+  mbkg: { action: "kugou", bot: BOTS.default },
+  mbqq: { action: "qq", bot: BOTS.default },
+  mbne: { action: "netease", bot: BOTS.default },
+  mbvk: { action: "vk", bot: BOTS.vk },
+  mbym: { action: "ym", bot: BOTS.ym },
 };
 
 export default function createMusicBot() {
   const state = new MusicBotState();
-  const commands = Object.fromEntries(Object.entries(BINDINGS).map(([name, binding]) => [name, {
-    description: "通过 Telegram 音乐机器人搜索并发送歌曲", async handle(invocation: any, context: PluginContext) {
-      const action = binding.nested ? (invocation.args[0]?.toLowerCase() ?? "") : binding.action;
-      const query = invocation.args.slice(binding.nested ? 1 : 0).join(" ").trim();
-      const bot = action === "vk" ? BOTS.vk : action === "ym" ? BOTS.ym : binding.bot;
-      await search(state, context, invocation, action,action==="ym"?`${query} lyric】`:query,bot,query);
+  const commands = Object.fromEntries(
+    Object.entries(BINDINGS).map(([name, binding]) => [
+      name,
+      {
+        description: "通过 Telegram 音乐机器人搜索并发送歌曲",
+        async handle(invocation: any, context: PluginContext) {
+          const action = binding.nested ? (invocation.args[0]?.toLowerCase() ?? "") : binding.action;
+          const query = invocation.args
+            .slice(binding.nested ? 1 : 0)
+            .join(" ")
+            .trim();
+          const bot = action === "vk" ? BOTS.vk : action === "ym" ? BOTS.ym : binding.bot;
+          await search(state, context, invocation, action, action === "ym" ? `${query} lyric】` : query, bot, query);
+        },
+      },
+    ]),
+  );
+  return definePlugin({
+    renderHelp: renderPluginHelp,
+    apiVersion: 1,
+    id: "music_bot",
+    description: "通过多个 Telegram 音乐机器人搜索歌曲",
+    commands,
+    cleanup() {
+      state.dispose();
     },
-  }]));
-  return definePlugin({renderHelp: renderPluginHelp, apiVersion: 1, id: "music_bot", description: "通过多个 Telegram 音乐机器人搜索歌曲",
-    commands, cleanup() { state.dispose(); }});
+  });
 }

@@ -1,24 +1,420 @@
-'use strict';
-const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path'),fs=require('node:fs'),os=require('node:os');
-const core=path.resolve(__dirname,'../../TeleBox-Core');const {buildPlugin}=require(path.join(core,'scripts/build-v2-plugin.cjs'));const packageRoot=process.env.SAVE_TEST_PACKAGE||path.resolve(__dirname,'../save');const create=require(path.join(buildPlugin({id:'save',packageRoot,entry:'v2.ts'}).artifactDir,'index.cjs')).default;
-function fixture({media=false,forwardError,reply,tempCleanupError,sendFile,sendMessage,entities,getMessages,getInputEntity,edit}={}){let data={schemaVersion:1,users:{}};const edits=[],forwards=[],sent=[],resolved=[],chunks=[],logs=[],messageReads=[];const root=fs.mkdtempSync(path.join(os.tmpdir(),'save-v2-'));const source={id:8,chatId:'-1007',peerId:'peer',text:'hello',...(entities?{entities}:{}),...(media?{media:{document:{mimeType:'application/octet-stream',attributes:[]}}}:{})};const client={async getInputEntity(value){resolved.push(String(value));return getInputEntity?getInputEntity(value):value},async getMessages(peer,options){messageReads.push(true);return getMessages?getMessages(peer,options,messageReads.length):[source]},async forwardMessages(target,options){forwards.push({target,options});if(forwardError)throw new Error(forwardError);return[{id:90}]},async sendMessage(target,options){sent.push({target,options});if(sendMessage)return sendMessage(target,options);return{id:91}},async sendFile(target,options){sent.push({target,options,bytes:fs.readFileSync(options.file)});if(sendFile)return sendFile(target,options);return{id:92}},async *iterDownload(media,options){assert.equal(options.signal,signal);for(const chunk of media.bytes?[Buffer.from(media.bytes)]:[Buffer.from('stream-'),Buffer.from('media')]){chunks.push(chunk);yield chunk;}}};const controller=new AbortController(),signal=controller.signal;const context={signal,log:{error(event,fields){logs.push({event,fields})}},telegram:{edit:async(m,text,o)=>{edits.push({text,o});if(edit)await edit(edits.length,text)},getReply:async()=>reply,withClient:fn=>fn(client,signal)},storage:{json(){return{async read(){return structuredClone(data)},async update(fn){data=await fn(structuredClone(data));return data}}}},files:{async dataDirectory(name){const dir=path.join(root,name);fs.mkdirSync(dir,{recursive:true});return dir},async withTemp(fn){const dir=fs.mkdtempSync(path.join(root,'job-'));let value;try{value=await fn(dir,signal);signal.throwIfAborted()}finally{fs.rmSync(dir,{recursive:true,force:true})}if(tempCleanupError)throw new Error(tempCleanupError);return value},dataPath(){return root}}};return{root,edits,forwards,sent,resolved,chunks,logs,messageReads,controller,source,data:()=>data,run:(args,prefix='.')=>create().commands.save.handle({message:{id:1,chatId:'1',senderId:'99',text:'.save '+args.join(' '),outgoing:true},args,command:'save',prefix},context),cleanup:()=>fs.rmSync(root,{recursive:true,force:true})};}
-test('save persists per-user target and source preferences',async t=>{const f=fixture();t.after(f.cleanup);await f.run(['to','@archive']);await f.run(['source','on']);assert.deepEqual(f.data().users['99'],{target:'@archive',showSource:true});});
-test('save parses private links and forwards with explicit source peer',async t=>{const f=fixture();t.after(f.cleanup);await f.run(['https://t.me/c/7/8']);assert.ok(f.resolved.includes('-1007'));assert.equal(f.forwards[0].options.fromPeer,'peer');assert.deepEqual(f.forwards[0].options.messages,[8]);assert.match(f.edits.at(-1).text,/成功: 1\/1/);});
-test('source lookup cancellation after entity resolution prevents history and forwarding calls',async t=>{let f;f=fixture({getInputEntity:async value=>{f.controller.abort();return value}});t.after(f.cleanup);await f.run(['https://t.me/c/7/8']);assert.equal(f.messageReads.length+f.forwards.length+f.edits.length,0);});
-test('save rejects oversized ranges without touching Telegram history',async t=>{const f=fixture();t.after(f.cleanup);await f.run(['https://t.me/c/7/1|https://t.me/c/7/501']);assert.equal(f.forwards.length,0);assert.match(f.edits.at(-1).text,/最多保存 500/);});
-test('save reports an inaccessible source as skipped instead of success',async t=>{const f=fixture();t.after(f.cleanup);f.forwards.length=0;await f.run(['not-a-link']);assert.equal(f.forwards.length,0);assert.match(f.edits.at(-1).text,/Prometheus/);});
-test('save help retains the complete original feature and local-storage guide',async t=>{const f=fixture();t.after(f.cleanup);await f.run(['help']);const text=f.edits.at(-1).text;for(const expected of ['Percy Bysshe Shelley','批量处理多个消息链接','范围保存','来源显示','assets/save/saved/','投票、地理位置'])assert.match(text,new RegExp(expected));assert.equal(f.edits.at(-1).o.parseMode,'html');});
-test('save streams restricted media through a scoped temporary file',async t=>{const f=fixture({media:true,forwardError:'CHAT_FORWARDS_RESTRICTED'});t.after(f.cleanup);await f.run(['https://t.me/c/7/8']);assert.equal(f.chunks.length,2);assert.equal(f.sent[0].bytes.toString(),'stream-media');assert.match(f.edits.at(-1).text,/成功: 1\/1/);});
-test('restricted text and media fallbacks preserve real Telegram formatting entities',async t=>{const {Api}=require(path.join(core,'node_modules/teleproto'));const entity=new Api.MessageEntityBold({offset:0,length:5});assert.ok(entity.getBytes().length>0);for(const media of [false,true]){const f=fixture({media,entities:[entity],forwardError:'CHAT_FORWARDS_RESTRICTED'});t.after(f.cleanup);await f.run(['https://t.me/c/7/8']);assert.equal(f.sent[0].options.formattingEntities[0],entity);}});
-test('save handles a replied raw message directly without refetching history',async t=>{const raw={id:77,peerId:'reply-peer',chatId:'-1009007199254740993',text:'reply body'};const f=fixture({reply:{id:77,chatId:'-1009007199254740993',text:'reply body',raw}});t.after(f.cleanup);await f.run([]);assert.equal(f.messageReads.length,0);assert.equal(f.forwards.length,1);assert.deepEqual(f.forwards[0].options,{messages:[77],fromPeer:'reply-peer'});assert.match(f.edits.at(-1).text,/成功: 1\/1/);});
-test('save preserves a precise numeric reply peer when no raw entity is available',async t=>{const id='-1009007199254740993';const f=fixture({reply:{id:77,chatId:id,text:'reply body'}});t.after(f.cleanup);await f.run([]);assert.notEqual(typeof f.forwards[0].options.fromPeer,'number');assert.equal(f.forwards[0].options.fromPeer.toString(),id);});
-test('restricted upload success survives temp cleanup failure',async t=>{const f=fixture({media:true,forwardError:'CHAT_FORWARDS_RESTRICTED',tempCleanupError:'private cleanup path'});t.after(f.cleanup);await f.run(['https://t.me/c/7/8']);assert.equal(f.sent.length,1);assert.match(f.edits.at(-1).text,/成功: 1\/1/);assert.ok(f.logs.some(x=>x.event==='save_temp_cleanup_failed'&&x.fields.operation==='upload'));assert.equal(JSON.stringify({edits:f.edits,logs:f.logs}).includes('private cleanup'),false);});
-test('local save success survives temp cleanup failure and writes metadata',async t=>{const f=fixture({media:true,tempCleanupError:'private local cleanup'});t.after(f.cleanup);await f.run(['to','local']);await f.run(['https://t.me/c/7/8']);assert.match(f.edits.at(-1).text,/已保存: 1/);const dir=path.join(f.root,'saved','-1007'),files=fs.readdirSync(dir);assert.ok(files.some(x=>x.endsWith('.json')));assert.ok(files.some(x=>!x.endsWith('.json')));assert.ok(f.logs.some(x=>x.event==='save_temp_cleanup_failed'&&x.fields.operation==='local'));});
-test('concurrent local saves publish unique files and matching metadata without overwrite',async t=>{const make=bytes=>({id:8,chatId:'-1007',peerId:'peer',text:'caption',media:{bytes,document:{mimeType:'application/octet-stream',attributes:[{className:'DocumentAttributeFilename',fileName:'same.bin'}]}}});const f=fixture({getMessages:(_p,_o,count)=>[make(count===1?'first':'second')]});t.after(f.cleanup);await f.run(['to','local']);await Promise.all([f.run(['https://t.me/c/7/8']),f.run(['https://t.me/c/7/8'])]);const dir=path.join(f.root,'saved','-1007'),files=fs.readdirSync(dir),media=files.filter(x=>!x.endsWith('.json'));assert.equal(media.length,2);assert.deepEqual(media.map(x=>fs.readFileSync(path.join(dir,x),'utf8')).sort(),['first','second']);for(const name of media){const metadata=JSON.parse(fs.readFileSync(path.join(dir,`${name}.json`),'utf8'));assert.equal(metadata.media.fileName,name);assert.equal(metadata.media.fileSize,fs.statSync(path.join(dir,name)).size);}});
-test('upload cancellation produces no source notice or completion edit',async t=>{let started,release;const ready=new Promise(r=>{started=r}),gate=new Promise(r=>{release=r});const f=fixture({media:true,forwardError:'CHAT_FORWARDS_RESTRICTED',sendFile:async()=>{started();await gate;return{id:92}}});t.after(f.cleanup);const running=f.run(['https://t.me/c/7/8']);await ready;f.controller.abort();release();await running;assert.equal(f.sent.length,1);assert.equal(f.edits.length,0);assert.equal(f.logs.length,0);});
-test('source notice failure preserves completed forwards and logs a fixed event',async t=>{const f=fixture({sendMessage:async()=>{throw new Error('private notice token')}});t.after(f.cleanup);await f.run(['source','on']);f.edits.length=0;await f.run(['https://t.me/c/7/8']);assert.equal(f.forwards.length,1);assert.match(f.edits.at(-1).text,/成功: 1\/1/);assert.ok(f.logs.some(x=>x.event==='save_source_notice_delivery_interrupted'&&x.fields.published===0));assert.equal(JSON.stringify({edits:f.edits,logs:f.logs}).includes('private notice token'),false);});
-test('source notice paginates all 500 links as bounded valid HTML',async t=>{const f=fixture();t.after(f.cleanup);await f.run(['source','on']);f.sent.length=0;await f.run(['https://t.me/c/7/1|https://t.me/c/7/500']);const pages=f.sent.map(x=>x.options.message);assert.ok(pages.length>1);assert.ok(pages.every(x=>x.length<=3500));assert.equal(pages.join('\n').split('<a href=').length-1,500);});
-test('final receipt failure does not relabel already completed forwarding',async t=>{const f=fixture({edit:async(_count,text)=>{if(text.includes('✅ 处理完成'))throw new Error('private receipt')}});t.after(f.cleanup);await f.run(['https://t.me/c/7/8']);assert.equal(f.forwards.length,1);assert.equal(f.edits.filter(x=>x.text.includes('执行失败')).length,0);assert.ok(f.logs.some(x=>x.event==='save_receipt_failed'));assert.equal(JSON.stringify({texts:f.edits.map(x=>x.text),logs:f.logs}).includes('private receipt'),false);});
-test('source validation escapes a dynamic prefix',async t=>{const f=fixture();t.after(f.cleanup);await f.run(['source','bad'],'<&');assert.match(f.edits.at(-1).text,/&lt;&amp;save source on\/off/);assert.doesNotMatch(f.edits.at(-1).text,/<code><&/);});
-test('unexpected command failures never expose transport details',async t=>{const f=fixture({forwardError:'sk-secret /private/path'});t.after(f.cleanup);await f.run(['https://t.me/c/7/8']);assert.doesNotMatch(JSON.stringify({edits:f.edits,logs:f.logs}),/sk-secret|private\/path/);});
-test('save imports the legacy prometheus user configuration once',async t=>{const root=fs.mkdtempSync(path.join(os.tmpdir(),'save-v2-legacy-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));fs.mkdirSync(path.join(root,'prometheus'));fs.mkdirSync(path.join(root,'save'));fs.writeFileSync(path.join(root,'prometheus','config.json'),JSON.stringify({users:{'99':{target:'@legacy',showSource:true}}}));let data={schemaVersion:1,users:{}};const edits=[];const context={signal:new AbortController().signal,log:{error(){}},telegram:{edit:async(m,text)=>edits.push(text)},storage:{json(){return{read:async()=>structuredClone(data),async update(fn){data=await fn(structuredClone(data));return data}}}},files:{dataPath:()=>path.join(root,'save')}};await create().commands.save.handle({message:{id:1,chatId:'1',senderId:'99',text:'.save target',outgoing:true},args:['target'],command:'save',prefix:'.'},context);assert.equal(data.users['99'].target,'@legacy');assert.match(edits[0],/@legacy/);});
+"use strict";
+const test = require("node:test"),
+  assert = require("node:assert/strict"),
+  path = require("node:path"),
+  fs = require("node:fs"),
+  os = require("node:os");
+const core = path.resolve(__dirname, "../../TeleBox-Core");
+const { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs"));
+const packageRoot = process.env.SAVE_TEST_PACKAGE || path.resolve(__dirname, "../save");
+const create = require(
+  path.join(buildPlugin({ id: "save", packageRoot, entry: "v2.ts" }).artifactDir, "index.cjs"),
+).default;
+function fixture({
+  media = false,
+  forwardError,
+  reply,
+  tempCleanupError,
+  sendFile,
+  sendMessage,
+  entities,
+  getMessages,
+  getInputEntity,
+  edit,
+} = {}) {
+  let data = { schemaVersion: 1, users: {} };
+  const edits = [],
+    forwards = [],
+    sent = [],
+    resolved = [],
+    chunks = [],
+    logs = [],
+    messageReads = [];
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "save-v2-"));
+  const source = {
+    id: 8,
+    chatId: "-1007",
+    peerId: "peer",
+    text: "hello",
+    ...(entities ? { entities } : {}),
+    ...(media ? { media: { document: { mimeType: "application/octet-stream", attributes: [] } } } : {}),
+  };
+  const client = {
+    async getInputEntity(value) {
+      resolved.push(String(value));
+      return getInputEntity ? getInputEntity(value) : value;
+    },
+    async getMessages(peer, options) {
+      messageReads.push(true);
+      return getMessages ? getMessages(peer, options, messageReads.length) : [source];
+    },
+    async forwardMessages(target, options) {
+      forwards.push({ target, options });
+      if (forwardError) throw new Error(forwardError);
+      return [{ id: 90 }];
+    },
+    async sendMessage(target, options) {
+      sent.push({ target, options });
+      if (sendMessage) return sendMessage(target, options);
+      return { id: 91 };
+    },
+    async sendFile(target, options) {
+      sent.push({ target, options, bytes: fs.readFileSync(options.file) });
+      if (sendFile) return sendFile(target, options);
+      return { id: 92 };
+    },
+    async *iterDownload(media, options) {
+      assert.equal(options.signal, signal);
+      for (const chunk of media.bytes ? [Buffer.from(media.bytes)] : [Buffer.from("stream-"), Buffer.from("media")]) {
+        chunks.push(chunk);
+        yield chunk;
+      }
+    },
+  };
+  const controller = new AbortController(),
+    signal = controller.signal;
+  const context = {
+    signal,
+    log: {
+      error(event, fields) {
+        logs.push({ event, fields });
+      },
+    },
+    telegram: {
+      edit: async (m, text, o) => {
+        edits.push({ text, o });
+        if (edit) await edit(edits.length, text);
+      },
+      getReply: async () => reply,
+      withClient: fn => fn(client, signal),
+    },
+    storage: {
+      json() {
+        return {
+          async read() {
+            return structuredClone(data);
+          },
+          async update(fn) {
+            data = await fn(structuredClone(data));
+            return data;
+          },
+        };
+      },
+    },
+    files: {
+      async dataDirectory(name) {
+        const dir = path.join(root, name);
+        fs.mkdirSync(dir, { recursive: true });
+        return dir;
+      },
+      async withTemp(fn) {
+        const dir = fs.mkdtempSync(path.join(root, "job-"));
+        let value;
+        try {
+          value = await fn(dir, signal);
+          signal.throwIfAborted();
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+        if (tempCleanupError) throw new Error(tempCleanupError);
+        return value;
+      },
+      dataPath() {
+        return root;
+      },
+    },
+  };
+  return {
+    root,
+    edits,
+    forwards,
+    sent,
+    resolved,
+    chunks,
+    logs,
+    messageReads,
+    controller,
+    source,
+    data: () => data,
+    run: (args, prefix = ".") =>
+      create().commands.save.handle(
+        {
+          message: { id: 1, chatId: "1", senderId: "99", text: ".save " + args.join(" "), outgoing: true },
+          args,
+          command: "save",
+          prefix,
+        },
+        context,
+      ),
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+test("save persists per-user target and source preferences", async t => {
+  const f = fixture();
+  t.after(f.cleanup);
+  await f.run(["to", "@archive"]);
+  await f.run(["source", "on"]);
+  assert.deepEqual(f.data().users["99"], { target: "@archive", showSource: true });
+});
+test("save parses private links and forwards with explicit source peer", async t => {
+  const f = fixture();
+  t.after(f.cleanup);
+  await f.run(["https://t.me/c/7/8"]);
+  assert.ok(f.resolved.includes("-1007"));
+  assert.equal(f.forwards[0].options.fromPeer, "peer");
+  assert.deepEqual(f.forwards[0].options.messages, [8]);
+  assert.match(f.edits.at(-1).text, /成功: 1\/1/);
+});
+test("source lookup cancellation after entity resolution prevents history and forwarding calls", async t => {
+  let f;
+  f = fixture({
+    getInputEntity: async value => {
+      f.controller.abort();
+      return value;
+    },
+  });
+  t.after(f.cleanup);
+  await f.run(["https://t.me/c/7/8"]);
+  assert.equal(f.messageReads.length + f.forwards.length + f.edits.length, 0);
+});
+test("save rejects oversized ranges without touching Telegram history", async t => {
+  const f = fixture();
+  t.after(f.cleanup);
+  await f.run(["https://t.me/c/7/1|https://t.me/c/7/501"]);
+  assert.equal(f.forwards.length, 0);
+  assert.match(f.edits.at(-1).text, /最多保存 500/);
+});
+test("save reports an inaccessible source as skipped instead of success", async t => {
+  const f = fixture();
+  t.after(f.cleanup);
+  f.forwards.length = 0;
+  await f.run(["not-a-link"]);
+  assert.equal(f.forwards.length, 0);
+  assert.match(f.edits.at(-1).text, /Prometheus/);
+});
+test("save help retains the complete original feature and local-storage guide", async t => {
+  const f = fixture();
+  t.after(f.cleanup);
+  await f.run(["help"]);
+  const text = f.edits.at(-1).text;
+  for (const expected of [
+    "Percy Bysshe Shelley",
+    "批量处理多个消息链接",
+    "范围保存",
+    "来源显示",
+    "assets/save/saved/",
+    "投票、地理位置",
+  ])
+    assert.match(text, new RegExp(expected));
+  assert.equal(f.edits.at(-1).o.parseMode, "html");
+});
+test("save streams restricted media through a scoped temporary file", async t => {
+  const f = fixture({ media: true, forwardError: "CHAT_FORWARDS_RESTRICTED" });
+  t.after(f.cleanup);
+  await f.run(["https://t.me/c/7/8"]);
+  assert.equal(f.chunks.length, 2);
+  assert.equal(f.sent[0].bytes.toString(), "stream-media");
+  assert.match(f.edits.at(-1).text, /成功: 1\/1/);
+});
+test("restricted text and media fallbacks preserve real Telegram formatting entities", async t => {
+  const { Api } = require(path.join(core, "node_modules/teleproto"));
+  const entity = new Api.MessageEntityBold({ offset: 0, length: 5 });
+  assert.ok(entity.getBytes().length > 0);
+  for (const media of [false, true]) {
+    const f = fixture({ media, entities: [entity], forwardError: "CHAT_FORWARDS_RESTRICTED" });
+    t.after(f.cleanup);
+    await f.run(["https://t.me/c/7/8"]);
+    assert.equal(f.sent[0].options.formattingEntities[0], entity);
+  }
+});
+test("save handles a replied raw message directly without refetching history", async t => {
+  const raw = { id: 77, peerId: "reply-peer", chatId: "-1009007199254740993", text: "reply body" };
+  const f = fixture({ reply: { id: 77, chatId: "-1009007199254740993", text: "reply body", raw } });
+  t.after(f.cleanup);
+  await f.run([]);
+  assert.equal(f.messageReads.length, 0);
+  assert.equal(f.forwards.length, 1);
+  assert.deepEqual(f.forwards[0].options, { messages: [77], fromPeer: "reply-peer" });
+  assert.match(f.edits.at(-1).text, /成功: 1\/1/);
+});
+test("save preserves a precise numeric reply peer when no raw entity is available", async t => {
+  const id = "-1009007199254740993";
+  const f = fixture({ reply: { id: 77, chatId: id, text: "reply body" } });
+  t.after(f.cleanup);
+  await f.run([]);
+  assert.notEqual(typeof f.forwards[0].options.fromPeer, "number");
+  assert.equal(f.forwards[0].options.fromPeer.toString(), id);
+});
+test("restricted upload success survives temp cleanup failure", async t => {
+  const f = fixture({
+    media: true,
+    forwardError: "CHAT_FORWARDS_RESTRICTED",
+    tempCleanupError: "private cleanup path",
+  });
+  t.after(f.cleanup);
+  await f.run(["https://t.me/c/7/8"]);
+  assert.equal(f.sent.length, 1);
+  assert.match(f.edits.at(-1).text, /成功: 1\/1/);
+  assert.ok(f.logs.some(x => x.event === "save_temp_cleanup_failed" && x.fields.operation === "upload"));
+  assert.equal(JSON.stringify({ edits: f.edits, logs: f.logs }).includes("private cleanup"), false);
+});
+test("local save success survives temp cleanup failure and writes metadata", async t => {
+  const f = fixture({ media: true, tempCleanupError: "private local cleanup" });
+  t.after(f.cleanup);
+  await f.run(["to", "local"]);
+  await f.run(["https://t.me/c/7/8"]);
+  assert.match(f.edits.at(-1).text, /已保存: 1/);
+  const dir = path.join(f.root, "saved", "-1007"),
+    files = fs.readdirSync(dir);
+  assert.ok(files.some(x => x.endsWith(".json")));
+  assert.ok(files.some(x => !x.endsWith(".json")));
+  assert.ok(f.logs.some(x => x.event === "save_temp_cleanup_failed" && x.fields.operation === "local"));
+});
+test("concurrent local saves publish unique files and matching metadata without overwrite", async t => {
+  const make = bytes => ({
+    id: 8,
+    chatId: "-1007",
+    peerId: "peer",
+    text: "caption",
+    media: {
+      bytes,
+      document: {
+        mimeType: "application/octet-stream",
+        attributes: [{ className: "DocumentAttributeFilename", fileName: "same.bin" }],
+      },
+    },
+  });
+  const f = fixture({ getMessages: (_p, _o, count) => [make(count === 1 ? "first" : "second")] });
+  t.after(f.cleanup);
+  await f.run(["to", "local"]);
+  await Promise.all([f.run(["https://t.me/c/7/8"]), f.run(["https://t.me/c/7/8"])]);
+  const dir = path.join(f.root, "saved", "-1007"),
+    files = fs.readdirSync(dir),
+    media = files.filter(x => !x.endsWith(".json"));
+  assert.equal(media.length, 2);
+  assert.deepEqual(media.map(x => fs.readFileSync(path.join(dir, x), "utf8")).sort(), ["first", "second"]);
+  for (const name of media) {
+    const metadata = JSON.parse(fs.readFileSync(path.join(dir, `${name}.json`), "utf8"));
+    assert.equal(metadata.media.fileName, name);
+    assert.equal(metadata.media.fileSize, fs.statSync(path.join(dir, name)).size);
+  }
+});
+test("upload cancellation produces no source notice or completion edit", async t => {
+  let started, release;
+  const ready = new Promise(r => {
+      started = r;
+    }),
+    gate = new Promise(r => {
+      release = r;
+    });
+  const f = fixture({
+    media: true,
+    forwardError: "CHAT_FORWARDS_RESTRICTED",
+    sendFile: async () => {
+      started();
+      await gate;
+      return { id: 92 };
+    },
+  });
+  t.after(f.cleanup);
+  const running = f.run(["https://t.me/c/7/8"]);
+  await ready;
+  f.controller.abort();
+  release();
+  await running;
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.edits.length, 0);
+  assert.equal(f.logs.length, 0);
+});
+test("source notice failure preserves completed forwards and logs a fixed event", async t => {
+  const f = fixture({
+    sendMessage: async () => {
+      throw new Error("private notice token");
+    },
+  });
+  t.after(f.cleanup);
+  await f.run(["source", "on"]);
+  f.edits.length = 0;
+  await f.run(["https://t.me/c/7/8"]);
+  assert.equal(f.forwards.length, 1);
+  assert.match(f.edits.at(-1).text, /成功: 1\/1/);
+  assert.ok(f.logs.some(x => x.event === "save_source_notice_delivery_interrupted" && x.fields.published === 0));
+  assert.equal(JSON.stringify({ edits: f.edits, logs: f.logs }).includes("private notice token"), false);
+});
+test("source notice paginates all 500 links as bounded valid HTML", async t => {
+  const f = fixture();
+  t.after(f.cleanup);
+  await f.run(["source", "on"]);
+  f.sent.length = 0;
+  await f.run(["https://t.me/c/7/1|https://t.me/c/7/500"]);
+  const pages = f.sent.map(x => x.options.message);
+  assert.ok(pages.length > 1);
+  assert.ok(pages.every(x => x.length <= 3500));
+  assert.equal(pages.join("\n").split("<a href=").length - 1, 500);
+});
+test("final receipt failure does not relabel already completed forwarding", async t => {
+  const f = fixture({
+    edit: async (_count, text) => {
+      if (text.includes("✅ 处理完成")) throw new Error("private receipt");
+    },
+  });
+  t.after(f.cleanup);
+  await f.run(["https://t.me/c/7/8"]);
+  assert.equal(f.forwards.length, 1);
+  assert.equal(f.edits.filter(x => x.text.includes("执行失败")).length, 0);
+  assert.ok(f.logs.some(x => x.event === "save_receipt_failed"));
+  assert.equal(JSON.stringify({ texts: f.edits.map(x => x.text), logs: f.logs }).includes("private receipt"), false);
+});
+test("source validation escapes a dynamic prefix", async t => {
+  const f = fixture();
+  t.after(f.cleanup);
+  await f.run(["source", "bad"], "<&");
+  assert.match(f.edits.at(-1).text, /&lt;&amp;save source on\/off/);
+  assert.doesNotMatch(f.edits.at(-1).text, /<code><&/);
+});
+test("unexpected command failures never expose transport details", async t => {
+  const f = fixture({ forwardError: "sk-secret /private/path" });
+  t.after(f.cleanup);
+  await f.run(["https://t.me/c/7/8"]);
+  assert.doesNotMatch(JSON.stringify({ edits: f.edits, logs: f.logs }), /sk-secret|private\/path/);
+});
+test("save imports the legacy prometheus user configuration once", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "save-v2-legacy-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, "prometheus"));
+  fs.mkdirSync(path.join(root, "save"));
+  fs.writeFileSync(
+    path.join(root, "prometheus", "config.json"),
+    JSON.stringify({ users: { 99: { target: "@legacy", showSource: true } } }),
+  );
+  let data = { schemaVersion: 1, users: {} };
+  const edits = [];
+  const context = {
+    signal: new AbortController().signal,
+    log: { error() {} },
+    telegram: { edit: async (m, text) => edits.push(text) },
+    storage: {
+      json() {
+        return {
+          read: async () => structuredClone(data),
+          async update(fn) {
+            data = await fn(structuredClone(data));
+            return data;
+          },
+        };
+      },
+    },
+    files: { dataPath: () => path.join(root, "save") },
+  };
+  await create().commands.save.handle(
+    {
+      message: { id: 1, chatId: "1", senderId: "99", text: ".save target", outgoing: true },
+      args: ["target"],
+      command: "save",
+      prefix: ".",
+    },
+    context,
+  );
+  assert.equal(data.users["99"].target, "@legacy");
+  assert.match(edits[0], /@legacy/);
+});

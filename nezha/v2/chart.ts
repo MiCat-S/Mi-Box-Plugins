@@ -35,7 +35,7 @@ export function generateChartConfig(monitorData: ServiceMonitorItem[], serverNam
     }
   }
 
-  const labels = sampleIndices.map((i) => {
+  const labels = sampleIndices.map(i => {
     const ts = baseCreatedAt[i];
     const date = new Date(ts);
     return `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}`;
@@ -43,7 +43,7 @@ export function generateChartConfig(monitorData: ServiceMonitorItem[], serverNam
 
   const datasets = monitorData.map((item, index) => ({
     label: item.monitor_name,
-    data: sampleIndices.map((i) => item.avg_delay[i] ?? null),
+    data: sampleIndices.map(i => item.avg_delay[i] ?? null),
     borderColor: colors[index % colors.length],
     fill: false,
     pointRadius: 0,
@@ -66,35 +66,38 @@ export function generateChartConfig(monitorData: ServiceMonitorItem[], serverNam
         },
       },
       scales: {
-        yAxes: [{
-          scaleLabel: {
-            display: true,
-            labelString: "Delay (ms)",
-            fontColor: "#ffffff",
+        yAxes: [
+          {
+            scaleLabel: {
+              display: true,
+              labelString: "Delay (ms)",
+              fontColor: "#ffffff",
+            },
+            ticks: {
+              beginAtZero: true,
+              fontColor: "#cccccc",
+            },
+            gridLines: {
+              color: "rgba(255, 255, 255, 0.2)",
+            },
           },
-          ticks: {
-            beginAtZero: true,
-            fontColor: "#cccccc",
+        ],
+        xAxes: [
+          {
+            scaleLabel: {
+              display: true,
+              labelString: "Time",
+              fontColor: "#ffffff",
+            },
+            ticks: {
+              fontColor: "#cccccc",
+            },
+            gridLines: {
+              color: "rgba(255, 255, 255, 0.2)",
+            },
           },
-          gridLines: {
-            color: "rgba(255, 255, 255, 0.2)",
-          },
-        }],
-        xAxes: [{
-          scaleLabel: {
-            display: true,
-            labelString: "Time",
-            fontColor: "#ffffff",
-          },
-          ticks: {
-            fontColor: "#cccccc",
-          },
-          gridLines: {
-            color: "rgba(255, 255, 255, 0.2)",
-          },
-        }],
+        ],
       },
     },
   };
 }
-

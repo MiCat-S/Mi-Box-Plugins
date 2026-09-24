@@ -1,65 +1,443 @@
-'use strict';
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
-const core=path.resolve(__dirname,'../../TeleBox-Core'),{buildPlugin}=require(path.join(core,'scripts/build-v2-plugin.cjs')),{PluginHost}=require(path.join(core,'dist/v2/host.js'));
-const {Api}=require(path.join(core,'node_modules/teleproto'));
-const create=require(path.join(buildPlugin({id:'pmcaptcha',packageRoot:path.resolve(__dirname,'../pmcaptcha'),entry:'v2.ts'}).artifactDir,'index.cjs')).default;
-async function fixture(t,options={}){const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'pmcaptcha-v2-'))),edits=[],replies=[],sent=[],deleted=[],invoked=[],logs=[];if(options.legacy){await fs.mkdir(path.join(root,'pmcaptcha'));await fs.writeFile(path.join(root,'pmcaptcha/pmcaptcha_config.json'),JSON.stringify(options.legacy.config??{}));await fs.writeFile(path.join(root,'pmcaptcha/pmcaptcha_data.json'),JSON.stringify(options.legacy.data??{}));}let id=10;const client={async getEntity(value){if(options.entityFails)throw Object.assign(new Error('private entity'),{code:'SECRET'});return{id:value,firstName:'User'};},async getInputEntity(value){return{className:'InputPeerUser',id:value,toString(){return String(value);}};},async getMessages(){return options.history??[];},async getMe(){return{id:1n};},async invoke(request){invoked.push(request);return options.invoke?.(request)??{};},async sendMessage(peer,value){sent.push({peer,value});return{id:id++};},async deleteMessages(peer,ids,value){deleted.push({peer,ids,value});}};const host=new PluginHost({storageRoot:root,selfId:'1',prefixes:options.prefixes,logger:{info(){},error(event){logs.push(event);}},telegram:{async edit(message,text,settings){edits.push({text,settings});},async reply(message,text,settings){replies.push({message,text,settings});},async invoke(){},async getReply(){return options.reply;},async withClient(operation,signal){return operation(client,signal);}}});await host.load(create());t.after(async()=>{await host.shutdown(1000);await fs.rm(root,{recursive:true,force:true});});const command=(text,extra={})=>host.dispatchPrimary({id:1,chatId:'1',senderId:'1',outgoing:true,text,raw:null,...extra}),message=(senderId,text,extra={})=>host.dispatchListeners({id:id++,chatId:senderId,senderId,outgoing:false,text,chatType:'private',raw:{isPrivate:true,sender:{id:senderId,firstName:`U${senderId}`}},...extra});return{root,host,edits,replies,sent,deleted,invoked,logs,command,message,read:async()=>JSON.parse(await fs.readFile(path.join(root,'pmcaptcha/state.json'),'utf8'))};}
+"use strict";
+const test = require("node:test"),
+  assert = require("node:assert/strict"),
+  fs = require("node:fs/promises"),
+  os = require("node:os"),
+  path = require("node:path");
+const core = path.resolve(__dirname, "../../TeleBox-Core"),
+  { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs")),
+  { PluginHost } = require(path.join(core, "dist/v2/host.js"));
+const { Api } = require(path.join(core, "node_modules/teleproto"));
+const create = require(
+  path.join(
+    buildPlugin({ id: "pmcaptcha", packageRoot: path.resolve(__dirname, "../pmcaptcha"), entry: "v2.ts" }).artifactDir,
+    "index.cjs",
+  ),
+).default;
+async function fixture(t, options = {}) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pmcaptcha-v2-"))),
+    edits = [],
+    replies = [],
+    sent = [],
+    deleted = [],
+    invoked = [],
+    logs = [];
+  if (options.legacy) {
+    await fs.mkdir(path.join(root, "pmcaptcha"));
+    await fs.writeFile(path.join(root, "pmcaptcha/pmcaptcha_config.json"), JSON.stringify(options.legacy.config ?? {}));
+    await fs.writeFile(path.join(root, "pmcaptcha/pmcaptcha_data.json"), JSON.stringify(options.legacy.data ?? {}));
+  }
+  let id = 10;
+  const client = {
+    async getEntity(value) {
+      if (options.entityFails) throw Object.assign(new Error("private entity"), { code: "SECRET" });
+      return { id: value, firstName: "User" };
+    },
+    async getInputEntity(value) {
+      return {
+        className: "InputPeerUser",
+        id: value,
+        toString() {
+          return String(value);
+        },
+      };
+    },
+    async getMessages() {
+      return options.history ?? [];
+    },
+    async getMe() {
+      return { id: 1n };
+    },
+    async invoke(request) {
+      invoked.push(request);
+      return options.invoke?.(request) ?? {};
+    },
+    async sendMessage(peer, value) {
+      sent.push({ peer, value });
+      return { id: id++ };
+    },
+    async deleteMessages(peer, ids, value) {
+      deleted.push({ peer, ids, value });
+    },
+  };
+  const host = new PluginHost({
+    storageRoot: root,
+    selfId: "1",
+    prefixes: options.prefixes,
+    logger: {
+      info() {},
+      error(event) {
+        logs.push(event);
+      },
+    },
+    telegram: {
+      async edit(message, text, settings) {
+        edits.push({ text, settings });
+      },
+      async reply(message, text, settings) {
+        replies.push({ message, text, settings });
+      },
+      async invoke() {},
+      async getReply() {
+        return options.reply;
+      },
+      async withClient(operation, signal) {
+        return operation(client, signal);
+      },
+    },
+  });
+  await host.load(create());
+  t.after(async () => {
+    await host.shutdown(1000);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  const command = (text, extra = {}) =>
+      host.dispatchPrimary({ id: 1, chatId: "1", senderId: "1", outgoing: true, text, raw: null, ...extra }),
+    message = (senderId, text, extra = {}) =>
+      host.dispatchListeners({
+        id: id++,
+        chatId: senderId,
+        senderId,
+        outgoing: false,
+        text,
+        chatType: "private",
+        raw: { isPrivate: true, sender: { id: senderId, firstName: `U${senderId}` } },
+        ...extra,
+      });
+  return {
+    root,
+    host,
+    edits,
+    replies,
+    sent,
+    deleted,
+    invoked,
+    logs,
+    command,
+    message,
+    read: async () => JSON.parse(await fs.readFile(path.join(root, "pmcaptcha/state.json"), "utf8")),
+  };
+}
 
-test('pmcaptcha migrates legacy exact ids and the wl pass action alias',async t=>{const exact='900719925474099312345';const f=await fixture(t,{legacy:{config:{captcha_pass_actions:['wl'],captcha_timeout:0},data:{whitelist_user_ids:[exact],verified_users:[{id:exact,name:'Old',time:'x'}]}}});let state=await f.read();assert.deepEqual(state.config.passActions,['whitelist']);assert.deepEqual(state.config.whitelist,[exact]);await f.command('.pmc set pass wl');state=await f.read();assert.deepEqual(state.config.passActions,['whitelist']);});
-
-test('pmcaptcha restores record deletion by id and all for both lists',async t=>{const f=await fixture(t,{legacy:{data:{verified_users:[{id:'1',name:'A',time:'x'},{id:'2',name:'B',time:'x'}],failed_users:[{id:'3',name:'C',time:'x',reason:'timeout'}]}}});await f.command('.pmc record del verified 1');assert.deepEqual((await f.read()).config.verified.map(x=>x.id),['2']);await f.command('.pmc record del failed all');assert.deepEqual((await f.read()).config.failed,[]);});
-
-test('pmcaptcha wl pass removes the session, cleans prompts and records verification',async t=>{const exact='900719925474099312345',f=await fixture(t,{reply:{senderId:exact}});await f.command('.pmc captcha on');await f.message(exact,'hello');assert.ok((await f.read()).sessions[exact]);await f.command('.pmc wl pass',{replyToId:9});const state=await f.read();assert.equal(state.sessions[exact],undefined);assert.ok(state.config.whitelist.includes(exact));assert.ok(state.config.verified.some(item=>item.id===exact));assert.equal(f.deleted[0].peer.toString(),exact);});
-
-test('pmcaptcha serializes duplicate messages per user while allowing independent users',async t=>{const f=await fixture(t);await f.command('.pmc captcha on');await Promise.all([f.message('101','a'),f.message('101','b'),f.message('202','c')]);const state=await f.read();assert.deepEqual(Object.keys(state.sessions).sort(),['101','202']);assert.equal(f.sent.length,2);});
-
-test('pmcaptcha admits only eligible private users',async t=>{const f=await fixture(t);await f.command('.pmc captcha on');await f.message('777000','service');await f.message('303','bot',{raw:{isPrivate:true,sender:{id:'303',bot:true}}});await f.message('404','group',{chatId:'-1001',chatType:'group',raw:{peerId:{className:'PeerChannel'}}});assert.deepEqual((await f.read()).sessions,{});assert.equal(f.sent.length,0);});
-
-test('pmcaptcha rejects incoming configuration commands before handlers run',async t=>{const f=await fixture(t);const handled=await f.host.dispatchPrimary({id:1,chatId:'9',senderId:'9',outgoing:false,direction:'incoming',text:'.pmc off'});assert.equal(handled,false);assert.equal((await f.read()).config.enabled,true);assert.equal(f.edits.length,0);});
-
-test('pmcaptcha timeout is managed, persists failure, cleans prompts and resumes after reload',async t=>{const user='505';const f=await fixture(t);await f.command('.pmc captcha on');await f.command('.pmc set time 60');await f.message(user,'start');const before=await f.read();assert.ok(before.sessions[user]);const report=await f.host.unload('pmcaptcha',1000);assert.equal(report.completed,true);assert.ok((await f.read()).sessions[user]);const file=path.join(f.root,'pmcaptcha/state.json'),expired=await f.read();expired.sessions[user].deadline=Date.now()-1000;await fs.writeFile(file,JSON.stringify(expired));await f.host.load(create());for(let index=0;index<20&&(await f.read()).sessions[user];index++)await new Promise(resolve=>setTimeout(resolve,5));const after=await f.read();assert.equal(after.sessions[user],undefined);assert.ok(after.config.failed.some(item=>item.id===user&&item.reason==='timeout'));assert.ok(f.deleted.some(item=>item.peer.toString()===user));});
-
-test('pmcaptcha paginates long whitelist and record output with escaped prefixes',async t=>{const ids=Array.from({length:700},(_,index)=>String(100000+index));const records=ids.map(id=>({id,name:`N${id}`,time:'x'}));const f=await fixture(t,{prefixes:['<&'],legacy:{data:{whitelist_user_ids:ids,verified_users:records}}});await f.command('<&pmc help');assert.match(f.edits.at(-1).text,/&lt;&amp;pmc on/);await f.command('<&pmc wl');assert.ok(f.replies.length>0);assert.ok([f.edits.at(-1),...f.replies].every(item=>item.text.length<=3500));});
-
-test('pmcaptcha command failures expose fixed feedback without private error details',async t=>{const f=await fixture(t,{entityFails:true});await f.command('.pmc add @private');assert.match(f.edits.at(-1).text,/内部操作失败/);assert.doesNotMatch(JSON.stringify(f.edits),/private entity|SECRET/);});
-
-test('pmcaptcha rejects corrupt legacy JSON and merges only missing raw V2 fields',async t=>{const f=await fixture(t,{legacy:{config:{},data:{}}});await f.host.unload('pmcaptcha');const file=path.join(f.root,'pmcaptcha/state.json'),raw={schemaVersion:1,config:{enabled:true,failActions:[]},sessions:{},importedLegacy:false};await fs.writeFile(file,JSON.stringify(raw));await fs.writeFile(path.join(f.root,'pmcaptcha/pmcaptcha_config.json'),'{bad');await assert.rejects(f.host.load(create()));assert.equal((await f.read()).importedLegacy,false);await fs.writeFile(path.join(f.root,'pmcaptcha/pmcaptcha_config.json'),JSON.stringify({plugin_enabled:false,captcha_timeout:77,captcha_fail_actions:['block']}));await f.host.load(create());const migrated=await f.read();assert.equal(migrated.config.enabled,true);assert.deepEqual(migrated.config.failActions,[]);assert.equal(migrated.config.timeout,77);assert.equal(migrated.importedLegacy,true);});
-
-test('pmcaptcha whitelist alias pass performs the same cleanup and record update',async t=>{const user='808',f=await fixture(t,{reply:{senderId:user}});await f.command('.pmc captcha on');await f.message(user,'hello');await f.command('.pmc whitelist pass',{replyToId:9});const state=await f.read();assert.equal(state.sessions[user],undefined);assert.ok(state.config.whitelist.includes(user));assert.ok(state.config.verified.some(item=>item.id===user));assert.ok(f.deleted.some(item=>item.peer.toString()===user));});
-
-test('pmcaptcha ignores an old timeout after a replacement session is created',async t=>{const user='606',f=await fixture(t);await f.command('.pmc captcha on');await f.command('.pmc set time 0.05');await f.message(user,'first');await f.command(`.pmc wl pass ${user}`);await f.command(`.pmc del ${user}`);await f.command(`.pmc record del verified ${user}`);await f.command('.pmc set time 1');await f.message(user,'second');const replacement=(await f.read()).sessions[user];await new Promise(resolve=>setTimeout(resolve,100));const state=await f.read();assert.equal(state.sessions[user].deadline,replacement.deadline);assert.equal(state.config.failed.some(item=>item.id===user&&item.reason==='timeout'),false);});
-
-test('pmcaptcha native requests serialize through current Teleproto types',async t=>{const f=await fixture(t);await f.command('.pmc captcha on');await f.message('707','hello');assert.ok(f.invoked.length>=2);for(const request of f.invoked){const peer=request.peer?.peer??request.folderPeers?.[0]?.peer;if(peer?.className==='InputPeerUser'){const actual=new Api.InputPeerUser({userId:peer.id,accessHash:0n});if(request.peer?.peer)request.peer.peer=actual;else request.folderPeers[0].peer=actual;}assert.ok(request.getBytes().length>4);}});
-
-test('pmcaptcha cancellation after a native RPC prevents every later RPC and captcha send',async t=>{const started=Promise.withResolvers(),release=Promise.withResolvers();let first=true;const f=await fixture(t,{invoke:async()=>{if(first){first=false;started.resolve();await release.promise;}return{};}});await f.command('.pmc captcha on');const running=f.message('909','hello');await started.promise;const unloading=f.host.unload('pmcaptcha',1000);release.resolve();assert.equal((await unloading).completed,true);await running.catch(()=>undefined);assert.equal(f.invoked.length,1);assert.equal(f.sent.length,0);assert.deepEqual(f.logs,[]);});
-
-const {messageEnvelope}=require(path.join(core,'dist/v2/telegram.js'));
-test('pmcaptcha never archives broadcast posts, send-as groups or Saved Messages',async t=>{
- const f=await fixture(t);await f.command('.pmc captcha on');
- for(const raw of [
-  new Api.Message({id:80,peerId:new Api.PeerChannel({channelId:30n}),fromId:new Api.PeerChannel({channelId:30n}),post:true,message:'post',date:1}),
-  new Api.Message({id:81,peerId:new Api.PeerChannel({channelId:31n}),fromId:new Api.PeerChannel({channelId:31n}),post:false,out:true,message:'send-as',date:1}),
-  new Api.Message({id:82,peerId:new Api.PeerUser({userId:1n}),fromId:new Api.PeerUser({userId:1n}),out:false,message:'saved',date:1}),
- ])await f.host.dispatchListeners(messageEnvelope(raw,{selfId:'1'}));
- assert.equal(f.invoked.length,0);assert.equal(f.sent.length,0);assert.deepEqual((await f.read()).sessions,{});assert.deepEqual((await f.read()).config.whitelist,[]);
+test("pmcaptcha migrates legacy exact ids and the wl pass action alias", async t => {
+  const exact = "900719925474099312345";
+  const f = await fixture(t, {
+    legacy: {
+      config: { captcha_pass_actions: ["wl"], captcha_timeout: 0 },
+      data: { whitelist_user_ids: [exact], verified_users: [{ id: exact, name: "Old", time: "x" }] },
+    },
+  });
+  let state = await f.read();
+  assert.deepEqual(state.config.passActions, ["whitelist"]);
+  assert.deepEqual(state.config.whitelist, [exact]);
+  await f.command(".pmc set pass wl");
+  state = await f.read();
+  assert.deepEqual(state.config.passActions, ["whitelist"]);
 });
-test('pmcaptcha accepts Saved Messages commands even when wire out is false',async t=>{
- const f=await fixture(t);
- const raw=new Api.Message({id:90,peerId:new Api.PeerUser({userId:1n}),fromId:new Api.PeerUser({userId:1n}),out:false,message:'.pmc off',date:1});
- assert.equal(await f.host.dispatchPrimary(messageEnvelope(raw,{selfId:'1'})),true);
- assert.equal((await f.read()).config.enabled,false);assert.match(f.edits.at(-1).text,/停用/);
+
+test("pmcaptcha restores record deletion by id and all for both lists", async t => {
+  const f = await fixture(t, {
+    legacy: {
+      data: {
+        verified_users: [
+          { id: "1", name: "A", time: "x" },
+          { id: "2", name: "B", time: "x" },
+        ],
+        failed_users: [{ id: "3", name: "C", time: "x", reason: "timeout" }],
+      },
+    },
+  });
+  await f.command(".pmc record del verified 1");
+  assert.deepEqual(
+    (await f.read()).config.verified.map(x => x.id),
+    ["2"],
+  );
+  await f.command(".pmc record del failed all");
+  assert.deepEqual((await f.read()).config.failed, []);
 });
-test('pmcaptcha private commands reply and own messages whitelist only the peer',async t=>{
- const f=await fixture(t);
- const make=(id,peer,sender,out,text)=>messageEnvelope(new Api.Message({id,peerId:new Api.PeerUser({userId:peer}),fromId:new Api.PeerUser({userId:sender}),out,message:text,date:1}),{selfId:'1'});
- await f.host.dispatchPrimary(make(91,2n,1n,true,'.pmc status'));assert.match(f.edits.at(-1).text,/状态/);
- await f.host.dispatchListeners(make(92,2n,1n,true,'hello'));assert.deepEqual((await f.read()).config.whitelist,['2']);assert.equal(f.invoked.length,0);
- await f.command('.pmc captcha on');await f.host.dispatchListeners(make(93,3n,3n,false,'hello'));assert.ok((await f.read()).sessions['3']);assert.equal(f.sent.length,1);
+
+test("pmcaptcha wl pass removes the session, cleans prompts and records verification", async t => {
+  const exact = "900719925474099312345",
+    f = await fixture(t, { reply: { senderId: exact } });
+  await f.command(".pmc captcha on");
+  await f.message(exact, "hello");
+  assert.ok((await f.read()).sessions[exact]);
+  await f.command(".pmc wl pass", { replyToId: 9 });
+  const state = await f.read();
+  assert.equal(state.sessions[exact], undefined);
+  assert.ok(state.config.whitelist.includes(exact));
+  assert.ok(state.config.verified.some(item => item.id === exact));
+  assert.equal(f.deleted[0].peer.toString(), exact);
 });
-test('pmcaptcha recognizes scalar private envelopes and skips restored channel sessions',async t=>{
- const f=await fixture(t);await f.command('.pmc captcha on');
- await f.message('4','hello',{raw:null,chatType:'private'});assert.ok((await f.read()).sessions['4']);
- await f.host.unload('pmcaptcha');const state=await f.read();state.sessions={'-10030':{...state.sessions['4'],userId:'-10030',deadline:Date.now()-1}};
- await fs.writeFile(path.join(f.root,'pmcaptcha/state.json'),JSON.stringify(state));f.invoked.length=0;f.sent.length=0;
- await f.host.load(create());await new Promise(resolve=>setTimeout(resolve,30));assert.equal(f.invoked.length,0);assert.deepEqual((await f.read()).sessions,{});
+
+test("pmcaptcha serializes duplicate messages per user while allowing independent users", async t => {
+  const f = await fixture(t);
+  await f.command(".pmc captcha on");
+  await Promise.all([f.message("101", "a"), f.message("101", "b"), f.message("202", "c")]);
+  const state = await f.read();
+  assert.deepEqual(Object.keys(state.sessions).sort(), ["101", "202"]);
+  assert.equal(f.sent.length, 2);
+});
+
+test("pmcaptcha admits only eligible private users", async t => {
+  const f = await fixture(t);
+  await f.command(".pmc captcha on");
+  await f.message("777000", "service");
+  await f.message("303", "bot", { raw: { isPrivate: true, sender: { id: "303", bot: true } } });
+  await f.message("404", "group", {
+    chatId: "-1001",
+    chatType: "group",
+    raw: { peerId: { className: "PeerChannel" } },
+  });
+  assert.deepEqual((await f.read()).sessions, {});
+  assert.equal(f.sent.length, 0);
+});
+
+test("pmcaptcha rejects incoming configuration commands before handlers run", async t => {
+  const f = await fixture(t);
+  const handled = await f.host.dispatchPrimary({
+    id: 1,
+    chatId: "9",
+    senderId: "9",
+    outgoing: false,
+    direction: "incoming",
+    text: ".pmc off",
+  });
+  assert.equal(handled, false);
+  assert.equal((await f.read()).config.enabled, true);
+  assert.equal(f.edits.length, 0);
+});
+
+test("pmcaptcha timeout is managed, persists failure, cleans prompts and resumes after reload", async t => {
+  const user = "505";
+  const f = await fixture(t);
+  await f.command(".pmc captcha on");
+  await f.command(".pmc set time 60");
+  await f.message(user, "start");
+  const before = await f.read();
+  assert.ok(before.sessions[user]);
+  const report = await f.host.unload("pmcaptcha", 1000);
+  assert.equal(report.completed, true);
+  assert.ok((await f.read()).sessions[user]);
+  const file = path.join(f.root, "pmcaptcha/state.json"),
+    expired = await f.read();
+  expired.sessions[user].deadline = Date.now() - 1000;
+  await fs.writeFile(file, JSON.stringify(expired));
+  await f.host.load(create());
+  for (let index = 0; index < 20 && (await f.read()).sessions[user]; index++)
+    await new Promise(resolve => setTimeout(resolve, 5));
+  const after = await f.read();
+  assert.equal(after.sessions[user], undefined);
+  assert.ok(after.config.failed.some(item => item.id === user && item.reason === "timeout"));
+  assert.ok(f.deleted.some(item => item.peer.toString() === user));
+});
+
+test("pmcaptcha paginates long whitelist and record output with escaped prefixes", async t => {
+  const ids = Array.from({ length: 700 }, (_, index) => String(100000 + index));
+  const records = ids.map(id => ({ id, name: `N${id}`, time: "x" }));
+  const f = await fixture(t, {
+    prefixes: ["<&"],
+    legacy: { data: { whitelist_user_ids: ids, verified_users: records } },
+  });
+  await f.command("<&pmc help");
+  assert.match(f.edits.at(-1).text, /&lt;&amp;pmc on/);
+  await f.command("<&pmc wl");
+  assert.ok(f.replies.length > 0);
+  assert.ok([f.edits.at(-1), ...f.replies].every(item => item.text.length <= 3500));
+});
+
+test("pmcaptcha command failures expose fixed feedback without private error details", async t => {
+  const f = await fixture(t, { entityFails: true });
+  await f.command(".pmc add @private");
+  assert.match(f.edits.at(-1).text, /内部操作失败/);
+  assert.doesNotMatch(JSON.stringify(f.edits), /private entity|SECRET/);
+});
+
+test("pmcaptcha rejects corrupt legacy JSON and merges only missing raw V2 fields", async t => {
+  const f = await fixture(t, { legacy: { config: {}, data: {} } });
+  await f.host.unload("pmcaptcha");
+  const file = path.join(f.root, "pmcaptcha/state.json"),
+    raw = { schemaVersion: 1, config: { enabled: true, failActions: [] }, sessions: {}, importedLegacy: false };
+  await fs.writeFile(file, JSON.stringify(raw));
+  await fs.writeFile(path.join(f.root, "pmcaptcha/pmcaptcha_config.json"), "{bad");
+  await assert.rejects(f.host.load(create()));
+  assert.equal((await f.read()).importedLegacy, false);
+  await fs.writeFile(
+    path.join(f.root, "pmcaptcha/pmcaptcha_config.json"),
+    JSON.stringify({ plugin_enabled: false, captcha_timeout: 77, captcha_fail_actions: ["block"] }),
+  );
+  await f.host.load(create());
+  const migrated = await f.read();
+  assert.equal(migrated.config.enabled, true);
+  assert.deepEqual(migrated.config.failActions, []);
+  assert.equal(migrated.config.timeout, 77);
+  assert.equal(migrated.importedLegacy, true);
+});
+
+test("pmcaptcha whitelist alias pass performs the same cleanup and record update", async t => {
+  const user = "808",
+    f = await fixture(t, { reply: { senderId: user } });
+  await f.command(".pmc captcha on");
+  await f.message(user, "hello");
+  await f.command(".pmc whitelist pass", { replyToId: 9 });
+  const state = await f.read();
+  assert.equal(state.sessions[user], undefined);
+  assert.ok(state.config.whitelist.includes(user));
+  assert.ok(state.config.verified.some(item => item.id === user));
+  assert.ok(f.deleted.some(item => item.peer.toString() === user));
+});
+
+test("pmcaptcha ignores an old timeout after a replacement session is created", async t => {
+  const user = "606",
+    f = await fixture(t);
+  await f.command(".pmc captcha on");
+  await f.command(".pmc set time 0.05");
+  await f.message(user, "first");
+  await f.command(`.pmc wl pass ${user}`);
+  await f.command(`.pmc del ${user}`);
+  await f.command(`.pmc record del verified ${user}`);
+  await f.command(".pmc set time 1");
+  await f.message(user, "second");
+  const replacement = (await f.read()).sessions[user];
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const state = await f.read();
+  assert.equal(state.sessions[user].deadline, replacement.deadline);
+  assert.equal(
+    state.config.failed.some(item => item.id === user && item.reason === "timeout"),
+    false,
+  );
+});
+
+test("pmcaptcha native requests serialize through current Teleproto types", async t => {
+  const f = await fixture(t);
+  await f.command(".pmc captcha on");
+  await f.message("707", "hello");
+  assert.ok(f.invoked.length >= 2);
+  for (const request of f.invoked) {
+    const peer = request.peer?.peer ?? request.folderPeers?.[0]?.peer;
+    if (peer?.className === "InputPeerUser") {
+      const actual = new Api.InputPeerUser({ userId: peer.id, accessHash: 0n });
+      if (request.peer?.peer) request.peer.peer = actual;
+      else request.folderPeers[0].peer = actual;
+    }
+    assert.ok(request.getBytes().length > 4);
+  }
+});
+
+test("pmcaptcha cancellation after a native RPC prevents every later RPC and captcha send", async t => {
+  const started = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  let first = true;
+  const f = await fixture(t, {
+    invoke: async () => {
+      if (first) {
+        first = false;
+        started.resolve();
+        await release.promise;
+      }
+      return {};
+    },
+  });
+  await f.command(".pmc captcha on");
+  const running = f.message("909", "hello");
+  await started.promise;
+  const unloading = f.host.unload("pmcaptcha", 1000);
+  release.resolve();
+  assert.equal((await unloading).completed, true);
+  await running.catch(() => undefined);
+  assert.equal(f.invoked.length, 1);
+  assert.equal(f.sent.length, 0);
+  assert.deepEqual(f.logs, []);
+});
+
+const { messageEnvelope } = require(path.join(core, "dist/v2/telegram.js"));
+test("pmcaptcha never archives broadcast posts, send-as groups or Saved Messages", async t => {
+  const f = await fixture(t);
+  await f.command(".pmc captcha on");
+  for (const raw of [
+    new Api.Message({
+      id: 80,
+      peerId: new Api.PeerChannel({ channelId: 30n }),
+      fromId: new Api.PeerChannel({ channelId: 30n }),
+      post: true,
+      message: "post",
+      date: 1,
+    }),
+    new Api.Message({
+      id: 81,
+      peerId: new Api.PeerChannel({ channelId: 31n }),
+      fromId: new Api.PeerChannel({ channelId: 31n }),
+      post: false,
+      out: true,
+      message: "send-as",
+      date: 1,
+    }),
+    new Api.Message({
+      id: 82,
+      peerId: new Api.PeerUser({ userId: 1n }),
+      fromId: new Api.PeerUser({ userId: 1n }),
+      out: false,
+      message: "saved",
+      date: 1,
+    }),
+  ])
+    await f.host.dispatchListeners(messageEnvelope(raw, { selfId: "1" }));
+  assert.equal(f.invoked.length, 0);
+  assert.equal(f.sent.length, 0);
+  assert.deepEqual((await f.read()).sessions, {});
+  assert.deepEqual((await f.read()).config.whitelist, []);
+});
+test("pmcaptcha accepts Saved Messages commands even when wire out is false", async t => {
+  const f = await fixture(t);
+  const raw = new Api.Message({
+    id: 90,
+    peerId: new Api.PeerUser({ userId: 1n }),
+    fromId: new Api.PeerUser({ userId: 1n }),
+    out: false,
+    message: ".pmc off",
+    date: 1,
+  });
+  assert.equal(await f.host.dispatchPrimary(messageEnvelope(raw, { selfId: "1" })), true);
+  assert.equal((await f.read()).config.enabled, false);
+  assert.match(f.edits.at(-1).text, /停用/);
+});
+test("pmcaptcha private commands reply and own messages whitelist only the peer", async t => {
+  const f = await fixture(t);
+  const make = (id, peer, sender, out, text) =>
+    messageEnvelope(
+      new Api.Message({
+        id,
+        peerId: new Api.PeerUser({ userId: peer }),
+        fromId: new Api.PeerUser({ userId: sender }),
+        out,
+        message: text,
+        date: 1,
+      }),
+      { selfId: "1" },
+    );
+  await f.host.dispatchPrimary(make(91, 2n, 1n, true, ".pmc status"));
+  assert.match(f.edits.at(-1).text, /状态/);
+  await f.host.dispatchListeners(make(92, 2n, 1n, true, "hello"));
+  assert.deepEqual((await f.read()).config.whitelist, ["2"]);
+  assert.equal(f.invoked.length, 0);
+  await f.command(".pmc captcha on");
+  await f.host.dispatchListeners(make(93, 3n, 3n, false, "hello"));
+  assert.ok((await f.read()).sessions["3"]);
+  assert.equal(f.sent.length, 1);
+});
+test("pmcaptcha recognizes scalar private envelopes and skips restored channel sessions", async t => {
+  const f = await fixture(t);
+  await f.command(".pmc captcha on");
+  await f.message("4", "hello", { raw: null, chatType: "private" });
+  assert.ok((await f.read()).sessions["4"]);
+  await f.host.unload("pmcaptcha");
+  const state = await f.read();
+  state.sessions = { "-10030": { ...state.sessions["4"], userId: "-10030", deadline: Date.now() - 1 } };
+  await fs.writeFile(path.join(f.root, "pmcaptcha/state.json"), JSON.stringify(state));
+  f.invoked.length = 0;
+  f.sent.length = 0;
+  await f.host.load(create());
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(f.invoked.length, 0);
+  assert.deepEqual((await f.read()).sessions, {});
 });

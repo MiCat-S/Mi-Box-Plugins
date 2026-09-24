@@ -1,21 +1,275 @@
-'use strict';
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
-const core=path.resolve(__dirname,'../../TeleBox-Core'),sharp=require(path.join(core,'node_modules/sharp')),{Api}=require(path.join(core,'node_modules/teleproto')),{buildPlugin}=require(path.join(core,'scripts/build-v2-plugin.cjs')),{PluginHost}=require(path.join(core,'dist/v2/host.js'));
-function plugin(){const {artifactDir}=buildPlugin({id:'pic_to_sticker',packageRoot:path.resolve(__dirname,'../pic_to_sticker'),entry:'v2.ts'}),entry=path.join(artifactDir,'index.cjs');delete require.cache[require.resolve(entry)];return require(entry).default();}
-async function fixture(t,options={}){const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'mibot-pts-'))),edits=[],sent=[],logs=[];let deleted=0,replyReads=0;const image=options.image??await sharp({create:{width:32,height:24,channels:4,background:'#ff000080'}}).png().toBuffer(),source=options.source??{id:50,groupedId:options.groupedId,media:{key:'source'},photo:{},document:{size:BigInt(image.length)}};const bytes=new Map([[source.media,image],...(options.mediaBytes??[])]),client={async *iterDownload(media,params){if(options.iterDownload)yield* options.iterDownload(media,params);else yield bytes.get(media)??Buffer.from('invalid');},async getMessages(_peer,query){return query.minId===source.id?(options.newer??[]):(options.older??[]);},async sendFile(peer,value){if(options.sendFile)await options.sendFile(peer,value);const data=await fs.readFile(value.file);sent.push({peer,value,data});}};const raw={peerId:'peer',...(options.commandMedia?source:{}),async delete(){deleted++;if(options.deleteFails)throw new Error('private-delete');}};const host=new PluginHost({storageRoot:root,tempRoot:path.join(root,'temp'),prefixes:options.prefixes,logger:{info(){},error(event,fields){logs.push({event,fields});}},telegram:{async edit(_message,text,sendOptions){edits.push({text,options:sendOptions});if(options.edit)await options.edit(text);},async reply(){assert.fail('reply');},async invoke(){assert.fail('invoke');},async getReply(){replyReads++;return{id:source.id,text:'',raw:source};},async withClient(operation,signal){return operation(client,signal);}}});await host.load(plugin());t.after(async()=>{await host.shutdown(3000);await fs.rm(root,{recursive:true,force:true});});return{host,root,image,source,raw,edits,sent,logs,deleted:()=>deleted,replyReads:()=>replyReads,run:(text,extra={})=>host.dispatchPrimary({id:77,chatId:'1',senderId:'1',outgoing:true,replyToId:source.id,topicId:9,text,raw,...extra})};}
+"use strict";
+const test = require("node:test"),
+  assert = require("node:assert/strict"),
+  fs = require("node:fs/promises"),
+  os = require("node:os"),
+  path = require("node:path");
+const core = path.resolve(__dirname, "../../TeleBox-Core"),
+  sharp = require(path.join(core, "node_modules/sharp")),
+  { Api } = require(path.join(core, "node_modules/teleproto")),
+  { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs")),
+  { PluginHost } = require(path.join(core, "dist/v2/host.js"));
+function plugin() {
+  const { artifactDir } = buildPlugin({
+      id: "pic_to_sticker",
+      packageRoot: path.resolve(__dirname, "../pic_to_sticker"),
+      entry: "v2.ts",
+    }),
+    entry = path.join(artifactDir, "index.cjs");
+  delete require.cache[require.resolve(entry)];
+  return require(entry).default();
+}
+async function fixture(t, options = {}) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mibot-pts-"))),
+    edits = [],
+    sent = [],
+    logs = [];
+  let deleted = 0,
+    replyReads = 0;
+  const image =
+      options.image ??
+      (await sharp({ create: { width: 32, height: 24, channels: 4, background: "#ff000080" } })
+        .png()
+        .toBuffer()),
+    source = options.source ?? {
+      id: 50,
+      groupedId: options.groupedId,
+      media: { key: "source" },
+      photo: {},
+      document: { size: BigInt(image.length) },
+    };
+  const bytes = new Map([[source.media, image], ...(options.mediaBytes ?? [])]),
+    client = {
+      async *iterDownload(media, params) {
+        if (options.iterDownload) yield* options.iterDownload(media, params);
+        else yield bytes.get(media) ?? Buffer.from("invalid");
+      },
+      async getMessages(_peer, query) {
+        return query.minId === source.id ? (options.newer ?? []) : (options.older ?? []);
+      },
+      async sendFile(peer, value) {
+        if (options.sendFile) await options.sendFile(peer, value);
+        const data = await fs.readFile(value.file);
+        sent.push({ peer, value, data });
+      },
+    };
+  const raw = {
+    peerId: "peer",
+    ...(options.commandMedia ? source : {}),
+    async delete() {
+      deleted++;
+      if (options.deleteFails) throw new Error("private-delete");
+    },
+  };
+  const host = new PluginHost({
+    storageRoot: root,
+    tempRoot: path.join(root, "temp"),
+    prefixes: options.prefixes,
+    logger: {
+      info() {},
+      error(event, fields) {
+        logs.push({ event, fields });
+      },
+    },
+    telegram: {
+      async edit(_message, text, sendOptions) {
+        edits.push({ text, options: sendOptions });
+        if (options.edit) await options.edit(text);
+      },
+      async reply() {
+        assert.fail("reply");
+      },
+      async invoke() {
+        assert.fail("invoke");
+      },
+      async getReply() {
+        replyReads++;
+        return { id: source.id, text: "", raw: source };
+      },
+      async withClient(operation, signal) {
+        return operation(client, signal);
+      },
+    },
+  });
+  await host.load(plugin());
+  t.after(async () => {
+    await host.shutdown(3000);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  return {
+    host,
+    root,
+    image,
+    source,
+    raw,
+    edits,
+    sent,
+    logs,
+    deleted: () => deleted,
+    replyReads: () => replyReads,
+    run: (text, extra = {}) =>
+      host.dispatchPrimary({
+        id: 77,
+        chatId: "1",
+        senderId: "1",
+        outgoing: true,
+        replyToId: source.id,
+        topicId: 9,
+        text,
+        raw,
+        ...extra,
+      }),
+  };
+}
 
-test('pic_to_sticker Host routes aliases, help and persistent settings with active prefix',async t=>{const f=await fixture(t,{prefixes:['!']});await f.run('!pts help');assert.match(f.edits.at(-1).text,/!pic_to_sticker config emoji/);assert.match(f.edits.at(-1).text,/!pts.*!pic_to_sticker/);await f.run('!pic_to_sticker config');assert.match(f.edits.at(-1).text,/默认表情/);await f.host.patchSettings('pic_to_sticker',{defaultEmoji:'🔥',quality:73,autoDelete:false});const settings=await f.host.readSettings('pic_to_sticker');assert.equal(settings.values.defaultEmoji,'🔥');assert.equal(settings.values.quality,73);assert.equal(settings.values.autoDelete,false);await f.run('!pts config bg white');assert.equal((await f.host.readSettings('pic_to_sticker')).values.background,'white');});
+test("pic_to_sticker Host routes aliases, help and persistent settings with active prefix", async t => {
+  const f = await fixture(t, { prefixes: ["!"] });
+  await f.run("!pts help");
+  assert.match(f.edits.at(-1).text, /!pic_to_sticker config emoji/);
+  assert.match(f.edits.at(-1).text, /!pts.*!pic_to_sticker/);
+  await f.run("!pic_to_sticker config");
+  assert.match(f.edits.at(-1).text, /默认表情/);
+  await f.host.patchSettings("pic_to_sticker", { defaultEmoji: "🔥", quality: 73, autoDelete: false });
+  const settings = await f.host.readSettings("pic_to_sticker");
+  assert.equal(settings.values.defaultEmoji, "🔥");
+  assert.equal(settings.values.quality, 73);
+  assert.equal(settings.values.autoDelete, false);
+  await f.run("!pts config bg white");
+  assert.equal((await f.host.readSettings("pic_to_sticker")).values.background, "white");
+});
 
-test('pic_to_sticker config emoji truncates by Unicode code point',async t=>{const f=await fixture(t),value='a'.repeat(31)+'😀'+'z';await f.run(`.pts config emoji ${value}`);const saved=(await f.host.readSettings('pic_to_sticker')).values.defaultEmoji;assert.equal(Array.from(saved).length,32);assert.equal(saved,'a'.repeat(31)+'😀');assert.equal(saved.isWellFormed(),true);});
+test("pic_to_sticker config emoji truncates by Unicode code point", async t => {
+  const f = await fixture(t),
+    value = "a".repeat(31) + "😀" + "z";
+  await f.run(`.pts config emoji ${value}`);
+  const saved = (await f.host.readSettings("pic_to_sticker")).values.defaultEmoji;
+  assert.equal(Array.from(saved).length, 32);
+  assert.equal(saved, "a".repeat(31) + "😀");
+  assert.equal(saved.isWellFormed(), true);
+});
 
-test('pic_to_sticker sends real sticker attributes to the command topic and preserves progress',async t=>{const f=await fixture(t);await f.host.patchSettings('pic_to_sticker',{autoDelete:false});await f.run('.pts 😎');assert.deepEqual(f.edits.slice(-3).map(value=>value.text),['🔍 正在分析图片...','📤 正在发送贴纸...','✅ 贴纸已发送 😎']);assert.equal(f.sent.length,1);const sent=f.sent[0].value;assert.equal(sent.replyTo,77);assert.equal(sent.topMsgId,9);assert.ok(sent.attributes[0] instanceof Api.DocumentAttributeSticker);assert.equal(sent.attributes[0].alt,'😎');sent.attributes[0].getBytes();assert.equal((await sharp(f.sent[0].data).metadata()).format,'webp');assert.equal(f.deleted(),0);});
+test("pic_to_sticker sends real sticker attributes to the command topic and preserves progress", async t => {
+  const f = await fixture(t);
+  await f.host.patchSettings("pic_to_sticker", { autoDelete: false });
+  await f.run(".pts 😎");
+  assert.deepEqual(
+    f.edits.slice(-3).map(value => value.text),
+    ["🔍 正在分析图片...", "📤 正在发送贴纸...", "✅ 贴纸已发送 😎"],
+  );
+  assert.equal(f.sent.length, 1);
+  const sent = f.sent[0].value;
+  assert.equal(sent.replyTo, 77);
+  assert.equal(sent.topMsgId, 9);
+  assert.ok(sent.attributes[0] instanceof Api.DocumentAttributeSticker);
+  assert.equal(sent.attributes[0].alt, "😎");
+  sent.attributes[0].getBytes();
+  assert.equal((await sharp(f.sent[0].data).metadata()).format, "webp");
+  assert.equal(f.deleted(), 0);
+});
 
-test('pic_to_sticker accepts a directly attached command image without reading a reply',async t=>{const f=await fixture(t,{commandMedia:true});await f.host.patchSettings('pic_to_sticker',{autoDelete:false});await f.run('.pts',{replyToId:undefined});assert.equal(f.replyReads(),0);assert.equal(f.sent.length,1);assert.equal(f.sent[0].value.replyTo,77);});
+test("pic_to_sticker accepts a directly attached command image without reading a reply", async t => {
+  const f = await fixture(t, { commandMedia: true });
+  await f.host.patchSettings("pic_to_sticker", { autoDelete: false });
+  await f.run(".pts", { replyToId: undefined });
+  assert.equal(f.replyReads(), 0);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].value.replyTo, 77);
+});
 
-test('pic_to_sticker batch continues after one invalid member and reports exact counts',async t=>{const groupedId=7n,good={id:49,groupedId,media:{key:'good'},photo:{}},bad={id:51,groupedId,media:{key:'bad'},photo:{}};const goodBytes=await sharp({create:{width:8,height:8,channels:4,background:'#00ff00'}}).png().toBuffer();const f=await fixture(t,{groupedId,older:[good],newer:[bad],mediaBytes:[[good.media,goodBytes],[bad.media,Buffer.from('bad')]]});await f.run('.pts batch');assert.equal(f.sent.length,2);assert.match(f.edits.at(-1).text,/成功: 2 张/);assert.match(f.edits.at(-1).text,/失败: 1 张/);assert.equal(f.deleted(),0);assert.ok(!f.logs.some(value=>value.event==='pic_to_sticker_failed'));});
+test("pic_to_sticker batch continues after one invalid member and reports exact counts", async t => {
+  const groupedId = 7n,
+    good = { id: 49, groupedId, media: { key: "good" }, photo: {} },
+    bad = { id: 51, groupedId, media: { key: "bad" }, photo: {} };
+  const goodBytes = await sharp({ create: { width: 8, height: 8, channels: 4, background: "#00ff00" } })
+    .png()
+    .toBuffer();
+  const f = await fixture(t, {
+    groupedId,
+    older: [good],
+    newer: [bad],
+    mediaBytes: [
+      [good.media, goodBytes],
+      [bad.media, Buffer.from("bad")],
+    ],
+  });
+  await f.run(".pts batch");
+  assert.equal(f.sent.length, 2);
+  assert.match(f.edits.at(-1).text, /成功: 2 张/);
+  assert.match(f.edits.at(-1).text, /失败: 1 张/);
+  assert.equal(f.deleted(), 0);
+  assert.ok(!f.logs.some(value => value.event === "pic_to_sticker_failed"));
+});
 
-test('pic_to_sticker unload aborts a hanging download with no upload, delete or late error',async t=>{let started;const ready=new Promise(resolve=>started=resolve),f=await fixture(t,{iterDownload:async function*(_media,params){started();await new Promise((resolve,reject)=>params.signal.addEventListener('abort',()=>reject(params.signal.reason),{once:true}));}});const running=f.run('.pts');await ready;const before=f.edits.length;assert.equal((await f.host.unload('pic_to_sticker',3000)).completed,true);await running;assert.equal(f.sent.length,0);assert.equal(f.deleted(),0);assert.equal(f.edits.length,before);});
+test("pic_to_sticker unload aborts a hanging download with no upload, delete or late error", async t => {
+  let started;
+  const ready = new Promise(resolve => (started = resolve)),
+    f = await fixture(t, {
+      iterDownload: async function* (_media, params) {
+        started();
+        await new Promise((resolve, reject) =>
+          params.signal.addEventListener("abort", () => reject(params.signal.reason), { once: true }),
+        );
+      },
+    });
+  const running = f.run(".pts");
+  await ready;
+  const before = f.edits.length;
+  assert.equal((await f.host.unload("pic_to_sticker", 3000)).completed, true);
+  await running;
+  assert.equal(f.sent.length, 0);
+  assert.equal(f.deleted(), 0);
+  assert.equal(f.edits.length, before);
+});
 
-test('pic_to_sticker upload cancellation prevents delete and successful cleanup failure is not a conversion failure',async t=>{let started,release;const ready=new Promise(resolve=>started=resolve),gate=new Promise(resolve=>release=resolve),pendingFixture=await fixture(t,{async sendFile(){started();await gate;}});const running=pendingFixture.run('.pts');await ready;const before=pendingFixture.edits.length,unloading=pendingFixture.host.unload('pic_to_sticker',3000);release();assert.equal((await unloading).completed,true);await running;assert.equal(pendingFixture.deleted(),0);assert.equal(pendingFixture.edits.length,before);const done=await fixture(t,{deleteFails:true});await done.run('.pts');assert.equal(done.sent.length,1);assert.equal(done.deleted(),1);assert.ok(done.logs.some(value=>value.event==='pic_to_sticker_command_cleanup_failed'));assert.ok(!done.logs.some(value=>value.event==='pic_to_sticker_failed'));assert.doesNotMatch(done.edits.at(-1).text,/转换失败/);});
+test("pic_to_sticker upload cancellation prevents delete and successful cleanup failure is not a conversion failure", async t => {
+  let started, release;
+  const ready = new Promise(resolve => (started = resolve)),
+    gate = new Promise(resolve => (release = resolve)),
+    pendingFixture = await fixture(t, {
+      async sendFile() {
+        started();
+        await gate;
+      },
+    });
+  const running = pendingFixture.run(".pts");
+  await ready;
+  const before = pendingFixture.edits.length,
+    unloading = pendingFixture.host.unload("pic_to_sticker", 3000);
+  release();
+  assert.equal((await unloading).completed, true);
+  await running;
+  assert.equal(pendingFixture.deleted(), 0);
+  assert.equal(pendingFixture.edits.length, before);
+  const done = await fixture(t, { deleteFails: true });
+  await done.run(".pts");
+  assert.equal(done.sent.length, 1);
+  assert.equal(done.deleted(), 1);
+  assert.ok(done.logs.some(value => value.event === "pic_to_sticker_command_cleanup_failed"));
+  assert.ok(!done.logs.some(value => value.event === "pic_to_sticker_failed"));
+  assert.doesNotMatch(done.edits.at(-1).text, /转换失败/);
+});
 
-test('pic_to_sticker batch reports completion before auto-delete and receipt failure is not conversion failure',async t=>{const order=[],done=await fixture(t,{edit(text){if(/批量转换完成/.test(text))order.push('result');}});done.raw.delete=async()=>{order.push('delete');};await done.run('.pts batch');assert.deepEqual(order,['result','delete']);const failed=await fixture(t,{edit(text){if(/批量转换完成/.test(text))throw new Error('private receipt');}});await failed.run('.pts batch');assert.equal(failed.sent.length,1);assert.equal(failed.deleted(),0);assert.ok(failed.logs.some(value=>value.event==='pic_to_sticker_receipt_failed'));assert.ok(!failed.logs.some(value=>value.event==='pic_to_sticker_failed'));assert.doesNotMatch(failed.edits.at(-1).text,/图片转换失败/);});
+test("pic_to_sticker batch reports completion before auto-delete and receipt failure is not conversion failure", async t => {
+  const order = [],
+    done = await fixture(t, {
+      edit(text) {
+        if (/批量转换完成/.test(text)) order.push("result");
+      },
+    });
+  done.raw.delete = async () => {
+    order.push("delete");
+  };
+  await done.run(".pts batch");
+  assert.deepEqual(order, ["result", "delete"]);
+  const failed = await fixture(t, {
+    edit(text) {
+      if (/批量转换完成/.test(text)) throw new Error("private receipt");
+    },
+  });
+  await failed.run(".pts batch");
+  assert.equal(failed.sent.length, 1);
+  assert.equal(failed.deleted(), 0);
+  assert.ok(failed.logs.some(value => value.event === "pic_to_sticker_receipt_failed"));
+  assert.ok(!failed.logs.some(value => value.event === "pic_to_sticker_failed"));
+  assert.doesNotMatch(failed.edits.at(-1).text, /图片转换失败/);
+});

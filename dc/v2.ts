@@ -1,18 +1,29 @@
-import {STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition} from "telebox/sdk";
+import { STRUCTURED_PLUGIN_API_VERSION, definePlugin, renderCommandHelp, type CommandDefinition } from "telebox/sdk";
 import type { MessageEnvelope } from "telebox/sdk";
 import type { Api } from "teleproto";
 
-const escape = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g,
-  character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;" })[character]!);
+const escape = (value: unknown): string =>
+  String(value ?? "").replace(
+    /[&<>"']/g,
+    character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;" })[character]!,
+  );
 const location = (name: string, dc: number): string => `📍 <b>${escape(name)}</b> 所在数据中心为: <b>DC${dc}</b>`;
 
 const dcCommand: CommandDefinition = {
   description: "获取指定用户或当前群组/频道的 DC",
   args: "[@用户名|用户ID]",
-  arguments: [{name: "目标", description: "用户名或用户 ID；留空查询当前群组/频道；回复消息后发送则查询发送者，或消息所在群组/频道"}],
-  examples: [{args: ""}, {args: "@username"}, {args: "123456789"}],
+  arguments: [
+    {
+      name: "目标",
+      description: "用户名或用户 ID；留空查询当前群组/频道；回复消息后发送则查询发送者，或消息所在群组/频道",
+    },
+  ],
+  examples: [{ args: "" }, { args: "@username" }, { args: "123456789" }],
   help: [
-    {heading: "说明：", body: "回复目标消息后发送可查询发送者，或消息所在群组/频道；结果来自 Telegram 头像信息，目标需要设置头像；DC 表示数据中心编号，不代表用户所在地；每次最多指定一个目标。"},
+    {
+      heading: "说明：",
+      body: "回复目标消息后发送可查询发送者，或消息所在群组/频道；结果来自 Telegram 头像信息，目标需要设置头像；DC 表示数据中心编号，不代表用户所在地；每次最多指定一个目标。",
+    },
   ],
   async handle({ message, args }, context) {
     const edit = (text: string) => context.telegram.edit(message, text, { parseMode: "html" });
@@ -33,8 +44,12 @@ const dcCommand: CommandDefinition = {
           return value;
         };
         const showLocation = async (text: string): Promise<void> => {
-          try { await edit(text); }
-          catch { signal.throwIfAborted(); context.log.error("dc_result_edit_failed"); }
+          try {
+            await edit(text);
+          } catch {
+            signal.throwIfAborted();
+            context.log.error("dc_result_edit_failed");
+          }
         };
         signal.throwIfAborted();
         const chatFor = async (envelope: MessageEnvelope) => {
@@ -56,41 +71,60 @@ const dcCommand: CommandDefinition = {
         const raw = message.raw as Api.Message | undefined;
         if (message.replyToId !== undefined || raw?.replyTo) {
           const reply = await call(() => context.telegram.getReply(message));
-          if (!reply) { await edit("❌ 无法获取回复的消息"); return; }
-          if (!reply.senderId) { await edit("❌ 无法获取回复消息的发送者"); return; }
+          if (!reply) {
+            await edit("❌ 无法获取回复的消息");
+            return;
+          }
+          if (!reply.senderId) {
+            await edit("❌ 无法获取回复消息的发送者");
+            return;
+          }
           try {
             const input = await call(() => client.getInputEntity(returnBigInt(reply.senderId!)));
             const full = await call(() => client.invoke(new Api.users.GetFullUser({ id: input })));
             const user = full.users[0] as Api.User;
             if (!user.photo || user.photo.className === "UserProfilePhotoEmpty") {
-              await edit("❌ 目标用户没有头像，无法获取 DC 信息"); return;
+              await edit("❌ 目标用户没有头像，无法获取 DC 信息");
+              return;
             }
             await showLocation(location(user.firstName || "未知用户", (user.photo as Api.UserProfilePhoto).dcId));
           } catch {
             signal.throwIfAborted();
-            try { await showChat(reply, true); }
-            catch { signal.throwIfAborted(); await edit("❌ 无法获取该对象的 DC 信息"); }
+            try {
+              await showChat(reply, true);
+            } catch {
+              signal.throwIfAborted();
+              await edit("❌ 无法获取该对象的 DC 信息");
+            }
           }
           return;
         }
         const param = args[0] || "";
-        if (!param) { await showChat(message, false); return; }
-        const fallback = () => /^\d+$/.test(param) ? returnBigInt(param) : param;
+        if (!param) {
+          await showChat(message, false);
+          return;
+        }
+        const fallback = () => (/^\d+$/.test(param) ? returnBigInt(param) : param);
         let target: ReturnType<typeof fallback> = fallback();
         try {
           for (const entity of raw?.entities ?? []) {
             if (entity instanceof Api.MessageEntityMentionName) {
               // Decimal strings are phone lookups in Teleproto; a mention is an exact peer ID.
-              target = entity.userId; break;
+              target = entity.userId;
+              break;
             }
-            if (entity instanceof Api.MessageEntityPhone) { target = fallback(); break; }
+            if (entity instanceof Api.MessageEntityPhone) {
+              target = fallback();
+              break;
+            }
           }
         } catch {
           context.log.error("dc_entity_parse_failed");
           target = fallback();
         }
         if (typeof target !== "string" && target.isZero()) {
-          await edit("❌ 请指定有效的用户名或用户ID"); return;
+          await edit("❌ 请指定有效的用户名或用户ID");
+          return;
         }
         try {
           const entity = await call(() => client.getEntity(target));
@@ -98,7 +132,8 @@ const dcCommand: CommandDefinition = {
           const full = await call(() => client.invoke(new Api.users.GetFullUser({ id: input })));
           const user = full.users[0] as Api.User;
           if (!user.photo || user.photo.className === "UserProfilePhotoEmpty") {
-            await edit("❌ 目标用户需要先设置头像才能获取 DC 信息"); return;
+            await edit("❌ 目标用户需要先设置头像才能获取 DC 信息");
+            return;
           }
           await showLocation(location(user.firstName || "未知用户", (user.photo as Api.UserProfilePhoto).dcId));
         } catch (error) {
@@ -127,8 +162,11 @@ const dcCommand: CommandDefinition = {
 };
 
 export default function createDc() {
-  return definePlugin({apiVersion: STRUCTURED_PLUGIN_API_VERSION, id: "dc", description: "获取指定用户或当前群组/频道的 DC",
-    renderHelp: prefix => renderCommandHelp("dc", dcCommand, {prefix, title: "📍 Telegram 数据中心查询"}),
+  return definePlugin({
+    apiVersion: STRUCTURED_PLUGIN_API_VERSION,
+    id: "dc",
+    description: "获取指定用户或当前群组/频道的 DC",
+    renderHelp: prefix => renderCommandHelp("dc", dcCommand, { prefix, title: "📍 Telegram 数据中心查询" }),
     commands: { dc: dcCommand },
   });
 }

@@ -1,11 +1,194 @@
-'use strict';const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path');const core=path.resolve(__dirname,'../../TeleBox-Core'),{buildPlugin}=require(path.join(core,'scripts/build-v2-plugin.cjs')),{PluginHost}=require(path.join(core,'dist/v2/host.js'));let create;test.before(()=>{const b=buildPlugin({id:'pangu',packageRoot:path.resolve(__dirname,'../pangu'),entry:'v2.ts',rootDir:core});create=require(path.join(b.artifactDir,b.manifest.entry)).default;});
-async function fixture(t,opt={}){const root=await fs.mkdtemp(path.join(core,'temp/pangu-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));if(opt.legacy||opt.data){await fs.mkdir(path.join(root,'pangu'),{recursive:true});if(opt.legacy)await fs.writeFile(path.join(root,'pangu/config.json'),JSON.stringify(opt.legacy));if(opt.data)await fs.writeFile(path.join(root,'pangu/data.json'),JSON.stringify(opt.data));}const edits=[],replies=[],logs=[];const host=new PluginHost({storageRoot:root,prefixes:opt.prefixes||['.'],aliases:opt.aliases,logger:{info(){},error(event,fields){logs.push({event,fields});}},telegram:{async edit(m,text,o){if(opt.failEdit?.(m,text))throw new Error('PRIVATE');edits.push({text,o});opt.afterEdit?.();},async reply(_m,text,o){if(opt.failReply?.(text))throw new Error('PRIVATE');replies.push({text,o});},async invoke(){},async getReply(){},async withClient(){}}});await host.load(create());t.after(()=>host.shutdown(1000));const send=(text,id='chat')=>host.dispatchPrimary({id:1,chatId:id,senderId:'1',outgoing:true,text,raw:{message:text}});return{root,host,edits,replies,logs,send};}
-test('real Host preserves alias source spacing, Unicode and URLs with dynamic prefix',async t=>{const f=await fixture(t,{prefixes:['!!'],aliases:{space:'pangu'}});await f.send('!!space 中文ABC  https://例子.test/中文Path 😀测试');assert.match(f.edits.at(-1).text,/中文 ABC  https:\/\/例子.test\/中文Path 😀测试/);await f.send('!!pangu global');assert.match(f.edits.at(-1).text,/!!pangu/);});
-test('whitelist overrides blacklist, then chat overrides global, and stats update',async t=>{const f=await fixture(t,{data:{legacyImported:true,chats:{chat:false},globalMode:true,whitelist:['chat'],blacklist:['chat'],stats:{formattedMessages:0,lastFormatted:null}}});await f.host.dispatchListeners({id:2,chatId:'chat',senderId:'1',outgoing:true,text:'中文ABC',raw:{}});assert.equal(f.edits.at(-1).text,'中文 ABC');await f.send('.pangu stats');assert.match(f.edits.at(-1).text,/格式化消息: 1/);});
+"use strict";
+const test = require("node:test"),
+  assert = require("node:assert/strict"),
+  fs = require("node:fs/promises"),
+  path = require("node:path");
+const core = path.resolve(__dirname, "../../TeleBox-Core"),
+  { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs")),
+  { PluginHost } = require(path.join(core, "dist/v2/host.js"));
+let create;
+test.before(() => {
+  const b = buildPlugin({
+    id: "pangu",
+    packageRoot: path.resolve(__dirname, "../pangu"),
+    entry: "v2.ts",
+    rootDir: core,
+  });
+  create = require(path.join(b.artifactDir, b.manifest.entry)).default;
+});
+async function fixture(t, opt = {}) {
+  const root = await fs.mkdtemp(path.join(core, "temp/pangu-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  if (opt.legacy || opt.data) {
+    await fs.mkdir(path.join(root, "pangu"), { recursive: true });
+    if (opt.legacy) await fs.writeFile(path.join(root, "pangu/config.json"), JSON.stringify(opt.legacy));
+    if (opt.data) await fs.writeFile(path.join(root, "pangu/data.json"), JSON.stringify(opt.data));
+  }
+  const edits = [],
+    replies = [],
+    logs = [];
+  const host = new PluginHost({
+    storageRoot: root,
+    prefixes: opt.prefixes || ["."],
+    aliases: opt.aliases,
+    logger: {
+      info() {},
+      error(event, fields) {
+        logs.push({ event, fields });
+      },
+    },
+    telegram: {
+      async edit(m, text, o) {
+        if (opt.failEdit?.(m, text)) throw new Error("PRIVATE");
+        edits.push({ text, o });
+        opt.afterEdit?.();
+      },
+      async reply(_m, text, o) {
+        if (opt.failReply?.(text)) throw new Error("PRIVATE");
+        replies.push({ text, o });
+      },
+      async invoke() {},
+      async getReply() {},
+      async withClient() {},
+    },
+  });
+  await host.load(create());
+  t.after(() => host.shutdown(1000));
+  const send = (text, id = "chat") =>
+    host.dispatchPrimary({ id: 1, chatId: id, senderId: "1", outgoing: true, text, raw: { message: text } });
+  return { root, host, edits, replies, logs, send };
+}
+test("real Host preserves alias source spacing, Unicode and URLs with dynamic prefix", async t => {
+  const f = await fixture(t, { prefixes: ["!!"], aliases: { space: "pangu" } });
+  await f.send("!!space 中文ABC  https://例子.test/中文Path 😀测试");
+  assert.match(f.edits.at(-1).text, /中文 ABC  https:\/\/例子.test\/中文Path 😀测试/);
+  await f.send("!!pangu global");
+  assert.match(f.edits.at(-1).text, /!!pangu/);
+});
+test("whitelist overrides blacklist, then chat overrides global, and stats update", async t => {
+  const f = await fixture(t, {
+    data: {
+      legacyImported: true,
+      chats: { chat: false },
+      globalMode: true,
+      whitelist: ["chat"],
+      blacklist: ["chat"],
+      stats: { formattedMessages: 0, lastFormatted: null },
+    },
+  });
+  await f.host.dispatchListeners({ id: 2, chatId: "chat", senderId: "1", outgoing: true, text: "中文ABC", raw: {} });
+  assert.equal(f.edits.at(-1).text, "中文 ABC");
+  await f.send(".pangu stats");
+  assert.match(f.edits.at(-1).text, /格式化消息: 1/);
+});
 
-test('a non-empty whitelist gates non-members even when global mode is on',async t=>{const f=await fixture(t,{data:{legacyImported:true,chats:{other:true},globalMode:true,whitelist:['member'],blacklist:[],stats:{formattedMessages:0,lastFormatted:null}}});await f.host.dispatchListeners({id:3,chatId:'other',senderId:'1',outgoing:true,text:'中文ABC',raw:{}});assert.equal(f.edits.length,0);const state=JSON.parse(await fs.readFile(path.join(f.root,'pangu/data.json'),'utf8'));assert.equal(state.stats.formattedMessages,0);});
+test("a non-empty whitelist gates non-members even when global mode is on", async t => {
+  const f = await fixture(t, {
+    data: {
+      legacyImported: true,
+      chats: { other: true },
+      globalMode: true,
+      whitelist: ["member"],
+      blacklist: [],
+      stats: { formattedMessages: 0, lastFormatted: null },
+    },
+  });
+  await f.host.dispatchListeners({ id: 3, chatId: "other", senderId: "1", outgoing: true, text: "中文ABC", raw: {} });
+  assert.equal(f.edits.length, 0);
+  const state = JSON.parse(await fs.readFile(path.join(f.root, "pangu/data.json"), "utf8"));
+  assert.equal(state.stats.formattedMessages, 0);
+});
 
-test('listener edit failure and post-edit cancellation never increment statistics',async t=>{const failed=await fixture(t,{data:{legacyImported:true,chats:{chat:true},globalMode:false,whitelist:[],blacklist:[],stats:{formattedMessages:0,lastFormatted:null}},failEdit:()=>true});await failed.host.dispatchListeners({id:4,chatId:'chat',senderId:'1',outgoing:true,text:'中文ABC',raw:{}});assert.deepEqual(failed.logs,[{event:'pangu_listener_edit_failed',fields:undefined}]);assert.equal(JSON.parse(await fs.readFile(path.join(failed.root,'pangu/data.json'),'utf8')).stats.formattedMessages,0);
-  const controller=new AbortController();let writes=0;const state={legacyImported:true,chats:{chat:true},globalMode:false,whitelist:[],blacklist:[],stats:{formattedMessages:0,lastFormatted:null}};await create().listeners[0].handle({id:5,chatId:'chat',senderId:'1',outgoing:true,text:'中文ABC',raw:{}},{signal:controller.signal,log:{error(){}},telegram:{async edit(){controller.abort();}},storage:{json:()=>({async read(){return state;},async update(fn){writes++;return fn(state);}})}}).catch(()=>{});assert.equal(writes,0);});
-test('migration keeps every present V2 field ahead of legacy values',async t=>{const f=await fixture(t,{legacy:{chats:{old:true},globalMode:true,whitelist:['legacy'],blacklist:[],stats:{formattedMessages:8,lastFormatted:1}},data:{chats:{old:false},globalMode:false,whitelist:[],stats:{formattedMessages:0}}});const state=JSON.parse(await fs.readFile(path.join(f.root,'pangu/data.json'),'utf8'));assert.equal(state.chats.old,false);assert.equal(state.globalMode,false);assert.deepEqual(state.whitelist,[]);assert.equal(state.stats.formattedMessages,0);assert.equal(state.stats.lastFormatted,1);assert.equal(state.legacyImported,true);});
-test('large lists paginate and partial failure keeps the first page with fixed events',async t=>{let failed=false;const ids=Array.from({length:500},(_,i)=>`群-${i}-😀<&`);const f=await fixture(t,{data:{legacyImported:true,chats:{},globalMode:false,whitelist:ids,blacklist:[],stats:{}},failReply:text=>!text.includes('已发送')&&!failed++});await f.send('.pangu whitelist list');assert.ok(f.edits.at(-1).text.length<=3500);assert.match(f.replies.at(-1).text,/已发送 1\/\d+ 页/);assert.deepEqual(f.logs,[{event:'pangu_list_delivery_failed',fields:undefined}]);});
+test("listener edit failure and post-edit cancellation never increment statistics", async t => {
+  const failed = await fixture(t, {
+    data: {
+      legacyImported: true,
+      chats: { chat: true },
+      globalMode: false,
+      whitelist: [],
+      blacklist: [],
+      stats: { formattedMessages: 0, lastFormatted: null },
+    },
+    failEdit: () => true,
+  });
+  await failed.host.dispatchListeners({
+    id: 4,
+    chatId: "chat",
+    senderId: "1",
+    outgoing: true,
+    text: "中文ABC",
+    raw: {},
+  });
+  assert.deepEqual(failed.logs, [{ event: "pangu_listener_edit_failed", fields: undefined }]);
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(failed.root, "pangu/data.json"), "utf8")).stats.formattedMessages,
+    0,
+  );
+  const controller = new AbortController();
+  let writes = 0;
+  const state = {
+    legacyImported: true,
+    chats: { chat: true },
+    globalMode: false,
+    whitelist: [],
+    blacklist: [],
+    stats: { formattedMessages: 0, lastFormatted: null },
+  };
+  await create()
+    .listeners[0].handle(
+      { id: 5, chatId: "chat", senderId: "1", outgoing: true, text: "中文ABC", raw: {} },
+      {
+        signal: controller.signal,
+        log: { error() {} },
+        telegram: {
+          async edit() {
+            controller.abort();
+          },
+        },
+        storage: {
+          json: () => ({
+            async read() {
+              return state;
+            },
+            async update(fn) {
+              writes++;
+              return fn(state);
+            },
+          }),
+        },
+      },
+    )
+    .catch(() => {});
+  assert.equal(writes, 0);
+});
+test("migration keeps every present V2 field ahead of legacy values", async t => {
+  const f = await fixture(t, {
+    legacy: {
+      chats: { old: true },
+      globalMode: true,
+      whitelist: ["legacy"],
+      blacklist: [],
+      stats: { formattedMessages: 8, lastFormatted: 1 },
+    },
+    data: { chats: { old: false }, globalMode: false, whitelist: [], stats: { formattedMessages: 0 } },
+  });
+  const state = JSON.parse(await fs.readFile(path.join(f.root, "pangu/data.json"), "utf8"));
+  assert.equal(state.chats.old, false);
+  assert.equal(state.globalMode, false);
+  assert.deepEqual(state.whitelist, []);
+  assert.equal(state.stats.formattedMessages, 0);
+  assert.equal(state.stats.lastFormatted, 1);
+  assert.equal(state.legacyImported, true);
+});
+test("large lists paginate and partial failure keeps the first page with fixed events", async t => {
+  let failed = false;
+  const ids = Array.from({ length: 500 }, (_, i) => `群-${i}-😀<&`);
+  const f = await fixture(t, {
+    data: { legacyImported: true, chats: {}, globalMode: false, whitelist: ids, blacklist: [], stats: {} },
+    failReply: text => !text.includes("已发送") && !failed++,
+  });
+  await f.send(".pangu whitelist list");
+  assert.ok(f.edits.at(-1).text.length <= 3500);
+  assert.match(f.replies.at(-1).text, /已发送 1\/\d+ 页/);
+  assert.deepEqual(f.logs, [{ event: "pangu_list_delivery_failed", fields: undefined }]);
+});

@@ -1,10 +1,5 @@
 import { renderHelp as renderPluginHelp } from "./v2/help";
-import {
-  definePlugin,
-  ui,
-  type MessageEnvelope,
-  type PluginContext,
-} from "telebox/sdk";
+import { definePlugin, ui, type MessageEnvelope, type PluginContext } from "telebox/sdk";
 import { setTimeout as sleep } from "node:timers/promises";
 import { returnBigInt } from "teleproto/Helpers";
 
@@ -34,7 +29,7 @@ const title = "临时管理",
 const escape = (value: unknown) =>
   String(value ?? "").replace(
     /[&<>"']/g,
-    (c) =>
+    c =>
       ({
         "&": "&amp;",
         "<": "&lt;",
@@ -45,8 +40,7 @@ const escape = (value: unknown) =>
   );
 const key = (chatId: string, userId: string) => `${chatId}:${userId}`;
 class UserError extends Error {}
-const error = (value: unknown) =>
-  value instanceof UserError ? value.message : "操作未完成，请稍后重试";
+const error = (value: unknown) => (value instanceof UserError ? value.message : "操作未完成，请稍后重试");
 const temporary = (participant: any) =>
   participant?.className === "ChannelParticipantAdmin" &&
   participant.rank === title &&
@@ -68,7 +62,7 @@ const temporary = (participant: any) =>
     "deleteStories",
     "manageDirectMessages",
     "manageRanks",
-  ].some((name) => participant.adminRights?.[name]);
+  ].some(name => participant.adminRights?.[name]);
 
 function database(ctx: PluginContext) {
   return ctx.storage.json<Data>("jobs.json", defaults);
@@ -76,20 +70,11 @@ function database(ctx: PluginContext) {
 function duration(raw?: string) {
   if (!raw) return 30;
   const value = Number(raw);
-  if (
-    !Number.isFinite(value) ||
-    value <= 0 ||
-    !Number.isSafeInteger(Date.now() + value * 60_000)
-  )
+  if (!Number.isFinite(value) || value <= 0 || !Number.isSafeInteger(Date.now() + value * 60_000))
     throw new UserError("时长必须是大于 0 且截止时间可安全保存的分钟数");
   return value;
 }
-async function entity(
-  ctx: PluginContext,
-  message: MessageEnvelope,
-  inputChannel: any,
-  arg?: string,
-) {
+async function entity(ctx: PluginContext, message: MessageEnvelope, inputChannel: any, arg?: string) {
   return ctx.telegram.withClient(async (client: any, signal) => {
     const { Api } = await import("teleproto");
     signal.throwIfAborted();
@@ -97,10 +82,7 @@ async function entity(
       full,
       input,
       id,
-      display:
-        [full?.firstName, full?.lastName].filter(Boolean).join(" ") ||
-        full?.username ||
-        id,
+      display: [full?.firstName, full?.lastName].filter(Boolean).join(" ") || full?.username || id,
     });
     if (message.replyToId) {
       const reply = await ctx.telegram.getReply(message);
@@ -124,8 +106,7 @@ async function entity(
         signal.throwIfAborted();
         const full = await client.getEntity(input);
         signal.throwIfAborted();
-        if (full instanceof Api.User)
-          return result(full, input, String(full.id));
+        if (full instanceof Api.User) return result(full, input, String(full.id));
       }
       throw new UserError("请回复一条消息或提供 用户ID/用户名");
     }
@@ -156,8 +137,8 @@ async function entity(
         signal.throwIfAborted();
         const participants: any[] = found.participants ?? [],
           users: any[] = found.users ?? [];
-        if (participants.some((p) => String(p.userId) === numeric)) {
-          const user = users.find((u) => String(u.id) === numeric);
+        if (participants.some(p => String(p.userId) === numeric)) {
+          const user = users.find(u => String(u.id) === numeric);
           if (user) {
             const input = await client.getInputEntity(user);
             signal.throwIfAborted();
@@ -173,12 +154,9 @@ async function entity(
 }
 async function channel(ctx: PluginContext, message: MessageEnvelope) {
   return ctx.telegram.withClient(async (client: any, signal) => {
-    const full = await client.getEntity(
-      (message.raw as any)?.peerId ?? message.chatId,
-    );
+    const full = await client.getEntity((message.raw as any)?.peerId ?? message.chatId);
     signal.throwIfAborted();
-    if (full?.className !== "Channel")
-      throw new UserError("请在超级群/频道中使用该命令");
+    if (full?.className !== "Channel") throw new UserError("请在超级群/频道中使用该命令");
     const input = await client.getInputEntity(full);
     signal.throwIfAborted();
     return { full, input };
@@ -188,20 +166,12 @@ async function participant(ctx: PluginContext, input: any, user: any) {
   return ctx.telegram.withClient(async (client: any, signal) => {
     const { Api } = await import("teleproto");
     signal.throwIfAborted();
-    const result: any = await client.invoke(
-      new Api.channels.GetParticipant({ channel: input, participant: user }),
-    );
+    const result: any = await client.invoke(new Api.channels.GetParticipant({ channel: input, participant: user }));
     signal.throwIfAborted();
     return result?.participant;
   });
 }
-async function setAdmin(
-  ctx: PluginContext,
-  input: any,
-  user: any,
-  rank: string,
-  grant: boolean,
-) {
+async function setAdmin(ctx: PluginContext, input: any, user: any, rank: string, grant: boolean) {
   await ctx.telegram.withClient(async (client: any, signal) => {
     const { Api } = await import("teleproto");
     signal.throwIfAborted();
@@ -238,11 +208,7 @@ async function storedPeers(ctx: PluginContext, job: StoredJob) {
     return { channel, user };
   });
 }
-async function deliver(
-  ctx: PluginContext,
-  message: MessageEnvelope,
-  text: string,
-) {
+async function deliver(ctx: PluginContext, message: MessageEnvelope, text: string) {
   const pages = await ui.renderRichText(text);
   const result = await ui.deliverPages(pages, ctx.signal, (page, index) =>
     index
@@ -255,12 +221,7 @@ function normalizeJob(value: any): StoredJob | undefined {
   const chatId = value?.chatId ?? value?.chatKey ?? value?.channel?.channelId,
     userId = value?.userId ?? value?.user?.userId,
     expiresAt = Number(value?.expiresAt);
-  if (
-    chatId === undefined ||
-    userId === undefined ||
-    !Number.isFinite(expiresAt)
-  )
-    return;
+  if (chatId === undefined || userId === undefined || !Number.isFinite(expiresAt)) return;
   return {
     chatId: String(chatId),
     userId: String(userId),
@@ -273,9 +234,7 @@ function normalizeJob(value: any): StoredJob | undefined {
     retryCount: Number.isSafeInteger(value.retryCount) ? value.retryCount : 0,
     ...((value.channelAccessHash ?? value.channel?.accessHash)
       ? {
-          channelAccessHash: String(
-            value.channelAccessHash ?? value.channel.accessHash,
-          ),
+          channelAccessHash: String(value.channelAccessHash ?? value.channel.accessHash),
         }
       : {}),
     ...((value.userAccessHash ?? value.user?.accessHash)
@@ -289,13 +248,10 @@ function normalizeJob(value: any): StoredJob | undefined {
 export default function createTmpAdmin() {
   const live = new Map<string, LiveJob>();
   const locks = new Map<string, Promise<void>>();
-  const exclusive = async <T>(
-    id: string,
-    operation: () => Promise<T>,
-  ): Promise<T> => {
+  const exclusive = async <T>(id: string, operation: () => Promise<T>): Promise<T> => {
     const previous = locks.get(id) ?? Promise.resolve();
     let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
+    const gate = new Promise<void>(resolve => {
       release = resolve;
     });
     const tail = previous.then(() => gate);
@@ -313,7 +269,7 @@ export default function createTmpAdmin() {
     const current = live.get(id);
     live.delete(id);
     await current?.dispose();
-    await database(context!).update((data) => {
+    await database(context!).update(data => {
       const jobs = { ...data.jobs };
       delete jobs[id];
       return { ...data, schemaVersion: 1, jobs };
@@ -354,7 +310,7 @@ export default function createTmpAdmin() {
       timer = setTimeout(
         () => {
           void ctx.tasks
-            .run(`tmp_admin:expire:${id}`, async (signal) => {
+            .run(`tmp_admin:expire:${id}`, async signal => {
               await exclusive(id, async () => {
                 try {
                   await active.grant;
@@ -371,11 +327,7 @@ export default function createTmpAdmin() {
                   const peers = await storedPeers(ctx, job);
                   signal.throwIfAborted();
                   if (!current()) return;
-                  const participantValue = await participant(
-                    ctx,
-                    peers.channel,
-                    peers.user,
-                  );
+                  const participantValue = await participant(ctx, peers.channel, peers.user);
                   signal.throwIfAborted();
                   if (!current()) return;
                   if (!temporary(participantValue)) {
@@ -386,13 +338,7 @@ export default function createTmpAdmin() {
                     );
                     return;
                   }
-                  await setAdmin(
-                    ctx,
-                    peers.channel,
-                    peers.user,
-                    job.originalRank,
-                    false,
-                  );
+                  await setAdmin(ctx, peers.channel, peers.user, job.originalRank, false);
                   signal.throwIfAborted();
                   if (!current()) return;
                 } catch (e) {
@@ -400,25 +346,19 @@ export default function createTmpAdmin() {
                   if (!current()) return;
                   if (job.retryCount < 1) {
                     job.retryCount++;
-                    await database(ctx).update((data) => ({
+                    await database(ctx).update(data => ({
                       ...data,
                       jobs: { ...data.jobs, [id]: job },
                     }));
                     scheduleWithDelay(retryDelay);
                   } else {
                     await forget(id);
-                    await notify(
-                      job,
-                      `临时管理员到期自动解除失败, 已重试 1 次: <code>${escape(error(e))}</code>`,
-                    );
+                    await notify(job, `临时管理员到期自动解除失败, 已重试 1 次: <code>${escape(error(e))}</code>`);
                   }
                   return;
                 }
                 await forget(id);
-                await notify(
-                  job,
-                  `临时管理员已到期并自动解除: ${escape(job.display)}`,
-                );
+                await notify(job, `临时管理员已到期并自动解除: ${escape(job.display)}`);
               });
             })
             .catch(() => {
@@ -445,7 +385,7 @@ export default function createTmpAdmin() {
     apiVersion: 1,
     id: "tmp_admin",
     description: "设置会自动到期的无权限临时管理员",
-    settings: (ctx) => ({
+    settings: ctx => ({
       id: "tmp_admin",
       title: "临时管理",
       description: "临时管理员配置",
@@ -456,12 +396,11 @@ export default function createTmpAdmin() {
         const data = await database(ctx).read();
         return { enabled: data.enabled !== false };
       },
-      setValues: async (patch) => {
-        await database(ctx).update((data) => ({
+      setValues: async patch => {
+        await database(ctx).update(data => ({
           ...data,
           schemaVersion: 1,
-          enabled:
-            typeof patch.enabled === "boolean" ? patch.enabled : data.enabled,
+          enabled: typeof patch.enabled === "boolean" ? patch.enabled : data.enabled,
         }));
       },
     }),
@@ -474,11 +413,8 @@ export default function createTmpAdmin() {
         const job = normalizeJob(value);
         if (job) migrated[key(job.chatId, job.userId)] = job;
       }
-      if (
-        data.schemaVersion !== 1 ||
-        Object.keys(migrated).some((id) => !(id in (data.jobs || {})))
-      ) {
-        await database(ctx).update((value) => ({
+      if (data.schemaVersion !== 1 || Object.keys(migrated).some(id => !(id in (data.jobs || {})))) {
+        await database(ctx).update(value => ({
           ...value,
           schemaVersion: 1,
           enabled: value.enabled !== false,
@@ -518,14 +454,14 @@ export default function createTmpAdmin() {
             }
             const chat = await channel(ctx, message);
             if (["ls", "list"].includes(action)) {
-              const jobs = Object.values(
-                (await database(ctx).read()).jobs,
-              ).filter((job) => job.chatId === String(chat.full.id));
+              const jobs = Object.values((await database(ctx).read()).jobs).filter(
+                job => job.chatId === String(chat.full.id),
+              );
               await deliver(
                 ctx,
                 message,
                 jobs.length
-                  ? `当前临时管理员：\n${jobs.map((job) => `- ${escape(job.display)} | 剩余 <code>${Math.max(0, Math.ceil((job.expiresAt - Date.now()) / 60_000))} 分钟</code>`).join("\n")}`
+                  ? `当前临时管理员：\n${jobs.map(job => `- ${escape(job.display)} | 剩余 <code>${Math.max(0, Math.ceil((job.expiresAt - Date.now()) / 60_000))} 分钟</code>`).join("\n")}`
                   : "当前没有等待自动解除的临时管理员",
               );
               return;
@@ -537,12 +473,7 @@ export default function createTmpAdmin() {
               return;
             }
             const adding = action === "add" || action === "set";
-            const target = await entity(
-              ctx,
-              message,
-              chat.input,
-              message.replyToId ? undefined : args[1],
-            );
+            const target = await entity(ctx, message, chat.input, message.replyToId ? undefined : args[1]);
             const id = key(String(chat.full.id), target.id);
             await exclusive(id, async () => {
               const data = await database(ctx).read();
@@ -550,14 +481,9 @@ export default function createTmpAdmin() {
               if (adding) {
                 if (current?.className === "ChannelParticipantCreator")
                   throw new UserError("不能把群主设置为临时管理员");
-                if (
-                  current?.className === "ChannelParticipantAdmin" &&
-                  !temporary(current)
-                ) {
+                if (current?.className === "ChannelParticipantAdmin" && !temporary(current)) {
                   if (data.jobs[id]) await forget(id);
-                  throw new UserError(
-                    "目标已经是管理员。为避免覆盖现有权限和头衔, 不会将其改为临时管理员。",
-                  );
+                  throw new UserError("目标已经是管理员。为避免覆盖现有权限和头衔, 不会将其改为临时管理员。");
                 }
                 const minutes = duration(message.replyToId ? args[1] : args[2]);
                 const job: StoredJob = {
@@ -565,16 +491,14 @@ export default function createTmpAdmin() {
                   userId: target.id,
                   display: target.display,
                   expiresAt: Date.now() + minutes * 60_000,
-                  originalRank:
-                    data.jobs[id]?.originalRank ??
-                    (temporary(current) ? "" : String(current?.rank || "")),
+                  originalRank: data.jobs[id]?.originalRank ?? (temporary(current) ? "" : String(current?.rank || "")),
                   replyToId: message.id,
                   retryCount: 0,
                   channelAccessHash: String(chat.input.accessHash),
                   userAccessHash: String(target.input.accessHash),
                 };
                 let warning = "";
-                await database(ctx).update((value) => ({
+                await database(ctx).update(value => ({
                   ...value,
                   schemaVersion: 1,
                   jobs: { ...value.jobs, [id]: job },
@@ -582,17 +506,12 @@ export default function createTmpAdmin() {
                 ctx.signal.throwIfAborted();
                 await schedule(id, job);
                 ctx.signal.throwIfAborted();
-                await grant(id, () =>
-                  setAdmin(ctx, chat.input, target.input, title, true),
-                );
+                await grant(id, () => setAdmin(ctx, chat.input, target.input, title, true));
                 ctx.signal.throwIfAborted();
                 await sleep(1200, undefined, { signal: ctx.signal });
                 try {
-                  if (
-                    !temporary(await participant(ctx, chat.input, target.input))
-                  )
-                    warning +=
-                      "\n状态校验未确认, 已保留到期解除任务。若服务端稍后同步, 到期仍会尝试解除。";
+                  if (!temporary(await participant(ctx, chat.input, target.input)))
+                    warning += "\n状态校验未确认, 已保留到期解除任务。若服务端稍后同步, 到期仍会尝试解除。";
                 } catch (e) {
                   ctx.signal.throwIfAborted();
                   warning += `\n状态校验失败, 已保留到期解除任务: <code>${escape(error(e))}</code>`;
@@ -619,21 +538,13 @@ export default function createTmpAdmin() {
                   );
                   return;
                 }
-                await setAdmin(
-                  ctx,
-                  chat.input,
-                  target.input,
-                  stored?.originalRank || "",
-                  false,
-                );
+                await setAdmin(ctx, chat.input, target.input, stored?.originalRank || "", false);
                 await forget(id);
                 ctx.signal.throwIfAborted();
                 try {
-                  await ctx.telegram.edit(
-                    message,
-                    `已提前解除临时管理员: ${escape(target.display)}`,
-                    { parseMode: "html" },
-                  );
+                  await ctx.telegram.edit(message, `已提前解除临时管理员: ${escape(target.display)}`, {
+                    parseMode: "html",
+                  });
                 } catch (e) {
                   ctx.signal.throwIfAborted();
                   ctx.log.error("tmp_admin_receipt_failed");
@@ -642,11 +553,7 @@ export default function createTmpAdmin() {
             });
           } catch (e) {
             ctx.signal.throwIfAborted();
-            await ctx.telegram.edit(
-              message,
-              `操作失败：<code>${escape(error(e))}</code>`,
-              { parseMode: "html" },
-            );
+            await ctx.telegram.edit(message, `操作失败：<code>${escape(error(e))}</code>`, { parseMode: "html" });
           }
         },
       },
