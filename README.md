@@ -1,7 +1,7 @@
 # Mi Box Plugins
 
 ## 简介
-本仓库为 [MiCat-S/Mi-Box](https://github.com/MiCat-S/Mi-Box) 提供 V2 插件及迁移参考源码。
+本仓库为 [MiCat-S/Mi-Box](https://github.com/MiCat-S/Mi-Box) 提供 V2 插件。
 
 ## 安装方式
 
@@ -26,7 +26,9 @@
 | 卸载插件并保留配置 | `.tpm remove dig` |
 | 查看插件帮助 | `.help 插件名` |
 
-V2 入口为各插件的 `v2.ts`；其余源码仍待迁移，不代表可以直接安装到 V2。
+V2 入口为各插件的 `v2.ts`。部分目录还留有旧版源码（`<id>/<id>.ts`），它们是兼容性测试的参照：
+测试按原文截取旧版逻辑来比对 V2 的行为，因此不要删改。`sanitizeFileName`、`ssh`、`sub`、`warp`
+与 `outdated/` 尚未迁移，不能安装到 V2。
 
 ## 插件源码目录
 - `aban` - 高级封禁管理  

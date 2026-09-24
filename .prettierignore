@@ -1,9 +1,10 @@
 # Only V2 sources and their tests are formatted.
 #
-# Pre-V2 sources (<id>/<id>.ts) are migration references, and several
-# compatibility tests rebuild the original behaviour by slicing their text at
-# comment markers (see scripts/aban-v2.test.js). Reformatting them would break
-# those tests, so they must keep their original bytes.
+# The remaining pre-V2 sources (<id>/<id>.ts) are either not migrated yet
+# (sanitizeFileName, ssh, sub, warp) or references that compatibility tests
+# rebuild the original behaviour from, often by slicing their text at comment
+# markers (see scripts/aban-v2.test.js). Reformatting them would break those
+# tests, so they keep their original bytes.
 */*.ts
 !*/v2.ts
 outdated/
