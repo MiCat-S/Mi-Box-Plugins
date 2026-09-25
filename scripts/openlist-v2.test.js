@@ -11,7 +11,8 @@ const packageRoot = process.env.OPENLIST_TEST_PACKAGE || path.resolve(__dirname,
 const { artifactDir, manifest } = buildPlugin({ id: "openlist", packageRoot, entry: "v2.ts" });
 const create = require(path.join(artifactDir, "index.cjs")).default;
 // root bypasses file permissions, so failures injected with chmod never happen under it.
-const skipWhenRoot = process.getuid?.() === 0 && "root ignores file permissions";
+const runningAsRoot = process.getuid?.() === 0;
+const skipWhenRoot = runningAsRoot ? "root ignores file permissions" : false;
 
 function stateStore(initial = {}) {
   let value = {

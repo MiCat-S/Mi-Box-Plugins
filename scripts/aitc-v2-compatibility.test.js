@@ -11,7 +11,8 @@ const { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs"));
 const { PluginHost } = require(path.join(core, "dist/v2/host.js"));
 const Database = require(path.join(core, "node_modules/better-sqlite3"));
 // root bypasses file permissions, so failures injected with chmod never happen under it.
-const skipWhenRoot = process.getuid?.() === 0 && "root ignores file permissions";
+const runningAsRoot = process.getuid?.() === 0;
+const skipWhenRoot = runningAsRoot ? "root ignores file permissions" : false;
 
 function create(id) {
   const { artifactDir } = buildPlugin({ id, packageRoot: path.resolve(__dirname, `../${id}`), entry: "v2.ts" });

@@ -13,7 +13,8 @@ const { PluginHost } = require(path.join(core, "dist/v2/host.js"));
 const { Api } = require(path.join(core, "node_modules/teleproto"));
 const sharp = require(path.join(core, "node_modules/sharp"));
 // root bypasses file permissions, so failures injected with chmod never happen under it.
-const skipWhenRoot = process.getuid?.() === 0 && "root ignores file permissions";
+const runningAsRoot = process.getuid?.() === 0;
+const skipWhenRoot = runningAsRoot ? "root ignores file permissions" : false;
 
 const runtimeProcesses = { concurrency: 2, queueCapacity: 16, timeoutMs: 180000, maxOutputBytes: 2 * 1024 * 1024 };
 
