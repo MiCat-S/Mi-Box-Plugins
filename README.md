@@ -191,6 +191,15 @@ V2 入口为各插件的 `v2.ts`。部分目录还留有旧版源码（`<id>/<id
 
    旧版源码（`<id>/<id>.ts`）是迁移参照，部分兼容性测试按原文截取，不要格式化；
    排除清单见 `.prettierignore`。
+6. 提交前本地完整跑一遍 CI：
+
+   ```sh
+   bash scripts/v2-validation.sh
+   ```
+
+   它按 `.github/workflows/v2-validation.yml` 的顺序逐步执行，外加 README 列表检查。前提：Core 检出在旁边的
+   `../TeleBox-Core`（真实目录，不能是符号链接）并使用 Node.js 24。三个用文件权限制造失败的用例在 root 下会
+   自动跳过并说明原因，请用普通用户运行以覆盖它们。
 
 ## 声明
 
