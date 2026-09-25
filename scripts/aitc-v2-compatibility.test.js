@@ -10,6 +10,8 @@ const core = path.resolve(__dirname, "../../TeleBox-Core");
 const { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs"));
 const { PluginHost } = require(path.join(core, "dist/v2/host.js"));
 const Database = require(path.join(core, "node_modules/better-sqlite3"));
+// root bypasses file permissions, so failures injected with chmod never happen under it.
+const skipWhenRoot = process.getuid?.() === 0 && "root ignores file permissions";
 
 function create(id) {
   const { artifactDir } = buildPlugin({ id, packageRoot: path.resolve(__dirname, `../${id}`), entry: "v2.ts" });
@@ -197,35 +199,43 @@ test("AITC01 an existing V2 aiMigrated flag never skips an unprocessed SQLite ke
   inspect.close();
 });
 
-test("AITC01 a failed SQLite erase keeps the secret and retries without duplicating the provider", async t => {
-  const f = await fixture(t, {
-    sqlite: { aitc_api_key: "legacy-secret", aitc_api_url: "https://legacy.example.test", aitc_model: "legacy-model" },
-    beforeAitc: async root => {
-      await fs.chmod(path.join(root, "aitc/aitc_config.db"), 0o444);
-    },
-  });
-  const failed = await f.read("aitc/config.json");
-  assert.equal(failed.providerMigrated, false, "an erase failure must not mark completion");
-  assert.equal(failed.apiKey, "");
-  const before = new Database(path.join(f.root, "aitc/aitc_config.db"), { readonly: true });
-  assert.equal(
-    before.prepare("SELECT value FROM config WHERE key = 'aitc_api_key'").get().value,
-    "legacy-secret",
-    "key retained for retry",
-  );
-  before.close();
-  await fs.chmod(path.join(f.root, "aitc/aitc_config.db"), 0o644);
-  assert.equal((await f.host.unload("aitc", 1000)).completed, true);
-  await f.host.load(create("aitc"));
-  const after = await f.read("aitc/config.json");
-  assert.equal(after.providerMigrated, true);
-  const central = await f.read("ai/config.json");
-  assert.deepEqual(
-    Object.keys(central.configs).sort(),
-    ["aitc", "main"],
-    "the retry imports the provider without duplication",
-  );
-});
+test(
+  "AITC01 a failed SQLite erase keeps the secret and retries without duplicating the provider",
+  { skip: skipWhenRoot },
+  async t => {
+    const f = await fixture(t, {
+      sqlite: {
+        aitc_api_key: "legacy-secret",
+        aitc_api_url: "https://legacy.example.test",
+        aitc_model: "legacy-model",
+      },
+      beforeAitc: async root => {
+        await fs.chmod(path.join(root, "aitc/aitc_config.db"), 0o444);
+      },
+    });
+    const failed = await f.read("aitc/config.json");
+    assert.equal(failed.providerMigrated, false, "an erase failure must not mark completion");
+    assert.equal(failed.apiKey, "");
+    const before = new Database(path.join(f.root, "aitc/aitc_config.db"), { readonly: true });
+    assert.equal(
+      before.prepare("SELECT value FROM config WHERE key = 'aitc_api_key'").get().value,
+      "legacy-secret",
+      "key retained for retry",
+    );
+    before.close();
+    await fs.chmod(path.join(f.root, "aitc/aitc_config.db"), 0o644);
+    assert.equal((await f.host.unload("aitc", 1000)).completed, true);
+    await f.host.load(create("aitc"));
+    const after = await f.read("aitc/config.json");
+    assert.equal(after.providerMigrated, true);
+    const central = await f.read("ai/config.json");
+    assert.deepEqual(
+      Object.keys(central.configs).sort(),
+      ["aitc", "main"],
+      "the retry imports the provider without duplication",
+    );
+  },
+);
 
 test("AITC01 a key-only legacy DB migrates with the original default model and API root", async t => {
   const f = await fixture(t, { ai: false, sqlite: { aitc_api_key: "only-key" } });

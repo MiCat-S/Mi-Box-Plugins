@@ -11,7 +11,7 @@ const { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs"));
 const { buildSync } = require(path.join(core, "node_modules/esbuild"));
 const { PluginHost } = require(path.join(core, "dist/v2/host.js"));
 
-let create, deliverAnswer;
+let create, deliverAnswer, answerBuildDir;
 test.before(async () => {
   create = require(
     path.join(
@@ -20,16 +20,19 @@ test.before(async () => {
       "index.cjs",
     ),
   ).default;
-  const root = await fs.realpath(await fs.mkdtemp(path.join(core, "temp/ai-answer-build-")));
+  answerBuildDir = await fs.realpath(await fs.mkdtemp(path.join(core, "temp/ai-answer-build-")));
   buildSync({
     entryPoints: [path.resolve(__dirname, "../ai/v2/answer.ts")],
-    outfile: path.join(root, "answer.cjs"),
+    outfile: path.join(answerBuildDir, "answer.cjs"),
     bundle: true,
     platform: "node",
     packages: "external",
   });
-  deliverAnswer = require(path.join(root, "answer.cjs")).deliverAnswer;
+  deliverAnswer = require(path.join(answerBuildDir, "answer.cjs")).deliverAnswer;
 });
+// The bundle lives under the core checkout so its external requires resolve;
+// remove it afterwards instead of leaving it behind in temp/.
+test.after(() => fs.rm(answerBuildDir, { recursive: true, force: true }));
 
 const CONFIG = {
   configs: {

@@ -10,6 +10,8 @@ const { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs"));
 const packageRoot = process.env.OPENLIST_TEST_PACKAGE || path.resolve(__dirname, "../openlist");
 const { artifactDir, manifest } = buildPlugin({ id: "openlist", packageRoot, entry: "v2.ts" });
 const create = require(path.join(artifactDir, "index.cjs")).default;
+// root bypasses file permissions, so failures injected with chmod never happen under it.
+const skipWhenRoot = process.getuid?.() === 0 && "root ignores file permissions";
 
 function stateStore(initial = {}) {
   let value = {
@@ -287,7 +289,7 @@ test("unreadable legacy credential path is not treated as a fresh install", asyn
   assert.equal(f.store.value().legacyImported, false);
 });
 
-test("legacy credential permission failure does not mark migration complete", async t => {
+test("legacy credential permission failure does not mark migration complete", { skip: skipWhenRoot }, async t => {
   const f = await fixture(t, { initial: { legacyImported: false, port: undefined } });
   const file = path.join(f.root, "credentials.json");
   await fs.writeFile(file, JSON.stringify({ username: "hidden" }), { mode: 0o000 });

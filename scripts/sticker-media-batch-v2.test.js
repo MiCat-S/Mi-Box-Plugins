@@ -12,6 +12,8 @@ const { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs"));
 const { PluginHost } = require(path.join(core, "dist/v2/host.js"));
 const { Api } = require(path.join(core, "node_modules/teleproto"));
 const sharp = require(path.join(core, "node_modules/sharp"));
+// root bypasses file permissions, so failures injected with chmod never happen under it.
+const skipWhenRoot = process.getuid?.() === 0 && "root ignores file permissions";
 
 const runtimeProcesses = { concurrency: 2, queueCapacity: 16, timeoutMs: 180000, maxOutputBytes: 2 * 1024 * 1024 };
 
@@ -420,7 +422,7 @@ test("getstickers archive output errors settle promptly", async t => {
   );
 });
 
-test("getstickers archive read errors settle promptly", async t => {
+test("getstickers archive read errors settle promptly", { skip: skipWhenRoot }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "getstickers-read-error-v2-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const source = path.join(root, "pack"),
