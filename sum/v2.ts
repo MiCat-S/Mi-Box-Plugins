@@ -16,12 +16,14 @@ import {
   formatDate,
   formatMessagesForAI,
   htmlEscape,
+  LEGACY_PROMPT,
   type CustomProvider,
   type MessageData,
   type SummaryDB,
   type SummaryTask,
 } from "./v2/model";
 import { htmlPages } from "./v2/output";
+import { richFits, richMessageText, richRejected, summaryBlocks, summaryHtml } from "./v2/rich";
 
 const defaults: SummaryDB = {
   seq: "0",
@@ -232,7 +234,8 @@ async function readMessages(
       active.throwIfAborted();
       if (beforeId && item.id >= beforeId) continue;
       if (cutoff !== undefined && Number(item.date ?? 0) < cutoff) break;
-      const content = typeof item.message === "string" ? item.message.trim() : "";
+      // 别人发的 Rich Message 正文是空的，文字在块里。
+      const content = (typeof item.message === "string" ? item.message.trim() : "") || richMessageText(item);
       if (!content) continue;
       const senderEntity: any = item.sender;
       const sender =
@@ -253,12 +256,15 @@ async function readMessages(
   });
 }
 
+/** 一次摘要：「群名 · 时间」这一行和模型写的正文（Markdown，旧提示词写的 Telegram HTML 也认）。 */
+type Summary = { heading: string; output: string; spoiler: boolean };
+
 async function summarize(
   ctx: PluginContext,
   task: Pick<SummaryTask, "chatId" | "messageCount" | "timeRange" | "aiProvider" | "aiPrompt" | "useSpoiler">,
   beforeId?: number,
   signal: AbortSignal = ctx.signal,
-): Promise<{ html: string; title: string }> {
+): Promise<Summary> {
   await migrateAi(ctx);
   const db = await store(ctx).read(signal);
   requireValue(ctx.services.available("ai", "chat"), "请先安装 ai 插件并配置聊天模型");
@@ -283,12 +289,56 @@ async function summarize(
   output = output.replace(/<thinking>[\s\S]*?<\/thinking>|<think>[\s\S]*?<\/think>/gi, "").trim();
   const limit = db.aiConfig.max_output_length ?? 0;
   if (limit > 0 && output.length > limit) output = `${output.slice(0, limit)}\n\n内容已按配置长度截断。`;
-  if (task.useSpoiler === true && !output.includes("<blockquote expandable>"))
-    output = `<blockquote expandable>${output}</blockquote>`;
-  return {
-    html: `📊 <b>群组总结</b>\n${htmlEscape(messages.title)} · ${formatDate(new Date())}\n\n${output}`,
-    title: messages.title,
-  };
+  return { heading: `${messages.title} · ${formatDate(new Date())}`, output, spoiler: task.useSpoiler === true };
+}
+
+const summaryText = (summary: Summary) => summaryHtml(summary.heading, summary.output, summary.spoiler);
+
+/**
+ * 账号有 Telegram Premium 时把摘要发成一条 Rich Message：target 是命令消息时改写它，是推送目标时发一条新的。
+ * 返回 false 表示没发（没有 Premium、超出上限或被 Telegram 拒收），由调用方照旧发 HTML。
+ */
+async function deliverRich(
+  ctx: PluginContext,
+  summary: Summary,
+  target: { edit: MessageEnvelope } | { peer: string },
+  caller: AbortSignal,
+): Promise<boolean> {
+  return ctx.telegram.withClient(async (client, signal) => {
+    const active = AbortSignal.any([signal, caller]);
+    let premium = false;
+    try {
+      premium = (await client.getMe())?.premium === true;
+    } catch {
+      return false;
+    }
+    active.throwIfAborted();
+    if (!premium) return false;
+    const { Api } = await import("teleproto");
+    const { returnBigInt } = await import("teleproto/Helpers.js");
+    const blocks = summaryBlocks({ Api, zero: returnBigInt(0) }, summary.heading, summary.output, summary.spoiler);
+    if (!richFits(blocks)) return false;
+    const richMessage = new Api.InputRichMessage({ blocks });
+    try {
+      if ("edit" in target) {
+        const raw = target.edit.raw as { peerId?: unknown } | undefined;
+        const peer = await client.getInputEntity(
+          (raw?.peerId ?? (await numericPeer(target.edit.chatId, active))) as never,
+        );
+        active.throwIfAborted();
+        await client.invoke(new Api.messages.EditMessage({ peer, id: target.edit.id, noWebpage: true, richMessage }));
+      } else {
+        const peer = await client.getInputEntity((await numericPeer(target.peer, active)) as never);
+        active.throwIfAborted();
+        await client.invoke(new Api.messages.SendMessage({ peer, message: "", noWebpage: true, richMessage }));
+      }
+      return true;
+    } catch (error) {
+      if (!richRejected(error)) throw error;
+      ctx.log.error("sum:rich-rejected", { code: (error as { code: number }).code });
+      return false;
+    }
+  });
 }
 
 async function sendPages(ctx: PluginContext, message: MessageEnvelope, html: string): Promise<void> {
@@ -313,10 +363,11 @@ async function pushSummary(ctx: PluginContext, task: SummaryTask, signal: AbortS
   signal.throwIfAborted();
   const db = await store(ctx).read(signal);
   const target = task.pushTarget || db.defaultPushTarget || "me";
+  if (await deliverRich(ctx, result, { peer: target }, signal)) return;
   await ctx.telegram.withClient(async (client, active) => {
     const peer = await numericPeer(target, active);
     active.throwIfAborted();
-    for (const page of htmlPages(result.html)) {
+    for (const page of htmlPages(summaryText(result))) {
       active.throwIfAborted();
       await client.sendMessage(peer as never, {
         message: page,
@@ -700,6 +751,10 @@ export default function createSum() {
         body: "即时总结默认取当前群命令之前的最近 100 条文字消息，范围 10–500；带媒体的文字说明会作为文字处理。可用 --provider 临时指定 ai 插件中的标签。定时任务默认发往收藏夹。长结果自动分段；即时结果关闭链接预览，定时结果按 preview 配置。",
       },
       {
+        heading: "Rich Message：",
+        body: "账号有 Telegram Premium 时，摘要发成一条 Rich Message：栏目是真正的标题、要点是真正的列表，spoiler 开启时每个栏目折成一个区块。没有 Premium 或被 Telegram 拒收时照旧发 HTML。",
+      },
+      {
         heading: "AI 配置：",
         body: "供应商、密钥、聊天模型、思考强度、服务等级和超时由 ai 插件统一管理；sum 仅保留摘要提示词与显示设置。",
       },
@@ -726,7 +781,8 @@ export default function createSum() {
         },
         invocation.message.id,
       );
-      await sendPages(ctx, invocation.message, result.html);
+      if (await deliverRich(ctx, result, { edit: invocation.message }, ctx.signal)) return;
+      await sendPages(ctx, invocation.message, summaryText(result));
     }),
   };
   const help = (prefix: string) => renderCommandHelp("sum", command, { prefix, title: "📊 群消息总结" });
@@ -753,6 +809,9 @@ export default function createSum() {
         if (value.aiConfig.aiMigrated !== true && Object.keys(value.aiConfig.providers).length === 0)
           value.aiConfig.aiMigrated = true;
         if (value.aiConfig.aiMigrated === true) scrubLegacyAiSettings(value.aiConfig);
+        // 内置提示词改成了 Markdown 版，存着旧的内置提示词就换成新的，自定义的不动。
+        if (value.aiConfig.default_prompt === LEGACY_PROMPT) value.aiConfig.default_prompt = DEFAULT_PROMPT;
+        for (const task of value.tasks) if (task?.aiPrompt === LEGACY_PROMPT) delete task.aiPrompt;
         return data;
       }, ctx.signal);
       await migrateAi(ctx);

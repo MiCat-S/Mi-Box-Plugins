@@ -7,7 +7,8 @@ const test = require("node:test"),
 const core = path.resolve(__dirname, "../../TeleBox-Core"),
   { buildPlugin } = require(path.join(core, "scripts/build-v2-plugin.cjs")),
   { PluginHost } = require(path.join(core, "dist/v2/host.js")),
-  { definePlugin } = require(path.join(core, "dist/v2/sdk.js"));
+  { definePlugin } = require(path.join(core, "dist/v2/sdk.js")),
+  { Api } = require(path.join(core, "node_modules/teleproto"));
 const create = require(
   path.join(
     buildPlugin({ id: "sum", packageRoot: path.resolve(__dirname, "../sum"), entry: "v2.ts" }).artifactDir,
@@ -20,6 +21,7 @@ async function fixture(t, options = {}) {
     replies = [],
     sent = [],
     calls = [],
+    invoked = [],
     logs = [];
   let replyAttempt = 0;
   const messages = options.messages ?? [
@@ -36,6 +38,21 @@ async function fixture(t, options = {}) {
     async sendMessage(peer, value) {
       sent.push({ peer, value });
     },
+    // 有 Premium 的账号：getMe 带 premium，Rich Message 走原始的 invoke。
+    ...(options.premium
+      ? {
+          async getMe() {
+            return { premium: true };
+          },
+          async getInputEntity() {
+            return new Api.InputPeerSelf();
+          },
+          async invoke(request) {
+            invoked.push(request);
+            if (options.richError) throw options.richError;
+          },
+        }
+      : {}),
   };
   const host = new PluginHost({
     storageRoot: root,
@@ -104,6 +121,7 @@ async function fixture(t, options = {}) {
     replies,
     sent,
     calls,
+    invoked,
     logs,
     run: (text, extra = {}) =>
       host.dispatchPrimary({
@@ -368,4 +386,151 @@ test("sum serializes double enable and registers only one scheduler job", async 
   assert.equal(calls, 1);
   assert.equal((await f.read()).tasks[0].disabled, false);
   assert.equal(f.host.snapshot().jobs.jobs, 1);
+});
+
+const markdownSummary =
+  "### 📌 本次摘要\n概括 [来源](https://t.me/c/1/2)\n\n### 💬 主要话题\n- 要点 `v1.2` [来源](https://t.me/c/1/3)";
+const blockKinds = request => request.richMessage.blocks.map(block => block.className);
+
+test("sum renders a Markdown summary as Telegram HTML without Premium, folding each section's points", async t => {
+  const f = await fixture(t, { output: markdownSummary });
+  await f.run(".sum 10");
+  const text = f.edits.at(-1).text;
+  assert.match(text, /^📊 <b>群组总结<\/b>\n群组 · /);
+  assert.ok(
+    text.endsWith(
+      '<b>📌 本次摘要</b>\n\n概括 <a href="https://t.me/c/1/2">来源</a>\n\n<b>💬 主要话题</b>\n\n' +
+        '<blockquote expandable>• 要点 <code>v1.2</code> <a href="https://t.me/c/1/3">来源</a></blockquote>',
+    ),
+    text,
+  );
+  assert.equal(f.edits.at(-1).settings.parseMode, "html");
+});
+
+test("sum edits the command into one Rich Message with Premium", async t => {
+  const f = await fixture(t, { premium: true, output: markdownSummary });
+  await f.run(".sum 10");
+  assert.equal(f.invoked.length, 1);
+  const request = f.invoked[0];
+  assert.equal(request.className, "messages.EditMessage");
+  assert.equal(request.id, 20);
+  assert.equal(request.message, undefined);
+  assert.deepEqual(blockKinds(request), [
+    "PageBlockParagraph",
+    "PageBlockHeading3",
+    "PageBlockParagraph",
+    "PageBlockHeading3",
+    "PageBlockList",
+  ]);
+  const point = request.richMessage.blocks[4].items[0].blocks[0].text.texts.map(text => text.className);
+  assert.deepEqual(point, ["TextPlain", "TextFixed", "TextPlain", "TextUrl"]);
+  assert.ok(request.getBytes().length > 0, "请求要能按 MTProto 序列化");
+  assert.equal(
+    f.edits.some(item => String(item.text).includes("群组总结")),
+    false,
+  );
+});
+
+test("sum folds every section into a details block when spoiler is on", async t => {
+  const f = await fixture(t, { premium: true, output: markdownSummary });
+  await f.run(".sum config set spoiler on");
+  await f.run(".sum 10");
+  const request = f.invoked.at(-1);
+  assert.deepEqual(blockKinds(request), ["PageBlockParagraph", "PageBlockDetails", "PageBlockDetails"]);
+  assert.equal(request.richMessage.blocks[1].title.text, "📌 本次摘要");
+  assert.ok(request.getBytes().length > 0);
+});
+
+test("sum pushes scheduled summaries as a new Rich Message with Premium", async t => {
+  const f = await fixture(t, { premium: true, output: markdownSummary });
+  await f.run(".sum add here 2h 10");
+  await f.run(".sum run 1");
+  assert.equal(f.sent.length, 0);
+  const request = f.invoked.at(-1);
+  assert.equal(request.className, "messages.SendMessage");
+  assert.equal(request.message, "");
+  assert.ok(request.getBytes().length > 0);
+});
+
+test("sum falls back to HTML when Telegram rejects the Rich Message", async t => {
+  const f = await fixture(t, {
+    premium: true,
+    output: markdownSummary,
+    richError: Object.assign(new Error("PREMIUM_ACCOUNT_REQUIRED"), {
+      code: 403,
+      errorMessage: "PREMIUM_ACCOUNT_REQUIRED",
+    }),
+  });
+  await f.run(".sum 10");
+  assert.equal(f.invoked.length, 1);
+  assert.match(f.edits.at(-1).text, /<b>💬 主要话题<\/b>/);
+  assert.ok(f.logs.some(item => item.event === "sum:rich-rejected" && item.fields.code === 403));
+});
+
+test("sum does not resend as HTML when the Rich Message outcome is unknown", async t => {
+  const f = await fixture(t, { premium: true, output: markdownSummary, richError: new Error("connection lost") });
+  await f.run(".sum 10");
+  assert.equal(
+    f.edits.some(item => String(item.text).includes("群组总结")),
+    false,
+  );
+  assert.match(f.edits.at(-1).text, /摘要操作失败/);
+});
+
+test("sum reads the text of Rich Messages other people sent", async t => {
+  const f = await fixture(t, {
+    messages: [
+      {
+        id: 9,
+        date: Math.floor(Date.now() / 1000),
+        message: "",
+        senderId: 1n,
+        richMessage: {
+          blocks: [
+            { className: "PageBlockHeading2", text: { className: "TextPlain", text: "发布说明" } },
+            {
+              className: "PageBlockList",
+              items: [
+                {
+                  className: "PageListItemBlocks",
+                  blocks: [{ className: "PageBlockParagraph", text: { className: "TextPlain", text: "修复了重连" } }],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  });
+  await f.run(".sum 10");
+  const ai = f.calls.find(item => item.kind === "ai");
+  assert.match(ai.input.text, /发布说明\n• 修复了重连/);
+});
+
+test("sum replaces the stored legacy built-in prompt with the Markdown one", async t => {
+  const source = await fs.readFile(path.resolve(__dirname, "../sum/v2/model.ts"), "utf8"),
+    literal = source.match(/export const LEGACY_PROMPT =\s*('(?:[^'\\]|\\.)*');/)[1],
+    legacy = Function(`return ${literal}`)();
+  const f = await fixture(t);
+  await f.host.unload("sum", 2000);
+  const file = path.join(f.root, "sum/database.json"),
+    state = JSON.parse(await fs.readFile(file, "utf8"));
+  state.aiConfig.default_prompt = legacy;
+  state.tasks = [
+    {
+      id: "1",
+      cron: "0 0 */2 * * *",
+      chatId: "-1001",
+      interval: "2h",
+      messageCount: 10,
+      createdAt: "",
+      aiPrompt: legacy,
+      disabled: true,
+    },
+  ];
+  await fs.writeFile(file, JSON.stringify(state));
+  await f.host.load(create());
+  const migrated = await f.read();
+  assert.match(migrated.aiConfig.default_prompt, /只输出 Markdown 格式/);
+  assert.equal(migrated.tasks[0].aiPrompt, undefined);
 });
